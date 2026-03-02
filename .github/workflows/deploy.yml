@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-      - claude/claude-md-mm9pmui0q3dfxmju-Xrefs
 
 permissions:
   contents: read
