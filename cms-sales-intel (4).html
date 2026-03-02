@@ -663,6 +663,9 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         Search CMS Data
       </button>
+      <button class="btn btn-secondary" onclick="clearSearch()" style="margin-top:8px;">
+        Clear
+      </button>
       <div id="errorBox" style="margin-top:12px;"></div>
     </div>
 
@@ -746,6 +749,13 @@ function switchTab(tab) {
   document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
   document.getElementById('geographyFields').style.display = tab === 'geography' ? 'block' : 'none';
   document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
+
+  currentResults = [];
+  currentPage = 0;
+  totalFound = 0;
+  clearError();
+  document.getElementById('emptyState').style.display = 'flex';
+  document.getElementById('resultsArea').style.display = 'none';
 }
 
 // ─── BUILD API URL ───
@@ -781,7 +791,7 @@ function buildApiUrl(offset = 0) {
     if (code) {
       filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
     }
-    if (keyword && !code) {
+    if (keyword) {
       url += `&keyword=${encodeURIComponent(keyword)}`;
     }
     if (state) {
@@ -904,7 +914,7 @@ async function executeSearch(offset = 0) {
       const data = await corsFetch(url);
       currentResults = data || [];
       currentPage = Math.floor(offset / PAGE_SIZE);
-      totalFound = currentResults.length === PAGE_SIZE ? PAGE_SIZE + 1 : currentResults.length;
+      totalFound = currentResults.length;
       renderResults();
     }
   } catch (err) {
@@ -954,7 +964,8 @@ async function executeNpiSearch(offset = 0) {
 
   // Fallback to CORS proxy if direct failed
   if (!data) {
-    for (const idx of [0, 1, 2]) {
+    const proxyOrder = CORS_PROXIES.map((_, i) => (activeProxyIndex + i) % CORS_PROXIES.length);
+    for (const idx of proxyOrder) {
       try {
         const proxyUrl = CORS_PROXIES[idx](url);
         const resp = await fetchWithTimeout(proxyUrl, 15000);
@@ -962,7 +973,7 @@ async function executeNpiSearch(offset = 0) {
         const text = await resp.text();
         data = JSON.parse(text);
         if (data && (data.results || data.result_count !== undefined)) {
-          console.log(`NPPES proxy ${idx} succeeded`);
+          activeProxyIndex = idx;
           break;
         }
       } catch(e) { continue; }
@@ -1102,9 +1113,9 @@ function renderNpiResults() {
   // Pagination
   html += `
     <div class="pagination">
-      <button class="page-btn" onclick="executeSearch(${(currentPage - 1) * 50})" ${currentPage === 0 ? 'disabled' : ''}>← Previous</button>
-      <span class="page-info">Page ${currentPage + 1}${totalFound > 50 ? ` of ~${Math.ceil(totalFound / 50)}` : ''}</span>
-      <button class="page-btn" onclick="executeSearch(${(currentPage + 1) * 50})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+      <button class="page-btn" onclick="executeSearch(${(currentPage - 1) * PAGE_SIZE})" ${currentPage === 0 ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${currentPage + 1}${totalFound > PAGE_SIZE ? ` of ~${Math.ceil(totalFound / PAGE_SIZE)}` : ''}</span>
+      <button class="page-btn" onclick="executeSearch(${(currentPage + 1) * PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
     </div>
   `;
 
@@ -1225,21 +1236,7 @@ function getBenes(row) {
   return 0;
 }
 
-// Log actual field names on first result so we can debug
-let hasLoggedFields = false;
-function logFieldsOnce(row) {
-  if (hasLoggedFields) return;
-  hasLoggedFields = true;
-  console.log('CMS API — actual field names from first result:', Object.keys(row));
-  console.log('Sample values:', JSON.stringify(row, null, 2).slice(0, 2000));
-  // Specifically check payment fields
-  const paymentKeys = Object.keys(row).filter(k => /pymt|chrg|alowd|srvcs|bene/i.test(k));
-  console.log('Payment/utilization fields found:', paymentKeys);
-  paymentKeys.forEach(k => console.log(`  ${k} = ${row[k]}`));
-}
-
 function getProviderName(row) {
-  logFieldsOnce(row);
   if (f(row, 'Rndrng_Prvdr_Ent_Cd') === 'O') {
     return f(row, 'Rndrng_Prvdr_Org_Name') || f(row, 'Rndrng_Prvdr_Last_Org_Name') || 'Organization';
   }
@@ -1428,7 +1425,6 @@ function renderResults() {
   `;
 
   resultsArea.innerHTML = html;
-  resultsArea.scrollTop = 0;
   document.querySelector('.main').scrollTop = 0;
 }
 
@@ -1476,17 +1472,23 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function truncate(str, len) {
-  if (!str) return '';
-  return str.length > len ? str.slice(0, len) + '…' : str;
-}
-
 function showError(msg) {
   document.getElementById('errorBox').innerHTML = `<div class="error-msg">${escapeHtml(msg)}</div>`;
 }
 
 function clearError() {
   document.getElementById('errorBox').innerHTML = '';
+}
+
+function clearSearch() {
+  document.querySelectorAll('#searchFields input[type="text"]').forEach(i => i.value = '');
+  document.querySelectorAll('#searchFields select').forEach(s => s.value = '');
+  currentResults = [];
+  currentPage = 0;
+  totalFound = 0;
+  clearError();
+  document.getElementById('emptyState').style.display = 'flex';
+  document.getElementById('resultsArea').style.display = 'none';
 }
 
 init();
