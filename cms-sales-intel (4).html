@@ -1,0 +1,1495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MedIntel — CMS Medicare Sales Intelligence</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0C0F13;
+    --surface: #151920;
+    --surface-2: #1C2129;
+    --surface-3: #242B35;
+    --border: #2A3140;
+    --border-active: #3D6EF7;
+    --text: #E8ECF1;
+    --text-2: #9AA4B5;
+    --text-3: #6B7585;
+    --accent: #3D6EF7;
+    --accent-dim: rgba(61,110,247,0.12);
+    --accent-glow: rgba(61,110,247,0.25);
+    --green: #34D399;
+    --green-dim: rgba(52,211,153,0.12);
+    --amber: #FBBF24;
+    --amber-dim: rgba(251,191,36,0.12);
+    --red: #F87171;
+    --red-dim: rgba(248,113,113,0.12);
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+
+  /* ─── HEADER ─── */
+  .header {
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--surface);
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo-mark {
+    width: 36px; height: 36px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 16px; color: #fff;
+  }
+  .logo-text {
+    font-family: 'Instrument Serif', serif;
+    font-size: 24px;
+    letter-spacing: -0.5px;
+  }
+  .logo-sub {
+    font-size: 12px;
+    color: var(--text-3);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-left: 16px;
+  }
+  .header-right {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .data-badge {
+    font-size: 11px;
+    color: var(--green);
+    background: var(--green-dim);
+    padding: 4px 10px;
+    border-radius: 20px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .data-badge::before {
+    content: '';
+    width: 6px; height: 6px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ─── LAYOUT ─── */
+  .app {
+    display: flex;
+    height: calc(100vh - 73px);
+  }
+
+  /* ─── SIDEBAR ─── */
+  .sidebar {
+    width: 340px;
+    min-width: 340px;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-section {
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-section:last-child { border-bottom: none; }
+  .section-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-3);
+    margin-bottom: 12px;
+    font-weight: 600;
+  }
+
+  /* ─── TABS ─── */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--bg);
+    border-radius: var(--radius-sm);
+    padding: 3px;
+  }
+  .tab {
+    flex: 1;
+    padding: 8px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-3);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--text-2); }
+  .tab.active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* ─── FORM ELEMENTS ─── */
+  .field { margin-bottom: 14px; }
+  .field-label {
+    font-size: 12px;
+    color: var(--text-2);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  input[type="text"], select {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input:focus, select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+  input::placeholder { color: var(--text-3); }
+  select { cursor: pointer; }
+  select option { background: var(--surface); }
+
+  .btn {
+    width: 100%;
+    padding: 12px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .btn:hover { background: #5080FA; box-shadow: 0 4px 20px var(--accent-glow); }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+  }
+  .btn-secondary {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-2);
+  }
+  .btn-secondary:hover { background: var(--surface-3); border-color: var(--text-3); box-shadow: none; }
+
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ─── MAIN CONTENT ─── */
+  .main {
+    flex: 1;
+    overflow: auto;
+    padding: 24px 32px;
+    background: var(--bg);
+  }
+
+  /* ─── RESULTS HEADER ─── */
+  .results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .results-count {
+    font-size: 14px;
+    color: var(--text-2);
+  }
+  .results-count strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .sort-controls {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .sort-controls label { font-size: 12px; color: var(--text-3); }
+  .sort-controls select {
+    width: auto;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  /* ─── EMPTY STATE ─── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    text-align: center;
+    color: var(--text-3);
+  }
+  .empty-icon {
+    width: 80px; height: 80px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px;
+    margin-bottom: 20px;
+  }
+  .empty-state h2 {
+    font-family: 'Instrument Serif', serif;
+    font-size: 24px;
+    color: var(--text-2);
+    font-weight: 400;
+    margin-bottom: 8px;
+  }
+  .empty-state p {
+    max-width: 400px;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* ─── RESULT CARDS ─── */
+  .results-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .result-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    transition: all 0.2s;
+    cursor: default;
+  }
+  .result-card:hover {
+    border-color: var(--border-active);
+    box-shadow: 0 2px 16px rgba(61,110,247,0.08);
+  }
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    gap: 16px;
+  }
+  .provider-info { flex: 1; min-width: 0; }
+  .provider-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .provider-name .npi-tag {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .provider-specialty {
+    font-size: 12px;
+    color: var(--text-3);
+    margin-bottom: 2px;
+  }
+  .provider-location {
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  .payment-badge {
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .payment-amount {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--green);
+    font-variant-numeric: tabular-nums;
+  }
+  .payment-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-3);
+  }
+
+  .card-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+  }
+  .metric {
+    background: var(--bg);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+  }
+  .metric-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .metric-label {
+    font-size: 10px;
+    color: var(--text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+
+  /* ─── PROCEDURE TAG ─── */
+  .procedure-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-2);
+    margin-bottom: 12px;
+  }
+  .procedure-tag .code {
+    color: var(--amber);
+    font-weight: 600;
+  }
+
+  /* ─── PROCEDURES LIST (GROUPED) ─── */
+  .procedures-toggle {
+    padding: 8px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .procedures-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .procedures-toggle .arrow { transition: transform 0.2s; }
+  .procedures-toggle.open .arrow { transform: rotate(180deg); }
+
+  .procedures-list {
+    display: none;
+    margin-top: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+  .procedures-list.open { display: block; }
+  .proc-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 90px 90px 90px;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(42,49,64,0.5);
+    font-size: 12px;
+    align-items: center;
+  }
+  .proc-row:last-child { border-bottom: none; }
+  .proc-row-header {
+    color: var(--text-3);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .proc-code { color: var(--amber); font-weight: 600; }
+  .proc-desc { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proc-num { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  @media (max-width: 900px) {
+    .proc-row { grid-template-columns: 70px 1fr 70px 70px; }
+    .proc-row > :nth-child(5) { display: none; }
+  }
+
+  /* ─── PAGINATION ─── */
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 24px;
+    padding-bottom: 24px;
+  }
+  .page-btn {
+    padding: 8px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .page-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .page-info { font-size: 13px; color: var(--text-3); }
+
+  /* ─── EXPORT BTN ─── */
+  .export-btn {
+    padding: 8px 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .export-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ─── INFO BOX ─── */
+  .info-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    font-size: 12px;
+    color: var(--text-3);
+    line-height: 1.6;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .info-box a { color: var(--accent); text-decoration: none; }
+  .info-box a:hover { text-decoration: underline; }
+  .info-box strong { color: var(--text-2); }
+
+  /* ─── ERROR ─── */
+  .error-msg {
+    background: var(--red-dim);
+    border: 1px solid rgba(248,113,113,0.3);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    color: var(--red);
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+
+  /* ─── RESPONSIVE ─── */
+  @media (max-width: 900px) {
+    .app { flex-direction: column; height: auto; }
+    .sidebar { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid var(--border); }
+    .main { padding: 16px; }
+    .header { padding: 16px; }
+    .logo-sub { display: none; }
+    .card-metrics { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div style="display:flex;align-items:center;">
+    <div class="logo">
+      <div class="logo-mark">M</div>
+      <div class="logo-text">MedIntel</div>
+    </div>
+    <span class="logo-sub">CMS Medicare Sales Intelligence</span>
+  </div>
+  <div class="header-right">
+    <div class="data-badge">CMS Public API — Live</div>
+  </div>
+</div>
+
+<div class="app">
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="section-label">Search Type</div>
+      <div class="tabs">
+        <button class="tab active" data-tab="provider" onclick="switchTab('provider')">Provider</button>
+        <button class="tab" data-tab="procedure" onclick="switchTab('procedure')">Procedure</button>
+        <button class="tab" data-tab="geography" onclick="switchTab('geography')">Geography</button>
+        <button class="tab" data-tab="npi" onclick="switchTab('npi')">NPI Lookup</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section" id="searchFields">
+      <!-- Provider search (default) -->
+      <div id="providerFields">
+        <div class="field">
+          <div class="field-label">Provider Last Name or Organization</div>
+          <input type="text" id="providerName" placeholder="e.g. Smith, Mayo Clinic...">
+        </div>
+        <div class="field">
+          <div class="field-label">NPI (National Provider Identifier)</div>
+          <input type="text" id="npiInput" placeholder="e.g. 1234567890">
+        </div>
+        <div class="field">
+          <div class="field-label">Specialty / Provider Type</div>
+          <input type="text" id="specialtyInput" placeholder="e.g. Orthopedic Surgery">
+        </div>
+        <div class="field">
+          <div class="field-label">State</div>
+          <select id="stateSelect">
+            <option value="">All States</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Procedure search -->
+      <div id="procedureFields" style="display:none;">
+        <div class="field">
+          <div class="field-label">HCPCS / CPT Code</div>
+          <input type="text" id="hcpcsCode" placeholder="e.g. 27447 (total knee replacement)">
+        </div>
+        <div class="field">
+          <div class="field-label">Procedure Description (keyword)</div>
+          <input type="text" id="hcpcsKeyword" placeholder="e.g. knee, hip, spine, cardiac...">
+        </div>
+        <div class="field">
+          <div class="field-label">State</div>
+          <select id="stateSelectProc">
+            <option value="">All States</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Geography search -->
+      <div id="geographyFields" style="display:none;">
+        <div class="field">
+          <div class="field-label">State</div>
+          <select id="stateSelectGeo">
+            <option value="">Select a State</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="field-label">City</div>
+          <input type="text" id="cityInput" placeholder="e.g. Houston, Boston...">
+        </div>
+        <div class="field">
+          <div class="field-label">Specialty Filter</div>
+          <input type="text" id="specialtyGeo" placeholder="e.g. Orthopedic Surgery">
+        </div>
+        <div class="field">
+          <div class="field-label">HCPCS Code Filter</div>
+          <input type="text" id="hcpcsGeo" placeholder="e.g. 27447">
+        </div>
+      </div>
+
+      <!-- NPI Lookup -->
+      <div id="npiFields" style="display:none;">
+        <div class="field">
+          <div class="field-label">First Name</div>
+          <input type="text" id="npiFirstName" placeholder="e.g. John">
+        </div>
+        <div class="field">
+          <div class="field-label">Last Name</div>
+          <input type="text" id="npiLastName" placeholder="e.g. Smith">
+        </div>
+        <div class="field">
+          <div class="field-label">State</div>
+          <select id="stateSelectNpi">
+            <option value="">All States</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="field-label">City</div>
+          <input type="text" id="npiCity" placeholder="e.g. Boston">
+        </div>
+        <div class="field">
+          <div class="field-label">Taxonomy / Specialty</div>
+          <input type="text" id="npiTaxonomy" placeholder="e.g. Orthopedic Surgery">
+        </div>
+        <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px;">
+          <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
+            <strong style="color:var(--amber);">NPPES Registry</strong> — Searches the National Plan & Provider Enumeration System for NPI numbers, credentials, addresses, and taxonomy codes. No API key required.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <button class="btn" id="searchBtn" onclick="executeSearch()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        Search CMS Data
+      </button>
+      <div id="errorBox" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="sidebar-section" style="flex:1;overflow:auto;">
+      <div class="section-label">About This Data</div>
+      <div class="info-box">
+        <strong>Data Source:</strong> CMS Medicare Physician & Other Practitioners dataset via
+        <a href="https://data.cms.gov" target="_blank">data.cms.gov</a> public API (routed through a CORS proxy for local file access).<br><br>
+        <strong>What it contains:</strong> Services, procedures, utilization counts, and Medicare payment amounts per provider, organized by NPI and HCPCS/CPT code.<br><br>
+        <strong>Use case:</strong> Identify high-volume surgeons and providers who perform specific procedures — ideal for medical device sales targeting.<br><br>
+        <strong>Tip:</strong> For best results, search by a specific HCPCS code (e.g. 27447 for total knee replacement) plus a state to find top-volume surgeons in a territory.<br><br>
+        <strong>Note:</strong> Data reflects Medicare Fee-for-Service only. Providers may have additional non-Medicare volume not reflected here. Records with ≤10 beneficiaries are redacted for privacy. First search may take a few seconds to connect.
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div class="main" id="mainContent">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">🔍</div>
+      <h2>Search CMS Medicare Data</h2>
+      <p>Find high-value providers by name, procedure code, specialty, or geography. Results include procedure volumes and Medicare payment amounts.</p>
+    </div>
+    <div id="resultsArea" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+// ─── STATE MANAGEMENT ───
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+  'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+  'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC','PR'
+];
+
+// The dataset UUID for "Medicare Physician & Other Practitioners by Provider and Service"
+const DATASET_ID = '92396110-2aed-4d63-a6a2-5d6207d46a29';
+const BASE_URL = `https://data.cms.gov/data-api/v1/dataset/${DATASET_ID}/data`;
+
+// CORS proxies — we try multiple in order since free proxies can go down
+const CORS_PROXIES = [
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+let activeProxyIndex = 0;
+
+let currentTab = 'provider';
+let currentResults = [];
+let currentPage = 0;
+const PAGE_SIZE = 50;
+let totalFound = 0;
+let isLoading = false;
+
+// ─── INIT ───
+function init() {
+  const selects = ['stateSelect', 'stateSelectProc', 'stateSelectGeo', 'stateSelectNpi'];
+  selects.forEach(id => {
+    const el = document.getElementById(id);
+    US_STATES.forEach(st => {
+      const opt = document.createElement('option');
+      opt.value = st;
+      opt.textContent = st;
+      el.appendChild(opt);
+    });
+  });
+
+  // Enter key triggers search
+  document.querySelectorAll('input[type="text"]').forEach(input => {
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
+  });
+}
+
+// ─── TAB SWITCHING ───
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+
+  document.getElementById('providerFields').style.display = tab === 'provider' ? 'block' : 'none';
+  document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
+  document.getElementById('geographyFields').style.display = tab === 'geography' ? 'block' : 'none';
+  document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
+}
+
+// ─── BUILD API URL ───
+function buildApiUrl(offset = 0) {
+  let url = `${BASE_URL}?size=${PAGE_SIZE}&offset=${offset}`;
+  const filters = [];
+
+  if (currentTab === 'provider') {
+    const name = document.getElementById('providerName').value.trim();
+    const npi = document.getElementById('npiInput').value.trim();
+    const specialty = document.getElementById('specialtyInput').value.trim();
+    const state = document.getElementById('stateSelect').value;
+
+    if (npi) {
+      filters.push(`filter[Rndrng_NPI]=${encodeURIComponent(npi)}`);
+    }
+    if (name) {
+      // Use keyword search for name
+      url += `&keyword=${encodeURIComponent(name)}`;
+    }
+    if (specialty) {
+      filters.push(`filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Type][condition][value]=${encodeURIComponent(specialty)}`);
+    }
+    if (state) {
+      filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
+    }
+  }
+  else if (currentTab === 'procedure') {
+    const code = document.getElementById('hcpcsCode').value.trim();
+    const keyword = document.getElementById('hcpcsKeyword').value.trim();
+    const state = document.getElementById('stateSelectProc').value;
+
+    if (code) {
+      filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
+    }
+    if (keyword && !code) {
+      url += `&keyword=${encodeURIComponent(keyword)}`;
+    }
+    if (state) {
+      filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
+    }
+  }
+  else if (currentTab === 'geography') {
+    const state = document.getElementById('stateSelectGeo').value;
+    const city = document.getElementById('cityInput').value.trim();
+    const specialty = document.getElementById('specialtyGeo').value.trim();
+    const hcpcs = document.getElementById('hcpcsGeo').value.trim();
+
+    if (state) {
+      filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
+    }
+    if (city) {
+      filters.push(`filter[Rndrng_Prvdr_City][condition][path]=Rndrng_Prvdr_City&filter[Rndrng_Prvdr_City][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_City][condition][value]=${encodeURIComponent(city.toUpperCase())}`);
+    }
+    if (specialty) {
+      filters.push(`filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Type][condition][value]=${encodeURIComponent(specialty)}`);
+    }
+    if (hcpcs) {
+      filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(hcpcs)}`);
+    }
+  }
+
+  if (filters.length) {
+    url += '&' + filters.join('&');
+  }
+
+  return url;
+}
+
+// ─── CORS-AWARE FETCH ───
+function fetchWithTimeout(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Request timed out')), timeoutMs);
+    fetch(url)
+      .then(resp => { clearTimeout(timer); resolve(resp); })
+      .catch(err => { clearTimeout(timer); reject(err); });
+  });
+}
+
+async function corsFetch(url) {
+  // First, try the direct request (works if hosted on a server with CORS headers)
+  try {
+    const directResp = await fetchWithTimeout(url, 8000);
+    if (directResp.ok) {
+      const data = await directResp.json();
+      console.log('Direct fetch succeeded');
+      return data;
+    }
+  } catch(e) {
+    console.log('Direct fetch failed (expected for local files), trying proxies...');
+  }
+
+  // Try CORS proxies in order, starting from the last one that worked
+  const proxyOrder = [];
+  for (let i = 0; i < CORS_PROXIES.length; i++) {
+    proxyOrder.push((activeProxyIndex + i) % CORS_PROXIES.length);
+  }
+
+  for (const idx of proxyOrder) {
+    const proxyUrl = CORS_PROXIES[idx](url);
+    console.log(`Trying proxy ${idx}: ${proxyUrl.slice(0, 80)}...`);
+    try {
+      const resp = await fetchWithTimeout(proxyUrl, 15000);
+      if (!resp.ok) {
+        console.log(`Proxy ${idx} returned ${resp.status}`);
+        continue;
+      }
+      const text = await resp.text();
+      // Validate it's actual JSON (some proxies return HTML error pages)
+      const data = JSON.parse(text);
+      if (Array.isArray(data)) {
+        activeProxyIndex = idx; // remember which proxy worked
+        console.log(`Proxy ${idx} succeeded, got ${data.length} results`);
+        return data;
+      }
+    } catch(e) {
+      console.log(`Proxy ${idx} failed:`, e.message);
+      continue;
+    }
+  }
+
+  throw new Error(
+    'Could not connect to the CMS API. This is usually a temporary issue with the CORS proxy services. ' +
+    'Please try again in a few seconds. If the problem persists, try opening this file on a local web server ' +
+    '(e.g. run "npx serve" in the folder) or use a browser extension like "CORS Unblock".'
+  );
+}
+
+// ─── SEARCH ───
+async function executeSearch(offset = 0) {
+  if (isLoading) return;
+
+  const hasInput = validateInput();
+  if (!hasInput) {
+    showError('Please enter at least one search criterion.');
+    return;
+  }
+
+  isLoading = true;
+  const btn = document.getElementById('searchBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Searching CMS...';
+  clearError();
+
+  if (offset === 0) {
+    currentPage = 0;
+    currentResults = [];
+  }
+
+  try {
+    if (currentTab === 'npi') {
+      await executeNpiSearch(offset);
+    } else {
+      const url = buildApiUrl(offset);
+      console.log('CMS API URL:', url);
+      const data = await corsFetch(url);
+      currentResults = data || [];
+      currentPage = Math.floor(offset / PAGE_SIZE);
+      totalFound = currentResults.length === PAGE_SIZE ? PAGE_SIZE + 1 : currentResults.length;
+      renderResults();
+    }
+  } catch (err) {
+    console.error(err);
+    showError(err.message);
+  } finally {
+    isLoading = false;
+    btn.disabled = false;
+    btn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      Search CMS Data
+    `;
+  }
+}
+
+// ─── NPI LOOKUP via NPPES Registry ───
+async function executeNpiSearch(offset = 0) {
+  const firstName = document.getElementById('npiFirstName').value.trim();
+  const lastName = document.getElementById('npiLastName').value.trim();
+  const state = document.getElementById('stateSelectNpi').value;
+  const city = document.getElementById('npiCity').value.trim();
+  const taxonomy = document.getElementById('npiTaxonomy').value.trim();
+
+  const skip = offset || 0;
+  const limit = 50;
+
+  let url = `https://npiregistry.cms.hhs.gov/api/?version=2.1&limit=${limit}&skip=${skip}`;
+  if (firstName) url += `&first_name=${encodeURIComponent(firstName)}`;
+  if (lastName) url += `&last_name=${encodeURIComponent(lastName)}`;
+  if (state) url += `&state=${encodeURIComponent(state)}`;
+  if (city) url += `&city=${encodeURIComponent(city)}`;
+  if (taxonomy) url += `&taxonomy_description=${encodeURIComponent(taxonomy)}`;
+
+  console.log('NPPES API URL:', url);
+
+  // NPPES API supports CORS natively — try direct first
+  let data;
+  try {
+    const resp = await fetchWithTimeout(url, 12000);
+    if (resp.ok) {
+      data = await resp.json();
+      console.log('NPPES direct fetch succeeded');
+    }
+  } catch(e) {
+    console.log('NPPES direct failed, trying proxy...', e.message);
+  }
+
+  // Fallback to CORS proxy if direct failed
+  if (!data) {
+    for (const idx of [0, 1, 2]) {
+      try {
+        const proxyUrl = CORS_PROXIES[idx](url);
+        const resp = await fetchWithTimeout(proxyUrl, 15000);
+        if (!resp.ok) continue;
+        const text = await resp.text();
+        data = JSON.parse(text);
+        if (data && (data.results || data.result_count !== undefined)) {
+          console.log(`NPPES proxy ${idx} succeeded`);
+          break;
+        }
+      } catch(e) { continue; }
+    }
+  }
+
+  if (!data) {
+    throw new Error('Could not connect to the NPPES NPI Registry. Please try again.');
+  }
+
+  currentResults = data.results || [];
+  currentPage = Math.floor(skip / limit);
+  totalFound = data.result_count || currentResults.length;
+
+  renderNpiResults();
+}
+
+// ─── RENDER NPI RESULTS ───
+function renderNpiResults() {
+  const emptyState = document.getElementById('emptyState');
+  const resultsArea = document.getElementById('resultsArea');
+
+  if (!currentResults.length) {
+    emptyState.innerHTML = `
+      <div class="empty-icon">📭</div>
+      <h2>No NPI Records Found</h2>
+      <p>Try adjusting the name spelling or broadening your search. The NPPES registry requires at least a partial first or last name.</p>
+    `;
+    emptyState.style.display = 'flex';
+    resultsArea.style.display = 'none';
+    return;
+  }
+
+  emptyState.style.display = 'none';
+  resultsArea.style.display = 'block';
+
+  const hasMore = currentResults.length === 50;
+
+  let html = `
+    <div class="results-header">
+      <div class="results-count">
+        Found <strong>${totalFound.toLocaleString()}</strong> NPI records
+        ${currentPage > 0 ? `(page ${currentPage + 1})` : ''}
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="export-btn" onclick="exportNpiCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
+      </div>
+    </div>
+    <div class="results-grid">
+  `;
+
+  currentResults.forEach(row => {
+    const basic = row.basic || {};
+    const npi = row.number || '';
+    const enumType = row.enumeration_type || '';
+    const isOrg = enumType === 'NPI-2';
+
+    // Name
+    let name = '';
+    if (isOrg) {
+      name = basic.organization_name || basic.name || 'Organization';
+    } else {
+      const parts = [basic.first_name, basic.middle_name, basic.last_name].filter(Boolean);
+      name = parts.join(' ');
+      if (basic.credential) name += `, ${basic.credential}`;
+    }
+
+    // Primary address
+    const addr = (row.addresses || []).find(a => a.address_purpose === 'LOCATION') || (row.addresses || [])[0] || {};
+    const location = [addr.city, addr.state, addr.postal_code?.slice(0,5)].filter(Boolean).join(', ');
+    const fullAddr = [addr.address_1, addr.address_2].filter(Boolean).join(', ');
+
+    // Taxonomies
+    const taxonomies = row.taxonomies || [];
+    const primaryTax = taxonomies.find(t => t.primary) || taxonomies[0] || {};
+    const specialty = primaryTax.desc || '';
+    const taxCode = primaryTax.code || '';
+    const license = primaryTax.license || '';
+
+    // Gender & status
+    const gender = basic.gender === 'M' ? 'Male' : basic.gender === 'F' ? 'Female' : '';
+    const status = basic.status === 'A' ? 'Active' : basic.status || '';
+    const lastUpdated = basic.last_updated || row.last_updated_epoch || '';
+
+    // Other taxonomies
+    const otherTaxonomies = taxonomies.filter(t => !t.primary).map(t => t.desc).filter(Boolean);
+
+    html += `
+      <div class="result-card">
+        <div class="card-top">
+          <div class="provider-info">
+            <div class="provider-name">
+              ${escapeHtml(name)}
+              <span class="npi-tag">NPI ${escapeHtml(npi)}</span>
+              ${status === 'Active' ? '<span style="font-size:10px;color:var(--green);background:var(--green-dim);padding:2px 8px;border-radius:4px;">Active</span>' : ''}
+            </div>
+            <div class="provider-specialty">${escapeHtml(specialty)}${taxCode ? ` (${escapeHtml(taxCode)})` : ''}${gender ? ` · ${gender}` : ''}</div>
+            <div class="provider-location">${escapeHtml(fullAddr)}${fullAddr && location ? ' — ' : ''}${escapeHtml(location)}</div>
+          </div>
+          <div class="payment-badge" style="text-align:right;">
+            <div style="font-size:13px;font-weight:600;color:var(--amber);">${isOrg ? 'Organization' : 'Individual'}</div>
+            <div class="payment-label">${escapeHtml(enumType)}</div>
+          </div>
+        </div>
+        <div class="card-metrics">
+          <div class="metric">
+            <div class="metric-value" style="font-size:12px;word-break:break-all;">${escapeHtml(npi)}</div>
+            <div class="metric-label">NPI Number</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" style="font-size:12px;">${escapeHtml(basic.credential || '—')}</div>
+            <div class="metric-label">Credentials</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" style="font-size:12px;">${escapeHtml(license || '—')}</div>
+            <div class="metric-label">License #</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" style="font-size:12px;">${escapeHtml(addr.telephone_number || '—')}</div>
+            <div class="metric-label">Phone</div>
+          </div>
+          ${otherTaxonomies.length ? `
+          <div class="metric" style="grid-column: span 2;">
+            <div class="metric-value" style="font-size:11px;">${escapeHtml(otherTaxonomies.join('; '))}</div>
+            <div class="metric-label">Other Specialties</div>
+          </div>` : ''}
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+
+  // Pagination
+  html += `
+    <div class="pagination">
+      <button class="page-btn" onclick="executeSearch(${(currentPage - 1) * 50})" ${currentPage === 0 ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${currentPage + 1}${totalFound > 50 ? ` of ~${Math.ceil(totalFound / 50)}` : ''}</span>
+      <button class="page-btn" onclick="executeSearch(${(currentPage + 1) * 50})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+    </div>
+  `;
+
+  resultsArea.innerHTML = html;
+  document.querySelector('.main').scrollTop = 0;
+}
+
+// ─── EXPORT NPI CSV ───
+function exportNpiCSV() {
+  if (!currentResults.length) return;
+  const headers = ['NPI','Type','First Name','Last Name','Credential','Organization','Specialty','Taxonomy Code','License','Gender','Phone','Address','City','State','Zip','Status'];
+  const rows = currentResults.map(r => {
+    const b = r.basic || {};
+    const a = (r.addresses || []).find(x => x.address_purpose === 'LOCATION') || (r.addresses || [])[0] || {};
+    const t = (r.taxonomies || []).find(x => x.primary) || (r.taxonomies || [])[0] || {};
+    const isOrg = r.enumeration_type === 'NPI-2';
+    return [
+      r.number, isOrg ? 'Organization' : 'Individual',
+      `"${(b.first_name || '').replace(/"/g,'""')}"`, `"${(b.last_name || '').replace(/"/g,'""')}"`,
+      `"${(b.credential || '').replace(/"/g,'""')}"`, `"${(b.organization_name || '').replace(/"/g,'""')}"`,
+      `"${(t.desc || '').replace(/"/g,'""')}"`, t.code || '', `"${(t.license || '').replace(/"/g,'""')}"`,
+      b.gender || '', a.telephone_number || '',
+      `"${([a.address_1, a.address_2].filter(Boolean).join(', ')).replace(/"/g,'""')}"`,
+      a.city || '', a.state || '', (a.postal_code || '').slice(0,5),
+      b.status === 'A' ? 'Active' : b.status || ''
+    ];
+  });
+  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `npi_lookup_export_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function validateInput() {
+  if (currentTab === 'provider') {
+    return document.getElementById('providerName').value.trim() ||
+           document.getElementById('npiInput').value.trim() ||
+           document.getElementById('specialtyInput').value.trim() ||
+           document.getElementById('stateSelect').value;
+  }
+  if (currentTab === 'procedure') {
+    return document.getElementById('hcpcsCode').value.trim() ||
+           document.getElementById('hcpcsKeyword').value.trim();
+  }
+  if (currentTab === 'geography') {
+    return document.getElementById('stateSelectGeo').value ||
+           document.getElementById('cityInput').value.trim();
+  }
+  if (currentTab === 'npi') {
+    return document.getElementById('npiFirstName').value.trim() ||
+           document.getElementById('npiLastName').value.trim();
+  }
+  return false;
+}
+
+// ─── FORMAT HELPERS ───
+function fmtCurrency(val) {
+  const n = parseFloat(val);
+  if (isNaN(n)) return '—';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+}
+
+function fmtNumber(val) {
+  const n = parseFloat(val);
+  if (isNaN(n)) return '—';
+  return new Intl.NumberFormat('en-US').format(n);
+}
+
+// ─── FIELD ACCESSOR ───
+// CMS API may return field names with underscores OR spaces depending on the dataset version.
+// This helper tries the underscore version first, then the space version.
+function f(row, fieldName) {
+  if (row[fieldName] !== undefined) return row[fieldName];
+  // Try with spaces instead of underscores
+  const spaced = fieldName.replace(/_/g, ' ');
+  if (row[spaced] !== undefined) return row[spaced];
+  return undefined;
+}
+
+// Smart payment accessor: the API may only have Avg (per-service) fields, not Tot (total) fields.
+// If Tot_Mdcr_Pymt_Amt is missing, compute total = Avg_Mdcr_Pymt_Amt × Tot_Srvcs
+function getPayment(row) {
+  // Try total field first
+  const tot = parseFloat(f(row, 'Tot_Mdcr_Pymt_Amt'));
+  if (!isNaN(tot) && tot !== 0) return tot;
+  // Fall back to avg × services
+  const avg = parseFloat(f(row, 'Avg_Mdcr_Pymt_Amt'));
+  const srvcs = parseFloat(f(row, 'Tot_Srvcs')) || parseFloat(f(row, 'Tot_Srvcs_Cnt')) || 0;
+  if (!isNaN(avg)) return avg * srvcs;
+  return 0;
+}
+
+function getAvgCharge(row) {
+  const v = parseFloat(f(row, 'Avg_Sbmtd_Chrg'));
+  if (!isNaN(v)) return v;
+  const v2 = parseFloat(f(row, 'Avg_Sbmtd_Chrg_Amt'));
+  if (!isNaN(v2)) return v2;
+  return 0;
+}
+
+function getServices(row) {
+  const v = parseFloat(f(row, 'Tot_Srvcs'));
+  if (!isNaN(v)) return v;
+  const v2 = parseFloat(f(row, 'Tot_Srvcs_Cnt'));
+  if (!isNaN(v2)) return v2;
+  return 0;
+}
+
+function getBenes(row) {
+  const v = parseFloat(f(row, 'Tot_Benes'));
+  if (!isNaN(v)) return v;
+  const v2 = parseFloat(f(row, 'Tot_Bene_Cnt'));
+  if (!isNaN(v2)) return v2;
+  return 0;
+}
+
+// Log actual field names on first result so we can debug
+let hasLoggedFields = false;
+function logFieldsOnce(row) {
+  if (hasLoggedFields) return;
+  hasLoggedFields = true;
+  console.log('CMS API — actual field names from first result:', Object.keys(row));
+  console.log('Sample values:', JSON.stringify(row, null, 2).slice(0, 2000));
+  // Specifically check payment fields
+  const paymentKeys = Object.keys(row).filter(k => /pymt|chrg|alowd|srvcs|bene/i.test(k));
+  console.log('Payment/utilization fields found:', paymentKeys);
+  paymentKeys.forEach(k => console.log(`  ${k} = ${row[k]}`));
+}
+
+function getProviderName(row) {
+  logFieldsOnce(row);
+  if (f(row, 'Rndrng_Prvdr_Ent_Cd') === 'O') {
+    return f(row, 'Rndrng_Prvdr_Org_Name') || f(row, 'Rndrng_Prvdr_Last_Org_Name') || 'Organization';
+  }
+  const last = f(row, 'Rndrng_Prvdr_Last_Org_Name') || '';
+  const first = f(row, 'Rndrng_Prvdr_First_Name') || '';
+  const mi = f(row, 'Rndrng_Prvdr_MI') || '';
+  const cred = f(row, 'Rndrng_Prvdr_Crdntls') || '';
+  let name = last;
+  if (first) name = `${first} ${mi ? mi + '. ' : ''}${last}`;
+  if (cred) name += `, ${cred}`;
+  return name || 'Unknown Provider';
+}
+
+function getLocation(row) {
+  const parts = [];
+  const city = f(row, 'Rndrng_Prvdr_City');
+  const state = f(row, 'Rndrng_Prvdr_State_Abrvtn');
+  const zip = f(row, 'Rndrng_Prvdr_Zip5');
+  if (city) parts.push(city);
+  if (state) parts.push(state);
+  if (zip) parts.push(zip);
+  return parts.join(', ') || '—';
+}
+
+// ─── RENDER ───
+// ─── GROUP RESULTS BY PROVIDER (NPI) ───
+function groupByProvider(rows) {
+  const map = {};
+  rows.forEach(row => {
+    const npi = f(row, 'Rndrng_NPI') || 'unknown';
+    if (!map[npi]) {
+      map[npi] = {
+        npi,
+        name: getProviderName(row),
+        specialty: f(row, 'Rndrng_Prvdr_Type') || '',
+        location: getLocation(row),
+        city: f(row, 'Rndrng_Prvdr_City') || '',
+        state: f(row, 'Rndrng_Prvdr_State_Abrvtn') || '',
+        zip: f(row, 'Rndrng_Prvdr_Zip5') || '',
+        street: f(row, 'Rndrng_Prvdr_St1') || '',
+        credentials: f(row, 'Rndrng_Prvdr_Crdntls') || '',
+        entityType: f(row, 'Rndrng_Prvdr_Ent_Cd') === 'O' ? 'Organization' : 'Individual',
+        totalPayment: 0,
+        totalServices: 0,
+        totalBeneficiaries: 0,
+        procedures: []
+      };
+    }
+    const g = map[npi];
+    const pymt = getPayment(row);
+    const srvcs = getServices(row);
+    const benes = getBenes(row);
+    g.totalPayment += pymt;
+    g.totalServices += srvcs;
+    g.totalBeneficiaries += benes;
+    g.procedures.push({
+      code: f(row, 'HCPCS_Cd') || '',
+      desc: f(row, 'HCPCS_Desc') || '',
+      services: srvcs,
+      payment: pymt,
+      avgCharge: getAvgCharge(row),
+      place: f(row, 'Place_Of_Srvc') === 'F' ? 'Facility' : f(row, 'Place_Of_Srvc') === 'O' ? 'Office' : ''
+    });
+  });
+  // Sort each provider's procedures by payment desc
+  Object.values(map).forEach(g => g.procedures.sort((a, b) => b.payment - a.payment));
+  // Sort providers by total payment desc
+  return Object.values(map).sort((a, b) => b.totalPayment - a.totalPayment);
+}
+
+function toggleProcedures(npi) {
+  const list = document.getElementById(`proc-list-${npi}`);
+  const btn = document.getElementById(`proc-btn-${npi}`);
+  if (list && btn) {
+    list.classList.toggle('open');
+    btn.classList.toggle('open');
+  }
+}
+
+function renderResults() {
+  const emptyState = document.getElementById('emptyState');
+  const resultsArea = document.getElementById('resultsArea');
+
+  if (!currentResults.length) {
+    emptyState.innerHTML = `
+      <div class="empty-icon">📭</div>
+      <h2>No Results Found</h2>
+      <p>Try broadening your search criteria or double-check the spelling of provider names and procedure codes.</p>
+    `;
+    emptyState.style.display = 'flex';
+    resultsArea.style.display = 'none';
+    return;
+  }
+
+  emptyState.style.display = 'none';
+  resultsArea.style.display = 'block';
+
+  const grouped = groupByProvider(currentResults);
+  const hasMore = currentResults.length === PAGE_SIZE;
+
+  let html = `
+    <div class="results-header">
+      <div class="results-count">
+        <strong>${grouped.length}</strong> provider${grouped.length !== 1 ? 's' : ''} from <strong>${currentResults.length}</strong> line items
+        ${currentPage > 0 ? `(page ${currentPage + 1})` : ''}
+        — sorted by total Medicare payment
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="export-btn" onclick="exportCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
+      </div>
+    </div>
+    <div class="results-grid">
+  `;
+
+  grouped.forEach(g => {
+    const topProcs = g.procedures.slice(0, 3).map(p =>
+      `<span class="code">${escapeHtml(p.code)}</span>`
+    ).join(' ');
+
+    html += `
+      <div class="result-card">
+        <div class="card-top">
+          <div class="provider-info">
+            <div class="provider-name">
+              ${escapeHtml(g.name)}
+              <span class="npi-tag">NPI ${escapeHtml(g.npi)}</span>
+            </div>
+            <div class="provider-specialty">${escapeHtml(g.specialty)}</div>
+            <div class="provider-location">${escapeHtml(g.location)}</div>
+          </div>
+          <div class="payment-badge">
+            <div class="payment-amount">${fmtCurrency(g.totalPayment)}</div>
+            <div class="payment-label">Total Medicare Payment</div>
+          </div>
+        </div>
+        <div class="card-metrics">
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.totalServices)}</div>
+            <div class="metric-label">Total Services</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
+            <div class="metric-label">Beneficiaries</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${g.procedures.length}</div>
+            <div class="metric-label">Procedure Codes</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtCurrency(g.totalPayment / (g.totalServices || 1))}</div>
+            <div class="metric-label">Avg Payment / Service</div>
+          </div>
+        </div>
+        <button class="procedures-toggle" id="proc-btn-${g.npi}" onclick="toggleProcedures('${g.npi}')">
+          <span class="arrow">▼</span> ${g.procedures.length} procedure${g.procedures.length !== 1 ? 's' : ''} — top: ${topProcs || 'n/a'}
+        </button>
+        <div class="procedures-list" id="proc-list-${g.npi}">
+          <div class="proc-row proc-row-header">
+            <div>Code</div><div>Description</div><div>Services</div><div>Payment</div><div>Avg Charge</div>
+          </div>
+          ${g.procedures.map(p => `
+            <div class="proc-row">
+              <div class="proc-code">${escapeHtml(p.code)}</div>
+              <div class="proc-desc" title="${escapeHtml(p.desc)}">${escapeHtml(p.desc)}</div>
+              <div class="proc-num">${fmtNumber(p.services)}</div>
+              <div class="proc-num">${fmtCurrency(p.payment)}</div>
+              <div class="proc-num">${fmtCurrency(p.avgCharge)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+
+  html += `
+    <div class="pagination">
+      <button class="page-btn" onclick="executeSearch(${(currentPage - 1) * PAGE_SIZE})" ${currentPage === 0 ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${currentPage + 1}</span>
+      <button class="page-btn" onclick="executeSearch(${(currentPage + 1) * PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+    </div>
+  `;
+
+  resultsArea.innerHTML = html;
+  resultsArea.scrollTop = 0;
+  document.querySelector('.main').scrollTop = 0;
+}
+
+// ─── EXPORT (grouped by provider) ───
+function exportCSV() {
+  if (!currentResults.length) return;
+  const grouped = groupByProvider(currentResults);
+
+  const headers = [
+    'NPI','Provider Name','Credentials','Specialty','Entity Type',
+    'Street','City','State','Zip',
+    'Total Procedures','Total Services','Total Beneficiaries','Total Medicare Payment',
+    'Top HCPCS Codes'
+  ];
+
+  const rows = grouped.map(g => [
+    g.npi,
+    `"${g.name.replace(/"/g,'""')}"`,
+    `"${g.credentials.replace(/"/g,'""')}"`,
+    `"${g.specialty.replace(/"/g,'""')}"`,
+    g.entityType,
+    `"${g.street.replace(/"/g,'""')}"`,
+    g.city, g.state, g.zip,
+    g.procedures.length,
+    g.totalServices,
+    g.totalBeneficiaries,
+    g.totalPayment.toFixed(2),
+    `"${g.procedures.slice(0,10).map(p => p.code).join('; ')}"`
+  ]);
+
+  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `cms_medintel_export_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── UTILS ───
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str || '';
+  return div.innerHTML;
+}
+
+function truncate(str, len) {
+  if (!str) return '';
+  return str.length > len ? str.slice(0, len) + '…' : str;
+}
+
+function showError(msg) {
+  document.getElementById('errorBox').innerHTML = `<div class="error-msg">${escapeHtml(msg)}</div>`;
+}
+
+function clearError() {
+  document.getElementById('errorBox').innerHTML = '';
+}
+
+init();
+</script>
+</body>
+</html>
