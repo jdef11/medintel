@@ -714,10 +714,14 @@ const CORS_PROXIES = [
 let activeProxyIndex = 0;
 
 let currentTab = 'provider';
-let currentResults = [];
-let currentPage = 0;
-const PAGE_SIZE = 50;
-let totalFound = 0;
+let currentResults = [];      // raw rows for NPI tab
+let allGroupedResults = [];   // grouped providers for CMS tabs
+let displayPage = 0;          // current display page (CMS tabs)
+let npiPage = 0;              // current page for NPI results
+let npiTotal = 0;             // total count for NPI results
+const FETCH_SIZE = 1000;      // rows per CMS API call (API max)
+const DISPLAY_PAGE_SIZE = 20; // providers shown per display page
+const NPI_PAGE_SIZE = 50;     // NPI results per page
 let isLoading = false;
 
 // ─── INIT ───
@@ -751,8 +755,10 @@ function switchTab(tab) {
   document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
 
   currentResults = [];
-  currentPage = 0;
-  totalFound = 0;
+  allGroupedResults = [];
+  displayPage = 0;
+  npiPage = 0;
+  npiTotal = 0;
   clearError();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
@@ -760,7 +766,7 @@ function switchTab(tab) {
 
 // ─── BUILD API URL ───
 function buildApiUrl(offset = 0) {
-  let url = `${BASE_URL}?size=${PAGE_SIZE}&offset=${offset}`;
+  let url = `${BASE_URL}?size=${FETCH_SIZE}&offset=${offset}`;
   const filters = [];
 
   if (currentTab === 'provider') {
@@ -884,8 +890,31 @@ async function corsFetch(url) {
   );
 }
 
+// ─── FETCH ALL ROWS (paginate through CMS API automatically) ───
+async function fetchAllRows() {
+  const btn = document.getElementById('searchBtn');
+  let allRows = [];
+  let offset = 0;
+  const MAX_FETCHES = 3; // cap at 3,000 rows; narrow search if hit
+
+  for (let i = 0; i < MAX_FETCHES; i++) {
+    if (i > 0) {
+      btn.innerHTML = `<div class="spinner"></div> Loading (${allRows.length.toLocaleString()} rows)...`;
+    }
+    const url = buildApiUrl(offset);
+    console.log('CMS API URL:', url);
+    const data = await corsFetch(url);
+    if (!data || !data.length) break;
+    allRows = allRows.concat(data);
+    if (data.length < FETCH_SIZE) break; // last page
+    offset += FETCH_SIZE;
+  }
+
+  return allRows;
+}
+
 // ─── SEARCH ───
-async function executeSearch(offset = 0) {
+async function executeSearch() {
   if (isLoading) return;
 
   const hasInput = validateInput();
@@ -895,26 +924,20 @@ async function executeSearch(offset = 0) {
   }
 
   isLoading = true;
+  displayPage = 0;
+  allGroupedResults = [];
   const btn = document.getElementById('searchBtn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Searching CMS...';
   clearError();
 
-  if (offset === 0) {
-    currentPage = 0;
-    currentResults = [];
-  }
-
   try {
     if (currentTab === 'npi') {
-      await executeNpiSearch(offset);
+      npiPage = 0;
+      await executeNpiSearch(0);
     } else {
-      const url = buildApiUrl(offset);
-      console.log('CMS API URL:', url);
-      const data = await corsFetch(url);
-      currentResults = data || [];
-      currentPage = Math.floor(offset / PAGE_SIZE);
-      totalFound = currentResults.length;
+      const allRows = await fetchAllRows();
+      allGroupedResults = groupByProvider(allRows);
       renderResults();
     }
   } catch (err) {
@@ -939,7 +962,7 @@ async function executeNpiSearch(offset = 0) {
   const taxonomy = document.getElementById('npiTaxonomy').value.trim();
 
   const skip = offset || 0;
-  const limit = 50;
+  const limit = NPI_PAGE_SIZE;
 
   let url = `https://npiregistry.cms.hhs.gov/api/?version=2.1&limit=${limit}&skip=${skip}`;
   if (firstName) url += `&first_name=${encodeURIComponent(firstName)}`;
@@ -985,8 +1008,8 @@ async function executeNpiSearch(offset = 0) {
   }
 
   currentResults = data.results || [];
-  currentPage = Math.floor(skip / limit);
-  totalFound = data.result_count || currentResults.length;
+  npiPage = Math.floor(skip / NPI_PAGE_SIZE);
+  npiTotal = data.result_count || currentResults.length;
 
   renderNpiResults();
 }
@@ -1010,13 +1033,13 @@ function renderNpiResults() {
   emptyState.style.display = 'none';
   resultsArea.style.display = 'block';
 
-  const hasMore = currentResults.length === 50;
+  const hasMore = currentResults.length === NPI_PAGE_SIZE;
 
   let html = `
     <div class="results-header">
       <div class="results-count">
-        Found <strong>${totalFound.toLocaleString()}</strong> NPI records
-        ${currentPage > 0 ? `(page ${currentPage + 1})` : ''}
+        Found <strong>${npiTotal.toLocaleString()}</strong> NPI records
+        ${npiPage > 0 ? `(page ${npiPage + 1})` : ''}
       </div>
       <div style="display:flex;gap:8px;">
         <button class="export-btn" onclick="exportNpiCSV()">
@@ -1113,9 +1136,9 @@ function renderNpiResults() {
   // Pagination
   html += `
     <div class="pagination">
-      <button class="page-btn" onclick="executeSearch(${(currentPage - 1) * PAGE_SIZE})" ${currentPage === 0 ? 'disabled' : ''}>← Previous</button>
-      <span class="page-info">Page ${currentPage + 1}${totalFound > PAGE_SIZE ? ` of ~${Math.ceil(totalFound / PAGE_SIZE)}` : ''}</span>
-      <button class="page-btn" onclick="executeSearch(${(currentPage + 1) * PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+      <button class="page-btn" onclick="executeNpiSearch(${(npiPage - 1) * NPI_PAGE_SIZE})" ${npiPage === 0 ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${npiPage + 1}${npiTotal > NPI_PAGE_SIZE ? ` of ~${Math.ceil(npiTotal / NPI_PAGE_SIZE)}` : ''}</span>
+      <button class="page-btn" onclick="executeNpiSearch(${(npiPage + 1) * NPI_PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
     </div>
   `;
 
@@ -1320,7 +1343,7 @@ function renderResults() {
   const emptyState = document.getElementById('emptyState');
   const resultsArea = document.getElementById('resultsArea');
 
-  if (!currentResults.length) {
+  if (!allGroupedResults.length) {
     emptyState.innerHTML = `
       <div class="empty-icon">📭</div>
       <h2>No Results Found</h2>
@@ -1334,15 +1357,17 @@ function renderResults() {
   emptyState.style.display = 'none';
   resultsArea.style.display = 'block';
 
-  const grouped = groupByProvider(currentResults);
-  const hasMore = currentResults.length === PAGE_SIZE;
+  const start = displayPage * DISPLAY_PAGE_SIZE;
+  const pageProviders = allGroupedResults.slice(start, start + DISPLAY_PAGE_SIZE);
+  const totalPages = Math.ceil(allGroupedResults.length / DISPLAY_PAGE_SIZE);
+  const hasPrev = displayPage > 0;
+  const hasNext = displayPage + 1 < totalPages;
 
   let html = `
     <div class="results-header">
       <div class="results-count">
-        <strong>${grouped.length}</strong> provider${grouped.length !== 1 ? 's' : ''} from <strong>${currentResults.length}</strong> line items
-        ${currentPage > 0 ? `(page ${currentPage + 1})` : ''}
-        — sorted by total Medicare payment
+        <strong>${allGroupedResults.length}</strong> provider${allGroupedResults.length !== 1 ? 's' : ''} — all rows fetched — sorted by total Medicare payment
+        ${totalPages > 1 ? `<span style="color:var(--text-3)"> · page ${displayPage + 1} of ${totalPages}</span>` : ''}
       </div>
       <div style="display:flex;gap:8px;">
         <button class="export-btn" onclick="exportCSV()">
@@ -1354,7 +1379,7 @@ function renderResults() {
     <div class="results-grid">
   `;
 
-  grouped.forEach(g => {
+  pageProviders.forEach(g => {
     const topProcs = g.procedures.slice(0, 3).map(p =>
       `<span class="code">${escapeHtml(p.code)}</span>`
     ).join(' ');
@@ -1418,9 +1443,9 @@ function renderResults() {
 
   html += `
     <div class="pagination">
-      <button class="page-btn" onclick="executeSearch(${(currentPage - 1) * PAGE_SIZE})" ${currentPage === 0 ? 'disabled' : ''}>← Previous</button>
-      <span class="page-info">Page ${currentPage + 1}</span>
-      <button class="page-btn" onclick="executeSearch(${(currentPage + 1) * PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+      <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${displayPage + 1} of ${totalPages}</span>
+      <button class="page-btn" onclick="nextPage()" ${!hasNext ? 'disabled' : ''}>Next →</button>
     </div>
   `;
 
@@ -1428,10 +1453,18 @@ function renderResults() {
   document.querySelector('.main').scrollTop = 0;
 }
 
+function prevPage() {
+  if (displayPage > 0) { displayPage--; renderResults(); }
+}
+
+function nextPage() {
+  if (displayPage + 1 < Math.ceil(allGroupedResults.length / DISPLAY_PAGE_SIZE)) { displayPage++; renderResults(); }
+}
+
 // ─── EXPORT (grouped by provider) ───
 function exportCSV() {
-  if (!currentResults.length) return;
-  const grouped = groupByProvider(currentResults);
+  if (!allGroupedResults.length) return;
+  const grouped = allGroupedResults;
 
   const headers = [
     'NPI','Provider Name','Credentials','Specialty','Entity Type',
@@ -1484,8 +1517,10 @@ function clearSearch() {
   document.querySelectorAll('#searchFields input[type="text"]').forEach(i => i.value = '');
   document.querySelectorAll('#searchFields select').forEach(s => s.value = '');
   currentResults = [];
-  currentPage = 0;
-  totalFound = 0;
+  allGroupedResults = [];
+  displayPage = 0;
+  npiPage = 0;
+  npiTotal = 0;
   clearError();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
