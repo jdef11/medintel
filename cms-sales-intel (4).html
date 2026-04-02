@@ -795,11 +795,9 @@ function buildApiUrl(offset = 0) {
     const state = document.getElementById('stateSelectProc').value;
 
     if (code) {
-      // Use keyword search for CPT/HCPCS codes — the field filter filter[HCPCS_Cd]
-      // misses certain codes (e.g. inpatient-only procedures billed under Part B).
-      // keyword does a full-text search across all fields and reliably finds them.
-      url += `&keyword=${encodeURIComponent(code)}`;
-    } else if (keyword) {
+      filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
+    }
+    if (keyword) {
       url += `&keyword=${encodeURIComponent(keyword)}`;
     }
     if (state) {
@@ -938,16 +936,7 @@ async function executeSearch() {
       npiPage = 0;
       await executeNpiSearch(0);
     } else {
-      let allRows = await fetchAllRows();
-      // When searching by exact CPT/HCPCS code, keyword fetch may return rows
-      // where the number appears in other fields (NPI, zip, etc.). Filter
-      // client-side to only keep rows whose HCPCS_Cd exactly matches the code.
-      if (currentTab === 'procedure') {
-        const code = document.getElementById('hcpcsCode').value.trim().toUpperCase();
-        if (code) {
-          allRows = allRows.filter(row => (f(row, 'HCPCS_Cd') || '').toUpperCase() === code);
-        }
-      }
+      const allRows = await fetchAllRows();
       allGroupedResults = groupByProvider(allRows);
       renderResults();
     }
@@ -1355,10 +1344,21 @@ function renderResults() {
   const resultsArea = document.getElementById('resultsArea');
 
   if (!allGroupedResults.length) {
+    const searchedCode = currentTab === 'procedure'
+      ? document.getElementById('hcpcsCode').value.trim()
+      : '';
+    const procedureNote = searchedCode
+      ? `<p>No Medicare Part B data found for code <strong>${escapeHtml(searchedCode)}</strong>. This can happen when:</p>
+         <ul style="text-align:left;margin:8px 0 0;padding-left:20px;color:var(--text-2);font-size:0.9em;">
+           <li>The procedure is low-volume and CMS suppresses records with ≤10 beneficiaries per provider</li>
+           <li>The code primarily generates inpatient (Part A) facility claims, not Part B physician claims</li>
+         </ul>
+         <p style="margin-top:8px;">Try searching by <strong>Procedure Description</strong> (e.g. "ankle arthroplasty") to find related codes that do have data.</p>`
+      : `<p>Try broadening your search criteria or double-check the spelling of provider names and procedure codes.</p>`;
     emptyState.innerHTML = `
       <div class="empty-icon">📭</div>
       <h2>No Results Found</h2>
-      <p>Try broadening your search criteria or double-check the spelling of provider names and procedure codes.</p>
+      ${procedureNote}
     `;
     emptyState.style.display = 'flex';
     resultsArea.style.display = 'none';
