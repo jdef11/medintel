@@ -938,7 +938,16 @@ async function executeSearch() {
       npiPage = 0;
       await executeNpiSearch(0);
     } else {
-      const allRows = await fetchAllRows();
+      let allRows = await fetchAllRows();
+      // When searching by exact CPT/HCPCS code, keyword fetch may return rows
+      // where the number appears in other fields (NPI, zip, etc.). Filter
+      // client-side to only keep rows whose HCPCS_Cd exactly matches the code.
+      if (currentTab === 'procedure') {
+        const code = document.getElementById('hcpcsCode').value.trim().toUpperCase();
+        if (code) {
+          allRows = allRows.filter(row => (f(row, 'HCPCS_Cd') || '').toUpperCase() === code);
+        }
+      }
       allGroupedResults = groupByProvider(allRows);
       renderResults();
     }
