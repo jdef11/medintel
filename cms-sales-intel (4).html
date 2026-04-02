@@ -795,9 +795,11 @@ function buildApiUrl(offset = 0) {
     const state = document.getElementById('stateSelectProc').value;
 
     if (code) {
-      filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
-    }
-    if (keyword) {
+      // Use keyword search for CPT/HCPCS codes — the field filter filter[HCPCS_Cd]
+      // misses certain codes (e.g. inpatient-only procedures billed under Part B).
+      // keyword does a full-text search across all fields and reliably finds them.
+      url += `&keyword=${encodeURIComponent(code)}`;
+    } else if (keyword) {
       url += `&keyword=${encodeURIComponent(keyword)}`;
     }
     if (state) {
