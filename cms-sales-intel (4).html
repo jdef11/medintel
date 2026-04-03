@@ -795,7 +795,7 @@ function buildApiUrl(offset = 0) {
     const state = document.getElementById('stateSelectProc').value;
 
     if (code) {
-      filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
+      filters.push(`filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(code)}`);
     }
     if (keyword) {
       url += `&keyword=${encodeURIComponent(keyword)}`;
@@ -820,7 +820,7 @@ function buildApiUrl(offset = 0) {
       filters.push(`filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Type][condition][value]=${encodeURIComponent(specialty)}`);
     }
     if (hcpcs) {
-      filters.push(`filter[HCPCS_Cd]=${encodeURIComponent(hcpcs)}`);
+      filters.push(`filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(hcpcs)}`);
     }
   }
 
@@ -936,7 +936,17 @@ async function executeSearch() {
       npiPage = 0;
       await executeNpiSearch(0);
     } else {
-      const allRows = await fetchAllRows();
+      let allRows = await fetchAllRows();
+      // Safety net: if a specific HCPCS code was entered, discard any rows the
+      // API returned that don't actually match it (guards against filter bypass).
+      const hcpcsFilter = (currentTab === 'procedure')
+        ? document.getElementById('hcpcsCode').value.trim().toUpperCase()
+        : (currentTab === 'geography')
+          ? document.getElementById('hcpcsGeo').value.trim().toUpperCase()
+          : '';
+      if (hcpcsFilter) {
+        allRows = allRows.filter(row => (f(row, 'HCPCS_Cd') || '').toUpperCase() === hcpcsFilter);
+      }
       allGroupedResults = groupByProvider(allRows);
       renderResults();
     }
