@@ -1,0 +1,12 @@
+{
+  "name": "medintel",
+  "version": "1.0.0",
+  "description": "Medical device sales intelligence — CMS Medicare data explorer",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0"
+  }
+}
