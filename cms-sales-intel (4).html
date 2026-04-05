@@ -524,6 +524,224 @@
     margin-bottom: 16px;
   }
 
+  /* ─── CPT BROWSER ─── */
+  .sidebar { overflow-y: auto; }
+  .bundle-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .bundle-chip {
+    padding: 4px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .bundle-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .bundle-chip.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .code-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .code-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+    border-bottom: 1px solid rgba(42,49,64,0.5);
+  }
+  .code-item:last-child { border-bottom: none; }
+  .code-item:hover { background: var(--surface-2); }
+  .code-item.selected { background: var(--accent-dim); }
+  .code-item-code {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--amber);
+    min-width: 46px;
+    padding-top: 1px;
+  }
+  .code-item-desc {
+    font-size: 11px;
+    color: var(--text-2);
+    line-height: 1.4;
+  }
+  .code-item-check {
+    margin-left: auto;
+    color: var(--accent);
+    font-size: 14px;
+    opacity: 0;
+    flex-shrink: 0;
+  }
+  .code-item.selected .code-item-check { opacity: 1; }
+  .selected-codes-area {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .selected-code-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+  }
+  .selected-code-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .selected-code-tag button {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0;
+    line-height: 1;
+    opacity: 0.6;
+  }
+  .selected-code-tag button:hover { opacity: 1; }
+
+  /* ─── TIER BADGES ─── */
+  .tier-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .tier-1 { background: rgba(251,191,36,0.15); color: #FBBF24; border: 1px solid rgba(251,191,36,0.3); }
+  .tier-2 { background: rgba(148,163,184,0.12); color: #94A3B8; border: 1px solid rgba(148,163,184,0.25); }
+  .tier-3 { background: rgba(107,117,133,0.1); color: var(--text-3); border: 1px solid var(--border); }
+
+  /* ─── COMPLEXITY SCORE ─── */
+  .score-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-2);
+  }
+  .score-pill span { color: var(--text); }
+
+  /* ─── FILTER BAR ─── */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .filter-bar label {
+    font-size: 12px;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .filter-bar input[type="number"] {
+    width: 80px;
+    padding: 5px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .filter-bar input[type="number"]:focus { border-color: var(--accent); }
+  .filter-bar select {
+    width: auto;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+  .filter-count {
+    font-size: 12px;
+    color: var(--text-3);
+    margin-left: auto;
+  }
+
+  /* ─── SHAREPOINT MODAL ─── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+    width: 520px;
+    max-width: 95vw;
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+  .modal h3 {
+    font-family: 'Instrument Serif', serif;
+    font-size: 20px;
+    font-weight: 400;
+    margin-bottom: 4px;
+  }
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-3);
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+  }
+  .modal-close:hover { color: var(--text); }
+  .field-map-row {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .field-map-row label {
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  .field-map-row input {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
   /* ─── RESPONSIVE ─── */
   @media (max-width: 900px) {
     .app { flex-direction: column; height: auto; }
@@ -658,6 +876,26 @@
       </div>
     </div>
 
+    <!-- CPT Code Browser -->
+    <div class="sidebar-section" id="cptBrowserSection">
+      <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleCptBrowser()">
+        <div class="section-label" style="margin-bottom:0;">CPT Code Browser</div>
+        <svg id="cptBrowserArrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--text-3);transition:transform 0.2s;flex-shrink:0;"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+      <div id="cptBrowserContent" style="display:none;margin-top:12px;">
+        <input type="text" id="cptSearch" placeholder="Search codes or descriptions..." oninput="filterCptCodes()">
+        <div style="margin-top:10px;">
+          <div class="bundle-chips" id="bundleChips"></div>
+          <div class="code-list" id="codeList"></div>
+        </div>
+        <div class="selected-codes-area" id="selectedCodesArea" style="display:none;">
+          <div class="section-label">Selected Codes <span id="selectedCodesCount" style="color:var(--accent);"></span></div>
+          <div class="selected-code-tags" id="selectedCodeTags"></div>
+          <button onclick="clearSelectedCodes()" style="margin-top:8px;font-size:11px;color:var(--text-3);background:none;border:none;cursor:pointer;padding:0;font-family:inherit;">Clear all codes</button>
+        </div>
+      </div>
+    </div>
+
     <div class="sidebar-section">
       <button class="btn" id="searchBtn" onclick="executeSearch()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
@@ -716,7 +954,7 @@ let activeProxyIndex = 0;
 
 let currentTab = 'provider';
 let currentResults = [];      // raw rows for NPI tab
-let allGroupedResults = [];   // grouped providers for CMS tabs
+let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let displayPage = 0;          // current display page (CMS tabs)
 let npiPage = 0;              // current page for NPI results
 let npiTotal = 0;             // total count for NPI results
@@ -724,6 +962,10 @@ const FETCH_SIZE = 1000;      // rows per CMS API call (API max)
 const DISPLAY_PAGE_SIZE = 20; // providers shown per display page
 const NPI_PAGE_SIZE = 50;     // NPI results per page
 let isLoading = false;
+let selectedCodes = [];        // codes selected in CPT browser
+let minVolumeFilter = 0;       // minimum total services filter
+let currentSortOrder = 'score'; // 'score' | 'payment'
+let activeBundleName = null;   // currently highlighted bundle in CPT browser
 
 // ─── INIT ───
 function init() {
@@ -737,6 +979,8 @@ function init() {
       el.appendChild(opt);
     });
   });
+
+  renderCptBrowser(CPT_BUNDLES[0]); // default to first bundle
 
   // Enter key triggers search
   document.querySelectorAll('input[type="text"]').forEach(input => {
@@ -763,6 +1007,99 @@ function switchTab(tab) {
   clearError();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
+}
+
+// ─── CPT CODE BROWSER ───
+function toggleCptBrowser() {
+  const content = document.getElementById('cptBrowserContent');
+  const arrow = document.getElementById('cptBrowserArrow');
+  const open = content.style.display !== 'none';
+  content.style.display = open ? 'none' : 'block';
+  arrow.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+function renderCptBrowser(bundle) {
+  activeBundleName = bundle ? bundle.name : null;
+
+  // Render bundle chips
+  const chipsEl = document.getElementById('bundleChips');
+  chipsEl.innerHTML = CPT_BUNDLES.map(b => `
+    <button class="bundle-chip ${b.name === activeBundleName ? 'active' : ''}"
+            onclick="renderCptBrowser(CPT_BUNDLES.find(x=>x.name==='${escapeHtml(b.name)}'))">
+      ${escapeHtml(b.name)}
+    </button>
+  `).join('');
+
+  // Render code list for selected bundle
+  const searchTerm = document.getElementById('cptSearch').value.toLowerCase();
+  const codes = bundle ? bundle.codes : CPT_BUNDLES.flatMap(b => b.codes);
+  const filtered = searchTerm
+    ? codes.filter(c => c.code.includes(searchTerm) || c.desc.toLowerCase().includes(searchTerm))
+    : codes;
+
+  const listEl = document.getElementById('codeList');
+  if (!filtered.length) {
+    listEl.innerHTML = `<div style="padding:12px;font-size:12px;color:var(--text-3);text-align:center;">No codes match "${escapeHtml(searchTerm)}"</div>`;
+    return;
+  }
+  listEl.innerHTML = filtered.map(c => `
+    <div class="code-item ${selectedCodes.includes(c.code) ? 'selected' : ''}"
+         onclick="toggleCode('${escapeHtml(c.code)}', '${escapeHtml(c.desc).replace(/'/g, '&#39;')}')">
+      <div class="code-item-code">${escapeHtml(c.code)}</div>
+      <div class="code-item-desc">${escapeHtml(c.desc)}</div>
+      <div class="code-item-check">✓</div>
+    </div>
+  `).join('');
+}
+
+function filterCptCodes() {
+  const searchTerm = document.getElementById('cptSearch').value.toLowerCase();
+  // When searching, show all bundles' codes flattened
+  const bundle = searchTerm ? null : CPT_BUNDLES.find(b => b.name === activeBundleName) || CPT_BUNDLES[0];
+  renderCptBrowser(bundle);
+}
+
+function toggleCode(code, desc) {
+  const idx = selectedCodes.indexOf(code);
+  if (idx === -1) {
+    selectedCodes.push(code);
+  } else {
+    selectedCodes.splice(idx, 1);
+  }
+  updateSelectedCodeTags();
+  // Re-render code list to update checkmarks
+  filterCptCodes();
+}
+
+function clearSelectedCodes() {
+  selectedCodes = [];
+  updateSelectedCodeTags();
+  filterCptCodes();
+}
+
+function updateSelectedCodeTags() {
+  const area = document.getElementById('selectedCodesArea');
+  const tagsEl = document.getElementById('selectedCodeTags');
+  const countEl = document.getElementById('selectedCodesCount');
+
+  if (!selectedCodes.length) {
+    area.style.display = 'none';
+    return;
+  }
+  area.style.display = 'block';
+  countEl.textContent = `(${selectedCodes.length})`;
+
+  // Look up descriptions for display
+  const allCodes = CPT_BUNDLES.flatMap(b => b.codes);
+  tagsEl.innerHTML = selectedCodes.map(code => {
+    const entry = allCodes.find(c => c.code === code);
+    return `
+      <div class="selected-code-tag">
+        ${escapeHtml(code)}
+        <button onclick="toggleCode('${escapeHtml(code)}', '')" title="Remove">×</button>
+      </div>
+    `;
+  }).join('');
 }
 
 // ─── BUILD API URL ───
@@ -892,25 +1229,56 @@ async function corsFetch(url) {
 }
 
 // ─── FETCH ALL ROWS (paginate through CMS API automatically) ───
-async function fetchAllRows() {
-  const btn = document.getElementById('searchBtn');
+
+// Fetch all pages for a single HCPCS code with an optional state filter.
+async function fetchCodeRows(code, stateVal) {
   let allRows = [];
   let offset = 0;
-  const MAX_FETCHES = 3; // cap at 3,000 rows; narrow search if hit
-
+  const MAX_FETCHES = 3;
   for (let i = 0; i < MAX_FETCHES; i++) {
-    if (i > 0) {
-      btn.innerHTML = `<div class="spinner"></div> Loading (${allRows.length.toLocaleString()} rows)...`;
-    }
+    let url = `${BASE_URL}?size=${FETCH_SIZE}&offset=${offset}`;
+    url += `&filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(code)}`;
+    if (stateVal) url += `&filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(stateVal)}`;
+    console.log(`Fetching code ${code}:`, url);
+    const data = await corsFetch(url);
+    if (!data || !data.length) break;
+    allRows = allRows.concat(data);
+    if (data.length < FETCH_SIZE) break;
+    offset += FETCH_SIZE;
+  }
+  return allRows;
+}
+
+async function fetchAllRows() {
+  const btn = document.getElementById('searchBtn');
+
+  // Multi-code mode: fetch each selected code in parallel then merge
+  if (selectedCodes.length > 0) {
+    const stateVal = currentTab === 'geography'
+      ? document.getElementById('stateSelectGeo').value
+      : currentTab === 'procedure'
+        ? document.getElementById('stateSelectProc').value
+        : document.getElementById('stateSelect').value;
+
+    btn.innerHTML = `<div class="spinner"></div> Fetching ${selectedCodes.length} code${selectedCodes.length > 1 ? 's' : ''}...`;
+    const results = await Promise.all(selectedCodes.map(code => fetchCodeRows(code, stateVal)));
+    return results.flat();
+  }
+
+  // Single-code / standard mode
+  let allRows = [];
+  let offset = 0;
+  const MAX_FETCHES = 3;
+  for (let i = 0; i < MAX_FETCHES; i++) {
+    if (i > 0) btn.innerHTML = `<div class="spinner"></div> Loading (${allRows.length.toLocaleString()} rows)...`;
     const url = buildApiUrl(offset);
     console.log('CMS API URL:', url);
     const data = await corsFetch(url);
     if (!data || !data.length) break;
     allRows = allRows.concat(data);
-    if (data.length < FETCH_SIZE) break; // last page
+    if (data.length < FETCH_SIZE) break;
     offset += FETCH_SIZE;
   }
-
   return allRows;
 }
 
@@ -919,13 +1287,15 @@ async function executeSearch() {
   if (isLoading) return;
 
   const hasInput = validateInput();
-  if (!hasInput) {
-    showError('Please enter at least one search criterion.');
+  if (!hasInput && selectedCodes.length === 0) {
+    showError('Please enter at least one search criterion or select CPT codes from the browser.');
     return;
   }
 
   isLoading = true;
   displayPage = 0;
+  minVolumeFilter = 0;
+  currentSortOrder = 'score';
   allGroupedResults = [];
   const btn = document.getElementById('searchBtn');
   btn.disabled = true;
@@ -938,17 +1308,27 @@ async function executeSearch() {
       await executeNpiSearch(0);
     } else {
       let allRows = await fetchAllRows();
-      // Safety net: if a specific HCPCS code was entered, discard any rows the
-      // API returned that don't actually match it (guards against filter bypass).
-      const hcpcsFilter = (currentTab === 'procedure')
-        ? document.getElementById('hcpcsCode').value.trim().toUpperCase()
-        : (currentTab === 'geography')
-          ? document.getElementById('hcpcsGeo').value.trim().toUpperCase()
-          : '';
-      if (hcpcsFilter) {
-        allRows = allRows.filter(row => (f(row, 'HCPCS_Cd') || '').toUpperCase() === hcpcsFilter);
+
+      // Safety net: if codes were selected via CPT browser, verify each row matches
+      // one of them (guards against API filter bypass).
+      if (selectedCodes.length > 0) {
+        const codeSet = new Set(selectedCodes.map(c => c.toUpperCase()));
+        allRows = allRows.filter(row => codeSet.has((f(row, 'HCPCS_Cd') || '').toUpperCase()));
+      } else {
+        // Single-code safety net for manual entry
+        const hcpcsFilter = (currentTab === 'procedure')
+          ? document.getElementById('hcpcsCode').value.trim().toUpperCase()
+          : (currentTab === 'geography')
+            ? document.getElementById('hcpcsGeo').value.trim().toUpperCase()
+            : '';
+        if (hcpcsFilter) {
+          allRows = allRows.filter(row => (f(row, 'HCPCS_Cd') || '').toUpperCase() === hcpcsFilter);
+        }
       }
-      allGroupedResults = groupByProvider(allRows);
+
+      // Group, score, and assign tiers
+      const grouped = groupByProvider(allRows);
+      allGroupedResults = assignScoresAndTiers(grouped);
       renderResults();
     }
   } catch (err) {
@@ -1220,21 +1600,51 @@ function toggleProcedures(npi) {
   }
 }
 
+// ─── FILTER + SORT HELPERS ───
+function getFilteredSorted() {
+  let results = allGroupedResults.filter(g => g.totalServices >= minVolumeFilter);
+  if (currentSortOrder === 'payment') {
+    results = [...results].sort((a, b) => b.totalPayment - a.totalPayment);
+  }
+  // 'score' order is already applied by assignScoresAndTiers
+  return results;
+}
+
+function applyVolumeFilter(val) {
+  minVolumeFilter = parseInt(val, 10) || 0;
+  displayPage = 0;
+  renderResults();
+}
+
+function applySort(order) {
+  currentSortOrder = order;
+  displayPage = 0;
+  renderResults();
+}
+
+// ─── TIER LABEL HELPERS ───
+function tierBadgeHtml(tier) {
+  const labels = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' };
+  return `<span class="tier-badge tier-${tier}">${labels[tier] || ''}</span>`;
+}
+
 function renderResults() {
   const emptyState = document.getElementById('emptyState');
   const resultsArea = document.getElementById('resultsArea');
 
   if (!allGroupedResults.length) {
-    const searchedCode = currentTab === 'procedure'
-      ? document.getElementById('hcpcsCode').value.trim()
-      : '';
+    const searchedCode = selectedCodes.length > 0
+      ? selectedCodes.join(', ')
+      : currentTab === 'procedure'
+        ? document.getElementById('hcpcsCode').value.trim()
+        : '';
     const procedureNote = searchedCode
-      ? `<p>No Medicare Part B data found for code <strong>${escapeHtml(searchedCode)}</strong>. This can happen when:</p>
+      ? `<p>No Medicare Part B data found for code(s) <strong>${escapeHtml(searchedCode)}</strong>. This can happen when:</p>
          <ul style="text-align:left;margin:8px 0 0;padding-left:20px;color:var(--text-2);font-size:0.9em;">
            <li>The procedure is low-volume and CMS suppresses records with ≤10 beneficiaries per provider</li>
            <li>The code primarily generates inpatient (Part A) facility claims, not Part B physician claims</li>
          </ul>
-         <p style="margin-top:8px;">Try searching by <strong>Procedure Description</strong> (e.g. "ankle arthroplasty") to find related codes that do have data.</p>`
+         <p style="margin-top:8px;">Try a broader state filter or related procedure codes.</p>`
       : `<p>Try broadening your search criteria or double-check the spelling of provider names and procedure codes.</p>`;
     emptyState.innerHTML = `
       <div class="empty-icon">📭</div>
@@ -1249,25 +1659,49 @@ function renderResults() {
   emptyState.style.display = 'none';
   resultsArea.style.display = 'block';
 
+  const filtered = getFilteredSorted();
   const start = displayPage * DISPLAY_PAGE_SIZE;
-  const pageProviders = allGroupedResults.slice(start, start + DISPLAY_PAGE_SIZE);
-  const totalPages = Math.ceil(allGroupedResults.length / DISPLAY_PAGE_SIZE);
+  const pageProviders = filtered.slice(start, start + DISPLAY_PAGE_SIZE);
+  const totalPages = Math.ceil(filtered.length / DISPLAY_PAGE_SIZE);
   const hasPrev = displayPage > 0;
   const hasNext = displayPage + 1 < totalPages;
+  const hiddenCount = allGroupedResults.length - filtered.length;
 
   let html = `
     <div class="results-header">
       <div class="results-count">
-        <strong>${allGroupedResults.length}</strong> provider${allGroupedResults.length !== 1 ? 's' : ''} — all rows fetched — sorted by total Medicare payment
+        <strong>${filtered.length}</strong> provider${filtered.length !== 1 ? 's' : ''}
+        ${hiddenCount > 0 ? `<span style="color:var(--text-3)"> (${hiddenCount} below volume threshold)</span>` : ''}
         ${totalPages > 1 ? `<span style="color:var(--text-3)"> · page ${displayPage + 1} of ${totalPages}</span>` : ''}
       </div>
-      <div style="display:flex;gap:8px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="export-btn" onclick="exportCSV()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Export CSV
         </button>
+        <button class="export-btn" onclick="openSharePointModal()" style="border-color:var(--accent);color:var(--accent);">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          SharePoint Export
+        </button>
       </div>
     </div>
+
+    <div class="filter-bar">
+      <label>Min procedures/year:</label>
+      <input type="number" min="0" step="5" value="${minVolumeFilter}"
+             onchange="applyVolumeFilter(this.value)" style="width:72px;">
+      <label style="margin-left:8px;">Sort by:</label>
+      <select onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
+        <option value="score" ${currentSortOrder === 'score' ? 'selected' : ''}>Complexity Score</option>
+        <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
+      </select>
+      <div class="filter-count">
+        <span style="color:var(--amber);">■</span> Tier 1 &nbsp;
+        <span style="color:var(--text-3);">■</span> Tier 2 &nbsp;
+        <span style="color:var(--border);">■</span> Tier 3
+      </div>
+    </div>
+
     <div class="results-grid">
   `;
 
@@ -1283,6 +1717,7 @@ function renderResults() {
             <div class="provider-name">
               ${escapeHtml(g.name)}
               <span class="npi-tag">NPI ${escapeHtml(g.npi)}</span>
+              ${tierBadgeHtml(g.tier)}
             </div>
             <div class="provider-specialty">${escapeHtml(g.specialty)}</div>
             <div class="provider-location">${escapeHtml(g.location)}</div>
@@ -1290,6 +1725,9 @@ function renderResults() {
           <div class="payment-badge">
             <div class="payment-amount">${fmtCurrency(g.totalPayment)}</div>
             <div class="payment-label">Total Medicare Payment</div>
+            <div class="score-pill" style="margin-top:6px;justify-content:flex-end;">
+              Score <span>${g.score}</span>/100
+            </div>
           </div>
         </div>
         <div class="card-metrics">
@@ -1332,11 +1770,10 @@ function renderResults() {
   });
 
   html += `</div>`;
-
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
-      <span class="page-info">Page ${displayPage + 1} of ${totalPages}</span>
+      <span class="page-info">Page ${displayPage + 1} of ${totalPages || 1}</span>
       <button class="page-btn" onclick="nextPage()" ${!hasNext ? 'disabled' : ''}>Next →</button>
     </div>
   `;
@@ -1350,22 +1787,23 @@ function prevPage() {
 }
 
 function nextPage() {
-  if (displayPage + 1 < Math.ceil(allGroupedResults.length / DISPLAY_PAGE_SIZE)) { displayPage++; renderResults(); }
+  const filtered = getFilteredSorted();
+  if (displayPage + 1 < Math.ceil(filtered.length / DISPLAY_PAGE_SIZE)) { displayPage++; renderResults(); }
 }
 
-// ─── EXPORT (grouped by provider) ───
+// ─── EXPORT (standard CSV) ───
 function exportCSV() {
   if (!allGroupedResults.length) return;
-  const grouped = allGroupedResults;
-
+  const data = getFilteredSorted();
   const headers = [
     'NPI','Provider Name','Credentials','Specialty','Entity Type',
     'Street','City','State','Zip',
-    'Total Procedures','Total Services','Total Beneficiaries','Total Medicare Payment',
-    'Top HCPCS Codes'
+    'Tier','Complexity Score',
+    'Total Procedure Codes','Total Services','Total Beneficiaries','Total Medicare Payment',
+    'Avg Payment Per Service','Revision Procedure Types','Date Exported'
   ];
-
-  const rows = grouped.map(g => [
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = data.map(g => [
     g.npi,
     `"${g.name.replace(/"/g,'""')}"`,
     `"${g.credentials.replace(/"/g,'""')}"`,
@@ -1373,21 +1811,110 @@ function exportCSV() {
     g.entityType,
     `"${g.street.replace(/"/g,'""')}"`,
     g.city, g.state, g.zip,
+    `Tier ${g.tier}`,
+    g.score,
     g.procedures.length,
     g.totalServices,
     g.totalBeneficiaries,
     g.totalPayment.toFixed(2),
-    `"${g.procedures.slice(0,10).map(p => p.code).join('; ')}"`
+    (g.totalPayment / (g.totalServices || 1)).toFixed(2),
+    `"${g.procedures.slice(0,10).map(p => p.code).join('; ')}"`,
+    today
   ]);
+  triggerCsvDownload(headers, rows, `cms_medintel_export_${today}.csv`);
+}
 
+function triggerCsvDownload(headers, rows, filename) {
   const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `cms_medintel_export_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ─── SHAREPOINT EXPORT ───
+const SP_FIELDS = [
+  { key: 'npi',            default: 'NPI' },
+  { key: 'name',           default: 'Provider Name' },
+  { key: 'credentials',    default: 'Credentials' },
+  { key: 'specialty',      default: 'Specialty' },
+  { key: 'entityType',     default: 'Entity Type' },
+  { key: 'street',         default: 'Street' },
+  { key: 'city',           default: 'City' },
+  { key: 'state',          default: 'State' },
+  { key: 'zip',            default: 'Zip' },
+  { key: 'tier',           default: 'Priority Tier' },
+  { key: 'score',          default: 'Complexity Score' },
+  { key: 'totalServices',  default: 'Total Services' },
+  { key: 'totalBeneficiaries', default: 'Beneficiaries' },
+  { key: 'totalPayment',   default: 'Total Medicare Payment' },
+  { key: 'procedureCodes', default: 'Revision Procedure Types' },
+  { key: 'dateAdded',      default: 'Date Added' },
+];
+
+function openSharePointModal() {
+  const saved = JSON.parse(localStorage.getItem('sp_field_map') || '{}');
+  const mapEl = document.getElementById('sharepointFieldMap');
+  mapEl.innerHTML = SP_FIELDS.map(field => `
+    <div class="field-map-row">
+      <label>${field.default}</label>
+      <input type="text" id="spf_${field.key}"
+             placeholder="${field.default}"
+             value="${escapeHtml(saved[field.key] || '')}">
+    </div>
+  `).join('');
+  document.getElementById('sharepointModal').style.display = 'flex';
+}
+
+function closeSharePointModal(e) {
+  if (e && e.target !== document.getElementById('sharepointModal')) return;
+  document.getElementById('sharepointModal').style.display = 'none';
+}
+
+function saveAndExportSharePoint() {
+  const mapping = {};
+  SP_FIELDS.forEach(field => {
+    const val = document.getElementById(`spf_${field.key}`).value.trim();
+    if (val) mapping[field.key] = val;
+  });
+  localStorage.setItem('sp_field_map', JSON.stringify(mapping));
+  document.getElementById('sharepointModal').style.display = 'none';
+  exportSharePointCSV(mapping);
+}
+
+function exportSharePointCSV(mapping) {
+  if (!allGroupedResults.length) return;
+  const data = getFilteredSorted();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const headers = SP_FIELDS.map(f => mapping[f.key] || f.default);
+
+  const rows = data.map(g => SP_FIELDS.map(field => {
+    switch (field.key) {
+      case 'npi':            return g.npi;
+      case 'name':           return `"${g.name.replace(/"/g,'""')}"`;
+      case 'credentials':    return `"${g.credentials.replace(/"/g,'""')}"`;
+      case 'specialty':      return `"${g.specialty.replace(/"/g,'""')}"`;
+      case 'entityType':     return g.entityType;
+      case 'street':         return `"${g.street.replace(/"/g,'""')}"`;
+      case 'city':           return g.city;
+      case 'state':          return g.state;
+      case 'zip':            return g.zip;
+      case 'tier':           return `Tier ${g.tier}`;
+      case 'score':          return g.score;
+      case 'totalServices':  return g.totalServices;
+      case 'totalBeneficiaries': return g.totalBeneficiaries;
+      case 'totalPayment':   return g.totalPayment.toFixed(2);
+      case 'procedureCodes': return `"${g.procedures.slice(0,10).map(p => p.code).join('; ')}"`;
+      case 'dateAdded':      return today;
+      default: return '';
+    }
+  }));
+
+  triggerCsvDownload(headers, rows, `medintel_sharepoint_${today}.csv`);
 }
 
 // ─── UTILS ───
@@ -1402,11 +1929,14 @@ function clearError() {
 function clearSearch() {
   document.querySelectorAll('#searchFields input[type="text"]').forEach(i => i.value = '');
   document.querySelectorAll('#searchFields select').forEach(s => s.value = '');
+  clearSelectedCodes();
   currentResults = [];
   allGroupedResults = [];
   displayPage = 0;
   npiPage = 0;
   npiTotal = 0;
+  minVolumeFilter = 0;
+  currentSortOrder = 'score';
   clearError();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
@@ -1414,5 +1944,21 @@ function clearSearch() {
 
 init();
 </script>
+
+<!-- SharePoint Field Mapping Modal -->
+<div id="sharepointModal" class="modal-overlay" style="display:none;" onclick="closeSharePointModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;">
+      <h3>SharePoint Export Configuration</h3>
+      <button class="modal-close" onclick="closeSharePointModal()">×</button>
+    </div>
+    <p style="font-size:13px;color:var(--text-2);margin-bottom:20px;line-height:1.5;">Map MedIntel fields to your SharePoint column names. Leave blank to use the default name. Settings are saved in your browser.</p>
+    <div id="sharepointFieldMap"></div>
+    <div style="display:flex;gap:8px;margin-top:20px;">
+      <button class="btn" onclick="saveAndExportSharePoint()">Save &amp; Export CSV</button>
+      <button class="btn btn-secondary" onclick="closeSharePointModal()">Cancel</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

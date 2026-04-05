@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 const {
   f, getPayment, getAvgCharge, getServices, getBenes,
   getProviderName, getLocation, fmtCurrency, fmtNumber,
-  escapeHtml, groupByProvider
+  escapeHtml, groupByProvider, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -386,5 +386,160 @@ describe('groupByProvider()', () => {
   it('correctly identifies individual entity type', () => {
     const result = groupByProvider([row1]);
     expect(result[0].entityType).toBe('Individual');
+  });
+});
+
+// ─── CPT_BUNDLES ─────────────────────────────────────────────────────────────
+
+describe('CPT_BUNDLES', () => {
+  it('contains at least 4 bundles', () => {
+    expect(CPT_BUNDLES.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('every bundle has a name and non-empty codes array', () => {
+    CPT_BUNDLES.forEach(b => {
+      expect(typeof b.name).toBe('string');
+      expect(b.codes.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('every code entry has a code string and desc string', () => {
+    CPT_BUNDLES.flatMap(b => b.codes).forEach(c => {
+      expect(typeof c.code).toBe('string');
+      expect(c.code.length).toBeGreaterThan(0);
+      expect(typeof c.desc).toBe('string');
+      expect(c.desc.length).toBeGreaterThan(0);
+    });
+  });
+
+  it('Hip Revision bundle includes 27134, 27137, 27138', () => {
+    const hip = CPT_BUNDLES.find(b => b.name === 'Hip Revision');
+    const codes = hip.codes.map(c => c.code);
+    expect(codes).toContain('27134');
+    expect(codes).toContain('27137');
+    expect(codes).toContain('27138');
+  });
+
+  it('Knee Revision bundle includes 27486 and 27487', () => {
+    const knee = CPT_BUNDLES.find(b => b.name === 'Knee Revision');
+    const codes = knee.codes.map(c => c.code);
+    expect(codes).toContain('27486');
+    expect(codes).toContain('27487');
+  });
+
+  it('has no duplicate codes within a single bundle', () => {
+    CPT_BUNDLES.forEach(b => {
+      const codes = b.codes.map(c => c.code);
+      const unique = new Set(codes);
+      expect(unique.size).toBe(codes.length);
+    });
+  });
+});
+
+// ─── computeComplexityScore() ────────────────────────────────────────────────
+
+describe('computeComplexityScore()', () => {
+  const makeProvider = (overrides) => ({
+    procedures: [{ place: 'Facility' }, { place: 'Facility' }],
+    totalServices: 100,
+    totalPayment: 50000,
+    totalBeneficiaries: 80,
+    ...overrides
+  });
+
+  it('returns a number between 0 and 100', () => {
+    const score = computeComplexityScore(makeProvider());
+    expect(score).toBeGreaterThanOrEqual(0);
+    expect(score).toBeLessThanOrEqual(100);
+  });
+
+  it('a provider with more procedure codes scores higher than one with fewer', () => {
+    const fewer = makeProvider({ procedures: [{ place: 'Facility' }] });
+    const more = makeProvider({ procedures: [
+      { place: 'Facility' }, { place: 'Facility' }, { place: 'Facility' },
+      { place: 'Facility' }, { place: 'Facility' }
+    ]});
+    expect(computeComplexityScore(more)).toBeGreaterThan(computeComplexityScore(fewer));
+  });
+
+  it('a higher-volume provider scores higher than a lower-volume one (all else equal)', () => {
+    const low  = makeProvider({ totalServices: 10,  totalPayment: 5000 });
+    const high = makeProvider({ totalServices: 150, totalPayment: 75000 });
+    expect(computeComplexityScore(high)).toBeGreaterThan(computeComplexityScore(low));
+  });
+
+  it('all-facility provider scores higher than all-office provider', () => {
+    const allFacility = makeProvider({ procedures: [{ place: 'Facility' }, { place: 'Facility' }] });
+    const allOffice   = makeProvider({ procedures: [{ place: 'Office' },   { place: 'Office' }] });
+    expect(computeComplexityScore(allFacility)).toBeGreaterThan(computeComplexityScore(allOffice));
+  });
+
+  it('returns 0 for a provider with no data', () => {
+    expect(computeComplexityScore({ procedures: [], totalServices: 0, totalPayment: 0, totalBeneficiaries: 0 })).toBe(0);
+  });
+
+  it('returns an integer (rounded)', () => {
+    const score = computeComplexityScore(makeProvider());
+    expect(score).toBe(Math.round(score));
+  });
+});
+
+// ─── assignScoresAndTiers() ──────────────────────────────────────────────────
+
+describe('assignScoresAndTiers()', () => {
+  const makeProvider = (npi, services, payment, procs) => ({
+    npi,
+    procedures: procs || [{ place: 'Facility' }, { place: 'Facility' }],
+    totalServices: services,
+    totalPayment: payment,
+    totalBeneficiaries: Math.floor(services * 0.8),
+  });
+
+  it('returns the same number of providers', () => {
+    const providers = [makeProvider('A', 100, 50000), makeProvider('B', 50, 20000)];
+    expect(assignScoresAndTiers(providers)).toHaveLength(2);
+  });
+
+  it('adds a score property to every provider', () => {
+    const result = assignScoresAndTiers([makeProvider('A', 100, 50000)]);
+    expect(typeof result[0].score).toBe('number');
+  });
+
+  it('adds a tier property (1, 2, or 3) to every provider', () => {
+    const providers = Array.from({ length: 10 }, (_, i) =>
+      makeProvider(String(i), (i + 1) * 10, (i + 1) * 5000)
+    );
+    const result = assignScoresAndTiers(providers);
+    result.forEach(p => {
+      expect([1, 2, 3]).toContain(p.tier);
+    });
+  });
+
+  it('assigns Tier 1 to the top 20% of providers by score', () => {
+    const providers = Array.from({ length: 10 }, (_, i) =>
+      makeProvider(String(i), (i + 1) * 15, (i + 1) * 7500)
+    );
+    const result = assignScoresAndTiers(providers);
+    const tier1 = result.filter(p => p.tier === 1);
+    expect(tier1.length).toBe(Math.ceil(10 * 0.2));
+  });
+
+  it('the highest-scoring provider is Tier 1', () => {
+    const providers = [
+      makeProvider('low',  10,  5000,  [{ place: 'Office' }]),
+      makeProvider('high', 150, 80000, [{ place: 'Facility' }, { place: 'Facility' }, { place: 'Facility' }, { place: 'Facility' }, { place: 'Facility' }]),
+    ];
+    const result = assignScoresAndTiers(providers);
+    const highProvider = result.find(p => p.npi === 'high');
+    expect(highProvider.tier).toBe(1);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(assignScoresAndTiers([])).toEqual([]);
+  });
+
+  it('single provider is Tier 1', () => {
+    const result = assignScoresAndTiers([makeProvider('A', 100, 50000)]);
+    expect(result[0].tier).toBe(1);
   });
 });

@@ -147,7 +147,96 @@ function groupByProvider(rows) {
   return Object.values(map).sort((a, b) => b.totalPayment - a.totalPayment);
 }
 
+// ─── CPT CODE BUNDLES ───
+// Orthopedic revision procedure codes for the CPT Browser feature.
+const CPT_BUNDLES = [
+  {
+    name: 'Hip Revision',
+    codes: [
+      { code: '27134', desc: 'Revision total hip arthroplasty — both components with or without autograft or allograft' },
+      { code: '27137', desc: 'Revision total hip arthroplasty — acetabular component only, with or without autograft or allograft' },
+      { code: '27138', desc: 'Revision total hip arthroplasty — femoral component only, with or without allograft' },
+      { code: '27132', desc: 'Conversion of previous hip surgery to total hip arthroplasty' },
+    ]
+  },
+  {
+    name: 'Knee Revision',
+    codes: [
+      { code: '27486', desc: 'Revision of total knee arthroplasty — 1 component' },
+      { code: '27487', desc: 'Revision of total knee arthroplasty — femoral and entire tibial component' },
+    ]
+  },
+  {
+    name: 'Shoulder Revision',
+    codes: [
+      { code: '23473', desc: 'Revision of total shoulder arthroplasty — humeral or glenoid component' },
+      { code: '23474', desc: 'Revision of total shoulder arthroplasty — both components' },
+    ]
+  },
+  {
+    name: 'Ankle Revision',
+    codes: [
+      { code: '27700', desc: 'Arthroplasty, ankle' },
+      { code: '27702', desc: 'Arthroplasty, ankle — with implant (total ankle replacement)' },
+      { code: '27703', desc: 'Arthroplasty, ankle — revision of total ankle' },
+    ]
+  },
+  {
+    name: 'Complex Reconstruction',
+    codes: [
+      { code: '27645', desc: 'Radical resection of bone tumor, femur' },
+      { code: '27646', desc: 'Radical resection of bone tumor, tibia and fibula' },
+      { code: '27097', desc: 'Release of hip flexor, open — iliopsoas, adductor' },
+      { code: '23333', desc: 'Removal of foreign body, shoulder; deep' },
+    ]
+  },
+];
+
+// ─── COMPLEXITY SCORE ───
+// Composite 0–100 score indicating how likely a provider is to use custom/revision implants.
+// Weights: code breadth (40pts) + volume (30pts) + avg payment per service (20pts) + facility ratio (10pts)
+function computeComplexityScore(provider) {
+  // Breadth: number of distinct procedure codes billed (capped at 5 for max points)
+  const breadthScore = Math.min(provider.procedures.length / 5, 1) * 40;
+
+  // Volume: total services, capped at 150 for max points
+  const volumeScore = Math.min(provider.totalServices / 150, 1) * 30;
+
+  // Avg payment per service: higher = more complex cases (capped at $5,000)
+  const avgPayment = provider.totalPayment / (provider.totalServices || 1);
+  const paymentScore = Math.min(avgPayment / 5000, 1) * 20;
+
+  // Facility ratio: procedures done in a facility (hospital/ASC) = higher acuity
+  const facilityCount = provider.procedures.filter(p => p.place === 'Facility').length;
+  const facilityRatio = provider.procedures.length > 0 ? facilityCount / provider.procedures.length : 0;
+  const facilityScore = facilityRatio * 10;
+
+  return Math.round(breadthScore + volumeScore + paymentScore + facilityScore);
+}
+
+// ─── TIER ASSIGNMENT ───
+// Scores each provider then assigns tiers based on percentile rank within the result set.
+// Returns a new array with `score` and `tier` (1/2/3) added to each provider object.
+function assignScoresAndTiers(providers) {
+  if (!providers.length) return providers;
+
+  // Score everyone
+  const scored = providers.map(p => ({ ...p, score: computeComplexityScore(p) }));
+
+  // Sort by score descending so tier cutoffs are percentile-based
+  scored.sort((a, b) => b.score - a.score);
+
+  const n = scored.length;
+  const tier1Cutoff = Math.ceil(n * 0.2);
+  const tier2Cutoff = Math.ceil(n * 0.6);
+
+  return scored.map((p, i) => ({
+    ...p,
+    tier: i < tier1Cutoff ? 1 : i < tier2Cutoff ? 2 : 3,
+  }));
+}
+
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }
