@@ -198,6 +198,27 @@ function groupByProcedure(rows) {
   }).sort((a, b) => b.totalServices - a.totalServices);
 }
 
+// ─── BULK CODE PARSING ───
+// Parses a pasted list of HCPCS/CPT codes separated by commas, semicolons,
+// spaces, or newlines. Codes are 4–5 alphanumerics (CPT "27447", category III
+// "0232T", HCPCS Level II "J1885"). Returns { codes, invalid }: valid codes
+// uppercased and deduped in input order, everything else kept for error display.
+function parseCodes(input) {
+  const tokens = String(input || '').split(/[\s,;]+/).filter(Boolean);
+  const codes = [];
+  const invalid = [];
+  const seen = new Set();
+  tokens.forEach(t => {
+    const c = t.toUpperCase();
+    if (/^[A-Z0-9]{4,5}$/.test(c)) {
+      if (!seen.has(c)) { seen.add(c); codes.push(c); }
+    } else {
+      invalid.push(t);
+    }
+  });
+  return { codes, invalid };
+}
+
 // ─── DATASET VERSION DISCOVERY ───
 // data.cms.gov publishes each data year of a dataset as its own version with its
 // own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
@@ -350,5 +371,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }

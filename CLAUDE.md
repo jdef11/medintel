@@ -74,7 +74,7 @@ The app has four tabs, each with different input fields and API targets:
 | Tab | API | Key Inputs | Query Parameter |
 |-----|-----|-----------|----------------|
 | `provider` | CMS Medicare | Name, NPI, specialty, state | `keyword` or `filter[Rndrng_NPI]` |
-| `procedure` | CMS Medicare | HCPCS code, state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
+| `procedure` | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
 | `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
 | `npi` | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
 
@@ -138,6 +138,7 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `fetchWithTimeout(url, ms)` | Fetch wrapper with configurable timeout |
 | `groupByProvider(rows)` | Aggregates raw rows by NPI, sorts by total payment |
 | `groupByProcedure(rows)` | Aggregates raw rows by HCPCS code (procedure tab), sorts by total services |
+| `parseCodes(input)` | Parses bulk-pasted HCPCS/CPT code lists → `{codes, invalid}` (4–5 alphanumerics, deduped, uppercased) |
 | `extractDatasetVersions(catalog, title)` | Parses data.json catalog into `[{year, id}]` version list |
 | `loadDatasetVersions()` | Fetches/caches the catalog, populates the Data Year selector |
 | `getDatasetBase()` | Data-API base URL for the selected data year |
