@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 const {
   f, getPayment, getAvgCharge, getServices, getBenes,
   getProviderName, getLocation, fmtCurrency, fmtNumber,
-  escapeHtml, groupByProvider, groupByProcedure, extractDatasetVersions,
+  escapeHtml, groupByProvider, groupByProcedure, parseCodes, extractDatasetVersions,
   STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -723,5 +723,52 @@ describe('STATE_NAMES', () => {
     expect(Object.keys(STATE_NAMES).length).toBe(52);
     expect(STATE_NAMES.TX).toBe('Texas');
     expect(STATE_NAMES.DC).toBe('District of Columbia');
+  });
+});
+
+// ─── parseCodes() ────────────────────────────────────────────────────────────
+
+describe('parseCodes()', () => {
+  it('parses comma-separated codes', () => {
+    expect(parseCodes('27447, 27130, 22551').codes).toEqual(['27447', '27130', '22551']);
+  });
+
+  it('parses space- and newline-separated codes', () => {
+    expect(parseCodes('27447 27130\n22551\r\nJ1885').codes).toEqual(['27447', '27130', '22551', 'J1885']);
+  });
+
+  it('parses semicolon-separated codes and mixed delimiters', () => {
+    expect(parseCodes('27447;27130, 22551').codes).toEqual(['27447', '27130', '22551']);
+  });
+
+  it('uppercases codes (HCPCS Level II, category III)', () => {
+    expect(parseCodes('j1885 0232t').codes).toEqual(['J1885', '0232T']);
+  });
+
+  it('dedupes while preserving input order', () => {
+    expect(parseCodes('27447, 27130, 27447').codes).toEqual(['27447', '27130']);
+  });
+
+  it('collects invalid tokens without dropping valid ones', () => {
+    const r = parseCodes('27447, knee-replacement, 271309999, 27130');
+    expect(r.codes).toEqual(['27447', '27130']);
+    expect(r.invalid).toEqual(['knee-replacement', '271309999']);
+  });
+
+  it('accepts 4-character codes', () => {
+    expect(parseCodes('0232').codes).toEqual(['0232']);
+  });
+
+  it('rejects tokens shorter than 4 or longer than 5 characters', () => {
+    const r = parseCodes('271 274471');
+    expect(r.codes).toEqual([]);
+    expect(r.invalid).toEqual(['271', '274471']);
+  });
+
+  it('returns empty results for empty/undefined input', () => {
+    expect(parseCodes('').codes).toEqual([]);
+    expect(parseCodes('').invalid).toEqual([]);
+    expect(parseCodes(undefined).codes).toEqual([]);
+    expect(parseCodes('  \n ,, ').codes).toEqual([]);
   });
 });

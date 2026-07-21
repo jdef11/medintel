@@ -70,9 +70,13 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 | Tab | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
 | **Provider** | CMS Medicare | Name, NPI, specialty, state | Payment totals, procedure volumes, beneficiary counts |
-| **Procedure** | CMS Medicare | HCPCS/CPT code or keyword | Results grouped **by procedure** — total services, provider count, payment per code, with a per-provider breakdown and a multi-year volume trend |
+| **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — total services, provider count, payment per code, with a per-provider breakdown and a multi-year volume trend |
 | **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
 | **NPI Lookup** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
+
+### Bulk Code Search
+
+Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into the Procedure tab's code box (or the Geography tab's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Combine with the CPT Browser: browser selections and pasted codes are merged and deduped.
 
 ### Data Year Selector & Yearly Volume Trends
 

@@ -160,7 +160,7 @@
     margin-bottom: 6px;
     font-weight: 500;
   }
-  input[type="text"], select {
+  input[type="text"], textarea, select {
     width: 100%;
     padding: 10px 14px;
     background: var(--bg);
@@ -172,11 +172,12 @@
     outline: none;
     transition: border-color 0.2s;
   }
-  input:focus, select:focus {
+  textarea { resize: vertical; min-height: 42px; line-height: 1.4; }
+  input:focus, textarea:focus, select:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-dim);
   }
-  input::placeholder { color: var(--text-3); }
+  input::placeholder, textarea::placeholder { color: var(--text-3); }
   select { cursor: pointer; }
   select option { background: var(--surface); }
 
@@ -870,8 +871,8 @@
       <!-- Procedure search -->
       <div id="procedureFields" style="display:none;">
         <div class="field">
-          <div class="field-label">HCPCS / CPT Code</div>
-          <input type="text" id="hcpcsCode" placeholder="e.g. 27447 (total knee replacement)">
+          <div class="field-label">HCPCS / CPT Code(s)</div>
+          <textarea id="hcpcsCode" rows="2" placeholder="One or many — e.g. 27447, 27130, 22551 (comma, space, or newline separated)"></textarea>
         </div>
         <div class="field">
           <div class="field-label">Procedure Description (keyword)</div>
@@ -903,7 +904,7 @@
         </div>
         <div class="field">
           <div class="field-label">HCPCS Code Filter</div>
-          <input type="text" id="hcpcsGeo" placeholder="e.g. 27447">
+          <input type="text" id="hcpcsGeo" placeholder="One or many — e.g. 27447, 27130">
         </div>
       </div>
 
@@ -1053,6 +1054,7 @@ let displayPage = 0;          // current display page (CMS tabs)
 let npiPage = 0;              // current page for NPI results
 let npiTotal = 0;             // total count for NPI results
 const FETCH_SIZE = 1000;      // rows per CMS API call (API max)
+const MAX_BULK_CODES = 30;    // cap on codes per bulk search (one parallel fetch each)
 const DISPLAY_PAGE_SIZE = 20; // providers shown per display page
 const NPI_PAGE_SIZE = 50;     // NPI results per page
 let isLoading = false;
@@ -1086,6 +1088,10 @@ function init() {
   // Enter key triggers search
   document.querySelectorAll('input[type="text"]').forEach(input => {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
+  });
+  // Bulk-code textarea: Enter searches, Shift+Enter inserts a newline
+  document.getElementById('hcpcsCode').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); executeSearch(); }
   });
 
   // Discover which data years CMS has published (non-blocking; searches fall
@@ -1343,7 +1349,9 @@ function buildApiUrl(offset = 0) {
     }
   }
   else if (currentTab === 'procedure') {
-    const code = document.getElementById('hcpcsCode').value.trim();
+    // Multi-code searches go through fetchAllRows' per-code path; this URL is
+    // only used when a single code (or none) is entered.
+    const code = parseCodes(document.getElementById('hcpcsCode').value).codes[0] || '';
     const keyword = document.getElementById('hcpcsKeyword').value.trim();
     const state = document.getElementById('stateSelectProc').value;
 
@@ -1361,7 +1369,7 @@ function buildApiUrl(offset = 0) {
     const state = document.getElementById('stateSelectGeo').value;
     const city = document.getElementById('cityInput').value.trim();
     const specialty = document.getElementById('specialtyGeo').value.trim();
-    const hcpcs = document.getElementById('hcpcsGeo').value.trim();
+    const hcpcs = parseCodes(document.getElementById('hcpcsGeo').value).codes[0] || '';
 
     if (state) {
       filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
@@ -1491,19 +1499,22 @@ async function fetchCodeRows(code, stateVal) {
   return allRows;
 }
 
-async function fetchAllRows() {
+async function fetchAllRows(searchCodes = []) {
   const btn = document.getElementById('searchBtn');
 
-  // Multi-code mode: fetch each selected code in parallel then merge
-  if (selectedCodes.length > 0) {
+  // Multi-code mode: fetch each code (typed in bulk and/or selected in the
+  // CPT browser) in parallel then merge. A single typed code stays on the
+  // standard path below so it composes with the keyword filter.
+  const useMultiCode = selectedCodes.length > 0 || searchCodes.length > 1;
+  if (useMultiCode && searchCodes.length > 0) {
     const stateVal = currentTab === 'geography'
       ? document.getElementById('stateSelectGeo').value
       : currentTab === 'procedure'
         ? document.getElementById('stateSelectProc').value
         : document.getElementById('stateSelect').value;
 
-    btn.innerHTML = `<div class="spinner"></div> Fetching ${selectedCodes.length} code${selectedCodes.length > 1 ? 's' : ''}...`;
-    const results = await Promise.all(selectedCodes.map(code => fetchCodeRows(code, stateVal)));
+    btn.innerHTML = `<div class="spinner"></div> Fetching ${searchCodes.length} code${searchCodes.length > 1 ? 's' : ''}...`;
+    const results = await Promise.all(searchCodes.map(code => fetchCodeRows(code, stateVal)));
     return results.flat();
   }
 
@@ -1525,12 +1536,34 @@ async function fetchAllRows() {
 }
 
 // ─── SEARCH ───
+// Codes typed into the active tab's code field (bulk paste supported).
+function getTypedCodes() {
+  const raw = currentTab === 'procedure'
+    ? document.getElementById('hcpcsCode').value
+    : currentTab === 'geography'
+      ? document.getElementById('hcpcsGeo').value
+      : '';
+  return parseCodes(raw);
+}
+
 async function executeSearch() {
   if (isLoading) return;
 
   const hasInput = validateInput();
   if (!hasInput && selectedCodes.length === 0) {
     showError('Please enter at least one search criterion or select CPT codes from the browser.');
+    return;
+  }
+
+  // Bulk code list: typed codes + CPT-browser selections, deduped.
+  const typed = getTypedCodes();
+  if (typed.invalid.length) {
+    showError(`Unrecognized code(s): ${typed.invalid.slice(0, 10).join(', ')}${typed.invalid.length > 10 ? '…' : ''} — HCPCS/CPT codes are 4–5 letters/digits (e.g. 27447, J1885, 0232T). Separate codes with commas, spaces, or new lines.`);
+    return;
+  }
+  const searchCodes = [...new Set([...selectedCodes.map(c => c.toUpperCase()), ...typed.codes])];
+  if (searchCodes.length > MAX_BULK_CODES) {
+    showError(`Too many codes (${searchCodes.length}) — the bulk search limit is ${MAX_BULK_CODES} codes per search. Split the list and run it in batches.`);
     return;
   }
 
@@ -1551,23 +1584,13 @@ async function executeSearch() {
       npiPage = 0;
       await executeNpiSearch(0);
     } else {
-      let allRows = await fetchAllRows();
+      let allRows = await fetchAllRows(searchCodes);
 
-      // Safety net: if codes were selected via CPT browser, verify each row matches
-      // one of them (guards against API filter bypass).
-      if (selectedCodes.length > 0) {
-        const codeSet = new Set(selectedCodes.map(c => c.toUpperCase()));
+      // Safety net: when searching by code(s), verify each row matches one of
+      // them (guards against API filter bypass).
+      if (searchCodes.length > 0) {
+        const codeSet = new Set(searchCodes);
         allRows = allRows.filter(row => codeSet.has((f(row, 'HCPCS_Cd') || '').toUpperCase()));
-      } else {
-        // Single-code safety net for manual entry
-        const hcpcsFilter = (currentTab === 'procedure')
-          ? document.getElementById('hcpcsCode').value.trim().toUpperCase()
-          : (currentTab === 'geography')
-            ? document.getElementById('hcpcsGeo').value.trim().toUpperCase()
-            : '';
-        if (hcpcsFilter) {
-          allRows = allRows.filter(row => (f(row, 'HCPCS_Cd') || '').toUpperCase() === hcpcsFilter);
-        }
       }
 
       // Totals are computed from the rows we could fetch; flag when the fetch
@@ -2581,7 +2604,7 @@ function clearError() {
 }
 
 function clearSearch() {
-  document.querySelectorAll('#searchFields input[type="text"]').forEach(i => i.value = '');
+  document.querySelectorAll('#searchFields input[type="text"], #searchFields textarea').forEach(i => i.value = '');
   document.querySelectorAll('#searchFields select').forEach(s => s.value = '');
   clearSelectedCodes();
   currentResults = [];
