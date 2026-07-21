@@ -77,7 +77,7 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 
 ### Market TAM Tab
 
-Size a device market from its procedure codes. Paste the code family, set two assumptions — Medicare FFS share of all cases (%) and your average device revenue per procedure — and get: national Medicare FFS procedure volume (latest year + full multi-year trend), modeled total procedures across all payers, modeled annual device TAM, and the top surgeons by volume. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
+Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and get: national Medicare FFS procedure volume (latest year + full multi-year trend), modeled total US procedures across all payers, modeled addressable case count, modeled total US TAM, and the top surgeons by volume. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
 
 ### Bulk Code Search
 
