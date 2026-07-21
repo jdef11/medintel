@@ -1184,6 +1184,13 @@ function dataYearLabel() {
   return 'Latest data year';
 }
 
+// Compact year label for card metric labels ("CY 2024" without the "(latest)" suffix).
+function dataYearShort() {
+  if (selectedYear) return `CY ${selectedYear}`;
+  if (datasetVersions.provider.length) return `CY ${datasetVersions.provider[0].year}`;
+  return 'latest year';
+}
+
 // Raw year value for CSV exports.
 function dataYearValue() {
   if (selectedYear) return selectedYear;
@@ -2016,7 +2023,7 @@ function renderResults() {
           </div>
           <div class="payment-badge">
             <div class="payment-amount">${fmtCurrency(g.totalPayment)}</div>
-            <div class="payment-label">Total Medicare Payment</div>
+            <div class="payment-label">Total Medicare Payment · ${escapeHtml(dataYearShort())}</div>
             <div class="score-pill" style="margin-top:6px;justify-content:flex-end;">
               Score <span>${g.score}</span>/100
             </div>
@@ -2025,7 +2032,7 @@ function renderResults() {
         <div class="card-metrics">
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalServices)}</div>
-            <div class="metric-label">Total Services</div>
+            <div class="metric-label">Total Services · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
@@ -2040,6 +2047,10 @@ function renderResults() {
             <div class="metric-label">Avg Payment / Service</div>
           </div>
         </div>
+        <button class="procedures-toggle" id="ptrend-btn-${g.npi}" onclick="toggleProviderTrend('${escapeHtml(g.npi)}')">
+          <span class="arrow">▼</span> Volume trend by year
+        </button>
+        <div class="procedures-list" id="ptrend-${g.npi}"></div>
         <button class="procedures-toggle" id="proc-btn-${g.npi}" onclick="toggleProcedures('${g.npi}')">
           <span class="arrow">▼</span> ${g.procedures.length} procedure${g.procedures.length !== 1 ? 's' : ''} — top: ${topProcs || 'n/a'}
         </button>
@@ -2175,11 +2186,11 @@ function renderProcedureResults() {
               <span class="npi-tag">HCPCS</span>
             </div>
             <div class="provider-specialty">${escapeHtml(g.desc || 'No description available')}</div>
-            <div class="provider-location">${stateVal ? escapeHtml(STATE_NAMES[stateVal] || stateVal) : 'All states'} · ${escapeHtml(dataYearLabel())}</div>
+            <div class="provider-location">${stateVal ? escapeHtml(STATE_NAMES[stateVal] || stateVal) : 'All states'} · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="payment-badge">
             <div class="payment-amount">${fmtNumber(g.totalServices)}</div>
-            <div class="payment-label">Total Services (${escapeHtml(dataYearLabel())})</div>
+            <div class="payment-label">Total Services · ${escapeHtml(dataYearShort())}</div>
           </div>
         </div>
         <div class="card-metrics">
@@ -2264,13 +2275,7 @@ async function toggleTrend(code) {
 }
 
 async function fetchTrend(code) {
-  if (!datasetVersions.geography.length) {
-    await loadDatasetVersions(); // retry catalog discovery on demand
-  }
-  const versions = datasetVersions.geography;
-  if (!versions.length) {
-    throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
-  }
+  const versions = await requireVersions('geography');
 
   const stateVal = document.getElementById('stateSelectProc').value;
   const cacheKey = `${code.toUpperCase()}|${stateVal}`;
@@ -2296,6 +2301,22 @@ async function fetchTrend(code) {
     }
   }));
 
+  return finishTrend(results, cacheKey);
+}
+
+// Ensure the year → dataset-version list for a dataset kind is loaded.
+async function requireVersions(kind) {
+  if (!datasetVersions[kind].length) {
+    await loadDatasetVersions(); // retry catalog discovery on demand
+  }
+  const versions = datasetVersions[kind];
+  if (!versions.length) {
+    throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
+  }
+  return versions;
+}
+
+function finishTrend(results, cacheKey) {
   const trend = results.sort((a, b) => a.year - b.year);
   if (!trend.some(t => t.ok)) {
     throw new Error('Could not fetch yearly volume from the CMS API — please try again.');
@@ -2304,16 +2325,10 @@ async function fetchTrend(code) {
   return trend;
 }
 
-function renderTrend(box, code, trend) {
-  const stateVal = document.getElementById('stateSelectProc').value;
-  const scope = stateVal ? `${STATE_NAMES[stateVal] || stateVal}` : 'National';
+function renderTrendChart(box, captionHtml, trend) {
   const max = Math.max(...trend.map(t => t.services), 1);
-
   box.innerHTML = `
-    <div class="trend-caption">
-      ${escapeHtml(scope)} Medicare FFS service volume for <strong style="color:var(--amber);">${escapeHtml(code)}</strong> by calendar year
-      (CMS “by Geography &amp; Service” dataset — records with ≤10 beneficiaries are suppressed).
-    </div>
+    <div class="trend-caption">${captionHtml}</div>
     <div class="trend-chart">
       <div class="trend-row proc-row-header" style="border-bottom:1px solid var(--border);">
         <div>Year</div><div></div><div style="text-align:right;">Services</div><div style="text-align:right;">Medicare Paid</div>
@@ -2331,6 +2346,71 @@ function renderTrend(box, code, trend) {
         </div>`).join('')}
     </div>
   `;
+}
+
+function renderTrend(box, code, trend) {
+  const stateVal = document.getElementById('stateSelectProc').value;
+  const scope = stateVal ? `${STATE_NAMES[stateVal] || stateVal}` : 'National';
+  renderTrendChart(box, `
+      ${escapeHtml(scope)} Medicare FFS service volume for <strong style="color:var(--amber);">${escapeHtml(code)}</strong> by calendar year
+      (CMS “by Geography &amp; Service” dataset — records with ≤10 beneficiaries are suppressed).
+  `, trend);
+}
+
+// ─── PROVIDER VOLUME TREND (per-NPI break out by year) ───
+// Fetches one provider's rows from each data year of the "by Provider and
+// Service" dataset and totals services/payment per year.
+async function toggleProviderTrend(npi) {
+  const key = codeKey(npi);
+  const box = document.getElementById(`ptrend-${key}`);
+  const btn = document.getElementById(`ptrend-btn-${key}`);
+  if (!box || !btn) return;
+  const opening = !box.classList.contains('open');
+  box.classList.toggle('open');
+  btn.classList.toggle('open');
+  if (!opening || box.dataset.loaded) return;
+
+  box.innerHTML = '<div class="trend-caption"><div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px;"></div>Loading yearly volume from CMS…</div>';
+  try {
+    const trend = await fetchProviderTrend(npi);
+    renderTrendChart(box, `
+      Medicare FFS totals billed under NPI <strong style="color:var(--amber);">${escapeHtml(npi)}</strong> by calendar year, across all procedure codes
+      (records with ≤10 beneficiaries are suppressed).
+    `, trend);
+    box.dataset.loaded = '1';
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = `<div class="trend-caption" style="color:var(--red);">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function fetchProviderTrend(npi) {
+  const versions = await requireVersions('provider');
+  const cacheKey = `npi:${npi}`;
+  if (trendCache[cacheKey]) return trendCache[cacheKey];
+
+  const results = await Promise.all(versions.map(async v => {
+    try {
+      let services = 0, payment = 0;
+      let offset = 0;
+      // A provider is one row per HCPCS+place-of-service; large organizations
+      // can exceed one page, so paginate a couple of times.
+      for (let i = 0; i < 3; i++) {
+        const url = `${DATA_API_ROOT}/${v.id}/data?size=${FETCH_SIZE}&offset=${offset}` +
+                    `&filter[Rndrng_NPI]=${encodeURIComponent(npi)}`;
+        const rows = await corsFetch(url);
+        rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
+        if (rows.length < FETCH_SIZE) break;
+        offset += FETCH_SIZE;
+      }
+      return { year: v.year, services, payment, ok: true };
+    } catch (e) {
+      console.log(`Provider trend fetch failed for CY ${v.year}:`, e.message);
+      return { year: v.year, services: 0, payment: 0, ok: false };
+    }
+  }));
+
+  return finishTrend(results, cacheKey);
 }
 
 // ─── EXPORT PROCEDURE CSV ───
