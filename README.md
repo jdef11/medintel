@@ -81,6 +81,8 @@ Medicare claims data is published one calendar year at a time. MedIntel grounds 
 - A **Data Year** selector (sidebar) lets you run any CMS search against a specific calendar year — the list of available years is discovered live from the official [data.cms.gov catalog](https://data.cms.gov/data.json) and cached in your browser.
 - Every CMS results page shows a **year badge** (e.g. `CY 2023 · Medicare FFS`) so you always know which year you're looking at; NPI Lookup results are labeled as a live registry snapshot instead, since NPPES has no historical years.
 - On Procedure results, **Volume trend by year** expands a chart of national (or state-level, if a state filter is set) total service volume and Medicare payment for that code across every published data year — ideal for understanding whether a procedure's volume is growing or shrinking.
+- Provider and Geography results have the same **Volume trend by year** panel per provider card — the provider's total billed services and Medicare payment per calendar year, across all procedure codes.
+- Provider cards stamp their headline metrics with the data year (e.g. `Total Services · CY 2024`).
 - CSV and SharePoint exports include a **Data Year** column.
 
 ### SharePoint Export

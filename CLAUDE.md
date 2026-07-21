@@ -141,7 +141,8 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `extractDatasetVersions(catalog, title)` | Parses data.json catalog into `[{year, id}]` version list |
 | `loadDatasetVersions()` | Fetches/caches the catalog, populates the Data Year selector |
 | `getDatasetBase()` | Data-API base URL for the selected data year |
-| `fetchTrend(code)` / `renderTrend(...)` | Multi-year volume trend via the Geography & Service dataset |
+| `fetchTrend(code)` / `renderTrend(...)` | Multi-year procedure volume trend via the Geography & Service dataset |
+| `fetchProviderTrend(npi)` / `toggleProviderTrend(npi)` | Multi-year per-NPI totals via the Provider & Service dataset versions |
 | `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab) |
 | `renderResults()` | Renders Medicare provider cards to DOM |
 | `renderNpiResults()` | Renders NPPES lookup cards to DOM |
