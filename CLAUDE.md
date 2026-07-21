@@ -74,7 +74,7 @@ The app has four tabs, each with different input fields and API targets:
 | Tab | API | Key Inputs | Query Parameter |
 |-----|-----|-----------|----------------|
 | `provider` | CMS Medicare | Name, NPI, specialty, state | `keyword` or `filter[Rndrng_NPI]` |
-| `procedure` | CMS Medicare | HCPCS code, state | `filter[HCPCS_Cd]` |
+| `procedure` | CMS Medicare | HCPCS code, state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
 | `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
 | `npi` | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
 
@@ -94,6 +94,14 @@ GET https://data.cms.gov/data-api/v1/dataset/92396110-2aed-4d63-a6a2-5d6207d46a2
 - Results are grouped client-side by `Rndrng_NPI`
 
 **Important:** CMS field names include both underscore-spaced and space-spaced variants in different API responses. The `f(row, fieldName)` helper handles this by trying both `fieldName` and `fieldName.replace(/_/g, ' ')`.
+
+### CMS Medicare Physician & Other Practitioners — by Geography and Service
+
+Pre-aggregated national/state totals per HCPCS code — used by the procedure **volume trend** panel (one small request per data year). States are identified by full name (`Rndrng_Prvdr_Geo_Desc`); use the `STATE_NAMES` map to convert abbreviations.
+
+### Dataset versions / Data Year selector
+
+CMS publishes each calendar year of a dataset as its own version with its own UUID. The app discovers the year→UUID mapping at runtime from the official catalog (`https://data.cms.gov/data.json`) via `extractDatasetVersions()`, caches it in `localStorage` (`medintel_dataset_versions_v1`, 7-day TTL), and routes searches through `getDatasetBase()`. If the catalog is unreachable, searches fall back to the hardcoded latest-year `DATASET_ID`.
 
 ### NPPES NPI Registry
 
@@ -129,6 +137,12 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `corsFetch(url)` | CORS-aware fetch — tries direct then cycles proxies |
 | `fetchWithTimeout(url, ms)` | Fetch wrapper with configurable timeout |
 | `groupByProvider(rows)` | Aggregates raw rows by NPI, sorts by total payment |
+| `groupByProcedure(rows)` | Aggregates raw rows by HCPCS code (procedure tab), sorts by total services |
+| `extractDatasetVersions(catalog, title)` | Parses data.json catalog into `[{year, id}]` version list |
+| `loadDatasetVersions()` | Fetches/caches the catalog, populates the Data Year selector |
+| `getDatasetBase()` | Data-API base URL for the selected data year |
+| `fetchTrend(code)` / `renderTrend(...)` | Multi-year volume trend via the Geography & Service dataset |
+| `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab) |
 | `renderResults()` | Renders Medicare provider cards to DOM |
 | `renderNpiResults()` | Renders NPPES lookup cards to DOM |
 | `toggleProcedures(npi)` | Expands/collapses procedure detail table for a card |
@@ -218,7 +232,8 @@ No environment variables, no server-side configuration, no database.
 
 - **Medicare Fee-for-Service only** — excludes Medicare Advantage, Medicaid, private insurance
 - **Privacy redaction** — provider+procedure combinations with ≤10 beneficiaries are excluded
-- **Page-level grouping** — `groupByProvider()` groups within the current 50-row page only; a provider with many procedures across pages will appear split
+- **Fetch-cap grouping** — `groupByProvider()`/`groupByProcedure()` aggregate over the rows actually fetched (up to 3,000); when the cap is hit the UI shows a partial-totals warning (`resultsCapped`)
+- **Annual data** — CMS claims datasets are per calendar year; the Data Year selector switches dataset versions, and NPPES (NPI tab) is a live snapshot with no history
 - **CMS API max** — returns up to 1,000 rows per request; app fetches 50 at a time
 
 ---

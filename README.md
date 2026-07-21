@@ -70,9 +70,18 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 | Tab | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
 | **Provider** | CMS Medicare | Name, NPI, specialty, state | Payment totals, procedure volumes, beneficiary counts |
-| **Procedure** | CMS Medicare | HCPCS/CPT code or keyword | All providers billing that code, ranked by score |
+| **Procedure** | CMS Medicare | HCPCS/CPT code or keyword | Results grouped **by procedure** — total services, provider count, payment per code, with a per-provider breakdown and a multi-year volume trend |
 | **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
 | **NPI Lookup** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
+
+### Data Year Selector & Yearly Volume Trends
+
+Medicare claims data is published one calendar year at a time. MedIntel grounds every result in its time period:
+
+- A **Data Year** selector (sidebar) lets you run any CMS search against a specific calendar year — the list of available years is discovered live from the official [data.cms.gov catalog](https://data.cms.gov/data.json) and cached in your browser.
+- Every CMS results page shows a **year badge** (e.g. `CY 2023 · Medicare FFS`) so you always know which year you're looking at; NPI Lookup results are labeled as a live registry snapshot instead, since NPPES has no historical years.
+- On Procedure results, **Volume trend by year** expands a chart of national (or state-level, if a state filter is set) total service volume and Medicare payment for that code across every published data year — ideal for understanding whether a procedure's volume is growing or shrinking.
+- CSV and SharePoint exports include a **Data Year** column.
 
 ### SharePoint Export
 

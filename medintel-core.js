@@ -147,6 +147,118 @@ function groupByProvider(rows) {
   return Object.values(map).sort((a, b) => b.totalPayment - a.totalPayment);
 }
 
+// ─── GROUP BY PROCEDURE ───
+// Groups raw CMS rows by HCPCS code (one card per procedure, not per physician).
+// Each group aggregates total services, payment, and beneficiaries across all
+// providers in the fetched rows, and keeps a provider breakdown sorted by volume.
+function groupByProcedure(rows) {
+  const map = {};
+  rows.forEach(row => {
+    const code = (f(row, 'HCPCS_Cd') || 'unknown').toUpperCase();
+    if (!map[code]) {
+      map[code] = {
+        code,
+        desc: f(row, 'HCPCS_Desc') || '',
+        drugIndicator: f(row, 'HCPCS_Drug_Ind') || '',
+        totalServices: 0,
+        totalPayment: 0,
+        totalBeneficiaries: 0,
+        providerMap: {}
+      };
+    }
+    const g = map[code];
+    if (!g.desc) g.desc = f(row, 'HCPCS_Desc') || '';
+    const pymt = getPayment(row);
+    const srvcs = getServices(row);
+    const benes = getBenes(row);
+    g.totalServices += srvcs;
+    g.totalPayment += pymt;
+    g.totalBeneficiaries += benes;
+
+    const npi = f(row, 'Rndrng_NPI') || 'unknown';
+    if (!g.providerMap[npi]) {
+      g.providerMap[npi] = {
+        npi,
+        name: getProviderName(row),
+        specialty: f(row, 'Rndrng_Prvdr_Type') || '',
+        location: getLocation(row),
+        state: f(row, 'Rndrng_Prvdr_State_Abrvtn') || '',
+        services: 0,
+        payment: 0
+      };
+    }
+    g.providerMap[npi].services += srvcs;
+    g.providerMap[npi].payment += pymt;
+  });
+
+  return Object.values(map).map(g => {
+    const providers = Object.values(g.providerMap).sort((a, b) => b.services - a.services);
+    const { providerMap, ...rest } = g;
+    return { ...rest, providers, providerCount: providers.length };
+  }).sort((a, b) => b.totalServices - a.totalServices);
+}
+
+// ─── DATASET VERSION DISCOVERY ───
+// data.cms.gov publishes each data year of a dataset as its own version with its
+// own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
+// lists them: each matching dataset/distribution carries a `temporal` range
+// ("2019-01-01/2019-12-31") and an API URL containing the version UUID.
+// This parses that catalog into [{ year, id }] sorted newest-first.
+function extractDatasetVersions(catalog, title) {
+  const normalize = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const wanted = normalize(title);
+  const datasets = (catalog && Array.isArray(catalog.dataset)) ? catalog.dataset : [];
+  const uuidFromUrl = url => {
+    const m = String(url || '').match(/data-api\/v1\/dataset\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+    return m ? m[1] : null;
+  };
+  const yearFrom = (...candidates) => {
+    for (const c of candidates) {
+      const m = String(c || '').match(/(20\d{2})/);
+      if (m) return parseInt(m[1], 10);
+    }
+    return null;
+  };
+
+  const byYear = {};
+  const record = (year, id) => {
+    if (year && id && !byYear[year]) byYear[year] = { year, id };
+  };
+
+  datasets.forEach(ds => {
+    if (normalize(ds.title) !== wanted) return;
+    // Distribution-level entries (one dataset entry, one distribution per year)
+    (ds.distribution || []).forEach(dist => {
+      const id = uuidFromUrl(dist.accessURL) || uuidFromUrl(dist.downloadURL);
+      const year = yearFrom(dist.temporal, dist.title, dist.description);
+      record(year, id);
+    });
+    // Dataset-level entries (one dataset entry per year, same title)
+    const dsId = uuidFromUrl(ds.identifier) || uuidFromUrl(ds.accessURL);
+    const dsYear = yearFrom(ds.temporal, ds.modified && null); // only temporal is a reliable year signal
+    record(dsYear, dsId);
+  });
+
+  return Object.values(byYear).sort((a, b) => b.year - a.year);
+}
+
+// ─── STATE NAMES ───
+// The "by Geography and Service" dataset identifies states by full name
+// (Rndrng_Prvdr_Geo_Desc), not abbreviation — this maps between the two.
+const STATE_NAMES = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California',
+  CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia',
+  HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa',
+  KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri',
+  MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey',
+  NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio',
+  OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina',
+  SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont',
+  VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+  DC: 'District of Columbia', PR: 'Puerto Rico'
+};
+
 // ─── CPT CODE BUNDLES ───
 // Orthopedic revision procedure codes for the CPT Browser feature.
 const CPT_BUNDLES = [
@@ -238,5 +350,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }
