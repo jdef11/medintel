@@ -128,6 +128,7 @@
   /* ─── TABS ─── */
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
     background: var(--bg);
     border-radius: var(--radius-sm);
@@ -841,6 +842,7 @@
         <button class="tab active" data-tab="provider" onclick="switchTab('provider')">Provider</button>
         <button class="tab" data-tab="procedure" onclick="switchTab('procedure')">Procedure</button>
         <button class="tab" data-tab="geography" onclick="switchTab('geography')">Geography</button>
+        <button class="tab" data-tab="tam" onclick="switchTab('tam')">Market TAM</button>
         <button class="tab" data-tab="npi" onclick="switchTab('npi')">NPI Lookup</button>
       </div>
     </div>
@@ -905,6 +907,27 @@
         <div class="field">
           <div class="field-label">HCPCS Code Filter</div>
           <input type="text" id="hcpcsGeo" placeholder="One or many — e.g. 27447, 27130">
+        </div>
+      </div>
+
+      <!-- Market TAM -->
+      <div id="tamFields" style="display:none;">
+        <div class="field">
+          <div class="field-label">HCPCS / CPT Code(s) defining the market</div>
+          <textarea id="tamCodes" rows="3" placeholder="Paste the code family — e.g. 62140, 62141, 62142, 62143, 62145, 62146, 62147"></textarea>
+        </div>
+        <div class="field">
+          <div class="field-label">Medicare FFS share of all cases (%)</div>
+          <input type="text" id="tamFfsShare" placeholder="e.g. 40" value="40">
+        </div>
+        <div class="field">
+          <div class="field-label">Avg device revenue per procedure ($, optional)</div>
+          <input type="text" id="tamAsp" placeholder="e.g. 9500 — your implant ASP">
+        </div>
+        <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px;">
+          <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
+            <strong style="color:var(--accent);">TAM model</strong> — National FFS procedure volume comes from CMS claims. Total market = FFS volume ÷ FFS share. Device TAM = total volume × your ASP. Hospitals' implant spend is <em>not</em> in any public CMS file (it's bundled into DRG payments), so ASP is your input.
+          </div>
         </div>
       </div>
 
@@ -1046,6 +1069,7 @@ let currentTab = 'provider';
 let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
+let tamResults = null;        // Market TAM tab results ({codes, trends, surgeons, descMap})
 let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
 let datasetVersions = { provider: [], geography: [] }; // { year, id } newest-first
 let selectedYear = '';        // '' = latest available year
@@ -1089,9 +1113,15 @@ function init() {
   document.querySelectorAll('input[type="text"]').forEach(input => {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
   });
-  // Bulk-code textarea: Enter searches, Shift+Enter inserts a newline
-  document.getElementById('hcpcsCode').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); executeSearch(); }
+  // Bulk-code textareas: Enter searches, Shift+Enter inserts a newline
+  ['hcpcsCode', 'tamCodes'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); executeSearch(); }
+    });
+  });
+  // TAM assumptions re-model instantly without refetching
+  ['tamFfsShare', 'tamAsp'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => { if (tamResults) renderTamResults(); });
   });
 
   // Discover which data years CMS has published (non-blocking; searches fall
@@ -1213,15 +1243,18 @@ function switchTab(tab) {
   document.getElementById('providerFields').style.display = tab === 'provider' ? 'block' : 'none';
   document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
   document.getElementById('geographyFields').style.display = tab === 'geography' ? 'block' : 'none';
+  document.getElementById('tamFields').style.display = tab === 'tam' ? 'block' : 'none';
   document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
 
-  // The NPPES registry is a live snapshot with no historical years — the data
-  // year selector only applies to the CMS claims tabs.
-  document.getElementById('dataPeriodSection').style.display = tab === 'npi' ? 'none' : 'block';
+  // The NPPES registry is a live snapshot with no historical years, and the
+  // TAM view is inherently multi-year — the data year selector only applies
+  // to the single-year CMS claims tabs.
+  document.getElementById('dataPeriodSection').style.display = (tab === 'npi' || tab === 'tam') ? 'none' : 'block';
 
   currentResults = [];
   allGroupedResults = [];
   procedureGroups = [];
+  tamResults = null;
   displayPage = 0;
   npiPage = 0;
   npiTotal = 0;
@@ -1542,7 +1575,9 @@ function getTypedCodes() {
     ? document.getElementById('hcpcsCode').value
     : currentTab === 'geography'
       ? document.getElementById('hcpcsGeo').value
-      : '';
+      : currentTab === 'tam'
+        ? document.getElementById('tamCodes').value
+        : '';
   return parseCodes(raw);
 }
 
@@ -1583,6 +1618,8 @@ async function executeSearch() {
     if (currentTab === 'npi') {
       npiPage = 0;
       await executeNpiSearch(0);
+    } else if (currentTab === 'tam') {
+      await executeTamSearch(searchCodes);
     } else {
       let allRows = await fetchAllRows(searchCodes);
 
@@ -1866,6 +1903,9 @@ function validateInput() {
   if (currentTab === 'geography') {
     return document.getElementById('stateSelectGeo').value ||
            document.getElementById('cityInput').value.trim();
+  }
+  if (currentTab === 'tam') {
+    return document.getElementById('tamCodes').value.trim();
   }
   if (currentTab === 'npi') {
     return document.getElementById('npiFirstName').value.trim() ||
@@ -2297,10 +2337,12 @@ async function toggleTrend(code) {
   }
 }
 
-async function fetchTrend(code) {
+async function fetchTrend(code, stateOverride = null) {
   const versions = await requireVersions('geography');
 
-  const stateVal = document.getElementById('stateSelectProc').value;
+  const stateVal = stateOverride !== null
+    ? stateOverride
+    : document.getElementById('stateSelectProc').value;
   const cacheKey = `${code.toUpperCase()}|${stateVal}`;
   if (trendCache[cacheKey]) return trendCache[cacheKey];
 
@@ -2434,6 +2476,234 @@ async function fetchProviderTrend(npi) {
   }));
 
   return finishTrend(results, cacheKey);
+}
+
+// ─── MARKET TAM ───
+// Sizes a market defined by a set of HCPCS/CPT codes:
+//   1. National FFS procedure volume per code per year (Geography & Service dataset)
+//   2. Modeled total volume and device TAM from user assumptions (FFS share, ASP)
+//   3. Top surgeons by volume (latest-year Provider & Service dataset)
+async function executeTamSearch(codes) {
+  const btn = document.getElementById('searchBtn');
+
+  btn.innerHTML = `<div class="spinner"></div> Fetching national volume (${codes.length} code${codes.length > 1 ? 's' : ''})...`;
+  const trends = await Promise.all(codes.map(code =>
+    fetchTrend(code, '')
+      .then(trend => ({ code, trend }))
+      .catch(e => ({ code, trend: null, error: e.message }))
+  ));
+
+  btn.innerHTML = '<div class="spinner"></div> Finding top surgeons...';
+  const rowArrays = await Promise.all(codes.map(code => fetchCodeRows(code, '').catch(() => [])));
+  const codeSet = new Set(codes);
+  const rows = rowArrays.flat().filter(r => codeSet.has((f(r, 'HCPCS_Cd') || '').toUpperCase()));
+
+  const descMap = {};
+  rows.forEach(r => {
+    const c = (f(r, 'HCPCS_Cd') || '').toUpperCase();
+    if (!descMap[c]) descMap[c] = f(r, 'HCPCS_Desc') || '';
+  });
+
+  const surgeons = groupByProvider(rows).sort((a, b) => b.totalServices - a.totalServices);
+
+  if (!trends.some(t => t.trend) && !surgeons.length) {
+    tamResults = null;
+    procedureGroups = []; // reuse the no-results empty state
+    renderNoTamResults(codes);
+    return;
+  }
+
+  tamResults = { codes, trends, surgeons, descMap };
+  renderTamResults();
+}
+
+function renderNoTamResults(codes) {
+  const emptyState = document.getElementById('emptyState');
+  emptyState.innerHTML = `
+    <div class="empty-icon">📭</div>
+    <h2>No Market Data Found</h2>
+    <p>No Medicare FFS data found for code(s) <strong>${escapeHtml(codes.join(', '))}</strong>. Check the codes, or note that inpatient-only procedures still appear here via the surgeon's professional claim — codes with no Part B billing at all cannot be sized from this dataset.</p>
+  `;
+  emptyState.style.display = 'flex';
+  document.getElementById('resultsArea').style.display = 'none';
+}
+
+// Latest year (with data) entry of a per-code trend.
+function latestOkEntry(trend) {
+  if (!trend) return null;
+  for (let i = trend.length - 1; i >= 0; i--) {
+    if (trend[i].ok) return trend[i];
+  }
+  return null;
+}
+
+function tamAssumptions() {
+  let share = parseFloat(document.getElementById('tamFfsShare').value);
+  if (isNaN(share) || share <= 0 || share > 100) share = 40;
+  const aspRaw = parseFloat(String(document.getElementById('tamAsp').value).replace(/[$,]/g, ''));
+  const asp = isNaN(aspRaw) || aspRaw <= 0 ? null : aspRaw;
+  return { share, asp };
+}
+
+function renderTamResults() {
+  if (!tamResults) return;
+  const { codes, trends, surgeons, descMap } = tamResults;
+  const { share, asp } = tamAssumptions();
+
+  document.getElementById('emptyState').style.display = 'none';
+  const resultsArea = document.getElementById('resultsArea');
+  resultsArea.style.display = 'block';
+
+  // Per-code latest-year numbers
+  const perCode = trends.map(t => {
+    const latest = latestOkEntry(t.trend);
+    return {
+      code: t.code,
+      desc: descMap[t.code] || '',
+      year: latest ? latest.year : null,
+      services: latest ? latest.services : 0,
+      payment: latest ? latest.payment : 0,
+      error: t.error || null,
+    };
+  });
+  const baseYear = Math.max(...perCode.map(c => c.year || 0), 0);
+  const totalFFS = perCode.reduce((s, c) => s + c.services, 0);
+  const totalProfPay = perCode.reduce((s, c) => s + c.payment, 0);
+  const estTotal = totalFFS / (share / 100);
+  const estTAM = asp ? estTotal * asp : null;
+
+  // Combined yearly series across codes
+  const byYear = {};
+  trends.forEach(t => (t.trend || []).forEach(e => {
+    if (!e.ok) return;
+    if (!byYear[e.year]) byYear[e.year] = { year: e.year, services: 0, payment: 0, ok: true };
+    byYear[e.year].services += e.services;
+    byYear[e.year].payment += e.payment;
+  }));
+  const combined = Object.values(byYear).sort((a, b) => a.year - b.year);
+
+  const failedCodes = perCode.filter(c => !c.year);
+
+  let html = `
+    <div class="results-header">
+      <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span>Market TAM — <strong>${codes.length}</strong> code${codes.length !== 1 ? 's' : ''}</span>
+        <span class="year-badge">CY ${baseYear || '—'} base · national Medicare FFS</span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="export-btn" onclick="exportTamCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
+      </div>
+    </div>
+
+    <div class="result-card" style="margin-bottom:16px;">
+      <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
+        <div class="metric">
+          <div class="metric-value">${fmtNumber(totalFFS)}</div>
+          <div class="metric-label">Medicare FFS Procedures · CY ${baseYear || '—'}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">${fmtNumber(Math.round(estTotal))}</div>
+          <div class="metric-label">Est. Total Procedures (all payers, @ ${share}% FFS)</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" style="color:var(--green);">${estTAM ? fmtCurrency(estTAM) : '—'}</div>
+          <div class="metric-label">${estTAM ? `Est. Device TAM / yr (@ ${fmtCurrency(asp)} ASP)` : 'Est. Device TAM — enter an ASP'}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">${fmtCurrency(totalProfPay)}</div>
+          <div class="metric-label">FFS Surgeon Fees Paid · CY ${baseYear || '—'}</div>
+        </div>
+      </div>
+      <div class="year-note">
+        Volume is national Medicare Fee-for-Service (Part B professional claims). Hospitals' device spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
+      </div>
+    </div>
+
+    <div class="result-card" style="margin-bottom:16px;">
+      <div class="provider-name" style="margin-bottom:8px;">Combined market volume by year</div>
+      <div class="procedures-list open" style="border-top:none;margin-top:0;padding-top:0;" id="tam-combined-trend"></div>
+    </div>
+
+    <div class="result-card" style="margin-bottom:16px;">
+      <div class="provider-name" style="margin-bottom:8px;">Per-code breakdown · CY ${baseYear || '—'}</div>
+      <div class="proc-row proc-row-header">
+        <div>Code</div><div>Description</div><div>FFS Services</div><div>Est. Total</div><div>FFS Paid (prof.)</div>
+      </div>
+      ${perCode.map(c => c.year ? `
+        <div class="proc-row">
+          <div class="proc-code">${escapeHtml(c.code)}</div>
+          <div class="proc-desc" title="${escapeHtml(c.desc)}">${escapeHtml(c.desc || '—')}${c.year !== baseYear ? ` <span style="color:var(--text-3);">(CY ${c.year})</span>` : ''}</div>
+          <div class="proc-num">${fmtNumber(c.services)}</div>
+          <div class="proc-num">${fmtNumber(Math.round(c.services / (share / 100)))}</div>
+          <div class="proc-num">${fmtCurrency(c.payment)}</div>
+        </div>` : `
+        <div class="proc-row">
+          <div class="proc-code">${escapeHtml(c.code)}</div>
+          <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no FFS data found${c.error ? ` — ${escapeHtml(c.error)}` : ''}</div>
+        </div>`).join('')}
+    </div>
+
+    <div class="result-card">
+      <div class="provider-name" style="margin-bottom:4px;">Top surgeons by volume · ${escapeHtml(dataYearShort())}</div>
+      <div class="year-note" style="margin:0 0 10px;">
+        From provider-level claims: surgeons with ≤10 Medicare beneficiaries per code per year are suppressed by CMS, so this list is the visible top of the market — use it for targeting, not for market math.
+      </div>
+      ${surgeons.length ? `
+      <div class="proc-row proc-row-header">
+        <div>#</div><div>Surgeon</div><div>Location</div><div>Services</div><div>FFS Paid</div>
+      </div>
+      ${surgeons.slice(0, 15).map((s, i) => `
+        <div class="proc-row">
+          <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
+          <div class="proc-desc" title="NPI ${escapeHtml(s.npi)}">${escapeHtml(s.name)}${s.specialty ? ` <span style="color:var(--text-3);">· ${escapeHtml(s.specialty)}</span>` : ''}</div>
+          <div class="proc-desc">${escapeHtml(s.location)}</div>
+          <div class="proc-num">${fmtNumber(s.totalServices)}</div>
+          <div class="proc-num">${fmtCurrency(s.totalPayment)}</div>
+        </div>
+      `).join('')}` : '<div class="year-note" style="margin:0;">No unsuppressed providers found for these codes — every billing surgeon had ≤10 Medicare beneficiaries per code.</div>'}
+    </div>
+  `;
+
+  resultsArea.innerHTML = html;
+  renderTrendChart(
+    document.getElementById('tam-combined-trend'),
+    `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}`,
+    combined
+  );
+  document.querySelector('.main').scrollTop = 0;
+}
+
+function exportTamCSV() {
+  if (!tamResults) return;
+  const { trends, descMap } = tamResults;
+  const { share, asp } = tamAssumptions();
+  const today = new Date().toISOString().slice(0, 10);
+  const headers = [
+    'HCPCS Code','Description','Latest Data Year','Medicare FFS Services',
+    'Est Total Procedures (all payers)','FFS Share Assumption (%)',
+    'Device ASP Assumption','Est Device TAM','FFS Surgeon Fees Paid','Date Exported'
+  ];
+  const rows = trends.map(t => {
+    const latest = latestOkEntry(t.trend);
+    const services = latest ? latest.services : 0;
+    const estTotal = Math.round(services / (share / 100));
+    return [
+      t.code,
+      `"${(descMap[t.code] || '').replace(/"/g,'""')}"`,
+      latest ? latest.year : '',
+      services,
+      estTotal,
+      share,
+      asp || '',
+      asp ? (estTotal * asp).toFixed(2) : '',
+      latest ? latest.payment.toFixed(2) : '',
+      today
+    ];
+  });
+  triggerCsvDownload(headers, rows, `medintel_market_tam_${today}.csv`);
 }
 
 // ─── EXPORT PROCEDURE CSV ───
@@ -2610,6 +2880,8 @@ function clearSearch() {
   currentResults = [];
   allGroupedResults = [];
   procedureGroups = [];
+  tamResults = null;
+  document.getElementById('tamFfsShare').value = '40';
   resultsCapped = false;
   displayPage = 0;
   npiPage = 0;

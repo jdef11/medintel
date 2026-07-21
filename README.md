@@ -72,7 +72,12 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 | **Provider** | CMS Medicare | Name, NPI, specialty, state | Payment totals, procedure volumes, beneficiary counts |
 | **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — total services, provider count, payment per code, with a per-provider breakdown and a multi-year volume trend |
 | **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
+| **Market TAM** | CMS Medicare (Geography & Provider datasets) | A code family + payer-mix/ASP assumptions | National FFS volume per year, modeled all-payer volume, modeled device TAM, top surgeons |
 | **NPI Lookup** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
+
+### Market TAM Tab
+
+Size a device market from its procedure codes. Paste the code family, set two assumptions — Medicare FFS share of all cases (%) and your average device revenue per procedure — and get: national Medicare FFS procedure volume (latest year + full multi-year trend), modeled total procedures across all payers, modeled annual device TAM, and the top surgeons by volume. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
 
 ### Bulk Code Search
 
