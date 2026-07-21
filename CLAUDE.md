@@ -76,6 +76,7 @@ The app has four tabs, each with different input fields and API targets:
 | `provider` | CMS Medicare | Name, NPI, specialty, state | `keyword` or `filter[Rndrng_NPI]` |
 | `procedure` | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
 | `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
+| `tam` | CMS Medicare (Geography + Provider datasets) | HCPCS code family (bulk), FFS-share %, device ASP | Per-code `fetchTrend` national volume + `groupByProvider` top surgeons; TAM modeled client-side (`executeTamSearch`/`renderTamResults`) |
 | `npi` | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
 
 ---
@@ -145,6 +146,7 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `fetchTrend(code)` / `renderTrend(...)` | Multi-year procedure volume trend via the Geography & Service dataset |
 | `fetchProviderTrend(npi)` / `toggleProviderTrend(npi)` | Multi-year per-NPI totals via the Provider & Service dataset versions |
 | `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab) |
+| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab — national volume, modeled TAM, top surgeons; assumptions re-render live |
 | `renderResults()` | Renders Medicare provider cards to DOM |
 | `renderNpiResults()` | Renders NPPES lookup cards to DOM |
 | `toggleProcedures(npi)` | Expands/collapses procedure detail table for a card |
