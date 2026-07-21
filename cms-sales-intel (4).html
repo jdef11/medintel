@@ -1179,17 +1179,40 @@ function fetchWithTimeout(url, timeoutMs) {
   });
 }
 
+// Extract a human-readable error from a non-array CMS API response body.
+function describeApiBody(text) {
+  try {
+    const obj = JSON.parse(text);
+    if (obj && obj.message) return obj.message;
+    return JSON.stringify(obj).slice(0, 200);
+  } catch(e) {
+    return text.slice(0, 200);
+  }
+}
+
 async function corsFetch(url) {
+  const attempts = []; // diagnostic trail — included in the error so failures are never silent
+
   // First, try the direct request (works if hosted on a server with CORS headers)
   try {
     const directResp = await fetchWithTimeout(url, 8000);
+    const text = await directResp.text();
     if (directResp.ok) {
-      const data = await directResp.json();
-      console.log('Direct fetch succeeded');
-      return data;
+      const data = JSON.parse(text);
+      if (Array.isArray(data)) {
+        console.log('Direct fetch succeeded');
+        return data;
+      }
+      // The API answered but with an error object, not row data. A proxy would get
+      // the same answer, so surface it immediately instead of masking it as "no results".
+      throw new Error(`CMS API responded HTTP ${directResp.status} but returned an error instead of data: ${describeApiBody(text)}`);
     }
+    // Got a real HTTP response (CORS works) with an error status — report it directly.
+    throw new Error(`CMS API request failed with HTTP ${directResp.status} ${directResp.statusText}: ${describeApiBody(text)}`);
   } catch(e) {
-    console.log('Direct fetch failed (expected for local files), trying proxies...');
+    if (e.message.startsWith('CMS API')) throw e;
+    attempts.push(`direct: ${e.message}`);
+    console.log('Direct fetch failed (expected for local files), trying proxies...', e.message);
   }
 
   // Try CORS proxies in order, starting from the last one that worked
@@ -1203,11 +1226,12 @@ async function corsFetch(url) {
     console.log(`Trying proxy ${idx}: ${proxyUrl.slice(0, 80)}...`);
     try {
       const resp = await fetchWithTimeout(proxyUrl, 15000);
+      const text = await resp.text();
       if (!resp.ok) {
+        attempts.push(`proxy ${idx}: HTTP ${resp.status}`);
         console.log(`Proxy ${idx} returned ${resp.status}`);
         continue;
       }
-      const text = await resp.text();
       // Validate it's actual JSON (some proxies return HTML error pages)
       const data = JSON.parse(text);
       if (Array.isArray(data)) {
@@ -1215,16 +1239,19 @@ async function corsFetch(url) {
         console.log(`Proxy ${idx} succeeded, got ${data.length} results`);
         return data;
       }
+      attempts.push(`proxy ${idx}: HTTP 200 but not a data array — ${describeApiBody(text)}`);
     } catch(e) {
+      attempts.push(`proxy ${idx}: ${e.message}`);
       console.log(`Proxy ${idx} failed:`, e.message);
       continue;
     }
   }
 
   throw new Error(
-    'Could not connect to the CMS API. This is usually a temporary issue with the CORS proxy services. ' +
-    'Please try again in a few seconds. If the problem persists, try opening this file on a local web server ' +
-    '(e.g. run "npx serve" in the folder) or use a browser extension like "CORS Unblock".'
+    'Could not reach the CMS API. Details of each attempt — ' + attempts.join(' | ') + ' — ' +
+    'If every attempt shows a network/CORS failure, the free proxy services may be down; try again shortly ' +
+    'or serve the file locally (e.g. "npx serve"). If an attempt shows an HTTP status or API message, ' +
+    'that is the CMS API\'s actual response.'
   );
 }
 
@@ -1396,6 +1423,11 @@ async function executeNpiSearch(offset = 0) {
 
   if (!data) {
     throw new Error('Could not connect to the NPPES NPI Registry. Please try again.');
+  }
+
+  // NPPES reports problems as an Errors array in a 200 response — surface instead of showing 0 results
+  if (data.Errors && data.Errors.length) {
+    throw new Error('NPPES Registry error: ' + data.Errors.map(er => er.description || JSON.stringify(er)).join('; '));
   }
 
   currentResults = data.results || [];
