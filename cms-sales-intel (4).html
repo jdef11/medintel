@@ -921,12 +921,16 @@
           <input type="text" id="tamFfsShare" placeholder="e.g. 40" value="40">
         </div>
         <div class="field">
+          <div class="field-label">Addressable portion of all cases (%)</div>
+          <input type="text" id="tamCasePortion" placeholder="e.g. 60 — share of cases your device addresses" value="100">
+        </div>
+        <div class="field">
           <div class="field-label">Avg device revenue per procedure ($, optional)</div>
           <input type="text" id="tamAsp" placeholder="e.g. 9500 — your implant ASP">
         </div>
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px;">
           <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
-            <strong style="color:var(--accent);">TAM model</strong> — National FFS procedure volume comes from CMS claims. Total market = FFS volume ÷ FFS share. Device TAM = total volume × your ASP. Hospitals' implant spend is <em>not</em> in any public CMS file (it's bundled into DRG payments), so ASP is your input.
+            <strong style="color:var(--accent);">TAM model</strong> — National FFS procedure volume comes from CMS claims. Total US procedures = FFS volume ÷ FFS share. Addressable = total × addressable portion (use this to exclude e.g. autograft or removal-only cases). Total US TAM = addressable × your ASP. Hospitals' implant spend is <em>not</em> in any public CMS file (it's bundled into DRG payments), so ASP is your input.
           </div>
         </div>
       </div>
@@ -1120,7 +1124,7 @@ function init() {
     });
   });
   // TAM assumptions re-model instantly without refetching
-  ['tamFfsShare', 'tamAsp'].forEach(id => {
+  ['tamFfsShare', 'tamCasePortion', 'tamAsp'].forEach(id => {
     document.getElementById(id).addEventListener('input', () => { if (tamResults) renderTamResults(); });
   });
 
@@ -2540,15 +2544,17 @@ function latestOkEntry(trend) {
 function tamAssumptions() {
   let share = parseFloat(document.getElementById('tamFfsShare').value);
   if (isNaN(share) || share <= 0 || share > 100) share = 40;
+  let portion = parseFloat(document.getElementById('tamCasePortion').value);
+  if (isNaN(portion) || portion <= 0 || portion > 100) portion = 100;
   const aspRaw = parseFloat(String(document.getElementById('tamAsp').value).replace(/[$,]/g, ''));
   const asp = isNaN(aspRaw) || aspRaw <= 0 ? null : aspRaw;
-  return { share, asp };
+  return { share, portion, asp };
 }
 
 function renderTamResults() {
   if (!tamResults) return;
   const { codes, trends, surgeons, descMap } = tamResults;
-  const { share, asp } = tamAssumptions();
+  const { share, portion, asp } = tamAssumptions();
 
   document.getElementById('emptyState').style.display = 'none';
   const resultsArea = document.getElementById('resultsArea');
@@ -2570,7 +2576,8 @@ function renderTamResults() {
   const totalFFS = perCode.reduce((s, c) => s + c.services, 0);
   const totalProfPay = perCode.reduce((s, c) => s + c.payment, 0);
   const estTotal = totalFFS / (share / 100);
-  const estTAM = asp ? estTotal * asp : null;
+  const estAddressable = estTotal * (portion / 100);
+  const estTAM = asp ? estAddressable * asp : null;
 
   // Combined yearly series across codes
   const byYear = {};
@@ -2606,11 +2613,15 @@ function renderTamResults() {
         </div>
         <div class="metric">
           <div class="metric-value">${fmtNumber(Math.round(estTotal))}</div>
-          <div class="metric-label">Est. Total Procedures (all payers, @ ${share}% FFS)</div>
+          <div class="metric-label">Est. Total US Procedures (@ ${share}% FFS)</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">${fmtNumber(Math.round(estAddressable))}</div>
+          <div class="metric-label">Est. Addressable Cases (@ ${portion}% of all)</div>
         </div>
         <div class="metric">
           <div class="metric-value" style="color:var(--green);">${estTAM ? fmtCurrency(estTAM) : '—'}</div>
-          <div class="metric-label">${estTAM ? `Est. Device TAM / yr (@ ${fmtCurrency(asp)} ASP)` : 'Est. Device TAM — enter an ASP'}</div>
+          <div class="metric-label">${estTAM ? `Est. Total US TAM / yr (@ ${fmtCurrency(asp)} ASP)` : 'Est. Total US TAM — enter an ASP'}</div>
         </div>
         <div class="metric">
           <div class="metric-value">${fmtCurrency(totalProfPay)}</div>
@@ -2618,7 +2629,7 @@ function renderTamResults() {
         </div>
       </div>
       <div class="year-note">
-        Volume is national Medicare Fee-for-Service (Part B professional claims). Hospitals' device spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
+        Volume is national Medicare Fee-for-Service (Part B professional claims). Hospitals' device spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share × ${portion}% addressable portion${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
       </div>
     </div>
 
@@ -2679,17 +2690,19 @@ function renderTamResults() {
 function exportTamCSV() {
   if (!tamResults) return;
   const { trends, descMap } = tamResults;
-  const { share, asp } = tamAssumptions();
+  const { share, portion, asp } = tamAssumptions();
   const today = new Date().toISOString().slice(0, 10);
   const headers = [
     'HCPCS Code','Description','Latest Data Year','Medicare FFS Services',
-    'Est Total Procedures (all payers)','FFS Share Assumption (%)',
-    'Device ASP Assumption','Est Device TAM','FFS Surgeon Fees Paid','Date Exported'
+    'Est Total US Procedures','FFS Share Assumption (%)',
+    'Est Addressable Cases','Addressable Portion Assumption (%)',
+    'Device ASP Assumption','Est Total US TAM','FFS Surgeon Fees Paid','Date Exported'
   ];
   const rows = trends.map(t => {
     const latest = latestOkEntry(t.trend);
     const services = latest ? latest.services : 0;
     const estTotal = Math.round(services / (share / 100));
+    const estAddressable = Math.round(estTotal * (portion / 100));
     return [
       t.code,
       `"${(descMap[t.code] || '').replace(/"/g,'""')}"`,
@@ -2697,8 +2710,10 @@ function exportTamCSV() {
       services,
       estTotal,
       share,
+      estAddressable,
+      portion,
       asp || '',
-      asp ? (estTotal * asp).toFixed(2) : '',
+      asp ? (estAddressable * asp).toFixed(2) : '',
       latest ? latest.payment.toFixed(2) : '',
       today
     ];
@@ -2882,6 +2897,7 @@ function clearSearch() {
   procedureGroups = [];
   tamResults = null;
   document.getElementById('tamFfsShare').value = '40';
+  document.getElementById('tamCasePortion').value = '100';
   resultsCapped = false;
   displayPage = 0;
   npiPage = 0;
