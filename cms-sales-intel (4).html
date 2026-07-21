@@ -969,6 +969,13 @@ let activeBundleName = null;   // currently highlighted bundle in CPT browser
 
 // ─── INIT ───
 function init() {
+  // medintel-core.js provides groupByProvider, escapeHtml, f, etc. If it failed to
+  // load (e.g. not deployed alongside this file), fail loudly instead of crashing mid-search.
+  if (typeof groupByProvider === 'undefined' || typeof escapeHtml === 'undefined') {
+    showError('medintel-core.js failed to load — searches cannot run. Make sure it is deployed in the same directory as this page.');
+    return;
+  }
+
   const selects = ['stateSelect', 'stateSelectProc', 'stateSelectGeo', 'stateSelectNpi'];
   selects.forEach(id => {
     const el = document.getElementById(id);
@@ -1951,7 +1958,10 @@ function exportSharePointCSV(mapping) {
 
 // ─── UTILS ───
 function showError(msg) {
-  document.getElementById('errorBox').innerHTML = `<div class="error-msg">${escapeHtml(msg)}</div>`;
+  // textContent instead of escapeHtml so errors still display even if medintel-core.js failed to load
+  const box = document.getElementById('errorBox');
+  box.innerHTML = '<div class="error-msg"></div>';
+  box.firstElementChild.textContent = msg;
 }
 
 function clearError() {
