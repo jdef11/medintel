@@ -807,6 +807,47 @@
     .trend-row > :nth-child(4) { display: none; }
   }
 
+  /* ─── CODE LOOKUP ─── */
+  .lookup-row {
+    display: grid;
+    grid-template-columns: 74px 1fr 170px auto;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(42,49,64,0.5);
+    font-size: 12px;
+    align-items: center;
+  }
+  .lookup-row:last-child { border-bottom: none; }
+  .lookup-metric { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mini-btn {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid rgba(61,110,247,0.3);
+    border-radius: 4px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .mini-btn:hover { background: rgba(61,110,247,0.25); }
+  .mini-btn.added { color: var(--green); background: var(--green-dim); border-color: rgba(52,211,153,0.3); }
+  .match-score {
+    font-size: 10px;
+    color: var(--amber);
+    background: var(--amber-dim);
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    white-space: nowrap;
+  }
+  @media (max-width: 900px) {
+    .lookup-row { grid-template-columns: 64px 1fr auto; }
+    .lookup-row > .lookup-metric { display: none; }
+  }
+
   /* ─── RESPONSIVE ─── */
   @media (max-width: 900px) {
     .app { flex-direction: column; height: auto; }
@@ -843,6 +884,7 @@
         <button class="tab" data-tab="procedure" onclick="switchTab('procedure')">Procedure</button>
         <button class="tab" data-tab="geography" onclick="switchTab('geography')">Geography</button>
         <button class="tab" data-tab="tam" onclick="switchTab('tam')">Market TAM</button>
+        <button class="tab" data-tab="lookup" onclick="switchTab('lookup')">Code Lookup</button>
         <button class="tab" data-tab="npi" onclick="switchTab('npi')">NPI Lookup</button>
       </div>
     </div>
@@ -935,6 +977,20 @@
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px;">
           <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
             <strong style="color:var(--accent);">TAM model</strong> — National FFS procedure volume comes from CMS claims. Total US procedures = FFS volume ÷ FFS share. Addressable = total × addressable portion (use this to exclude e.g. autograft or removal-only cases). Total US TAM = addressable × your ASP. Hospitals' implant spend is <em>not</em> in any public CMS file (it's bundled into DRG payments), so ASP is your input.
+          </div>
+        </div>
+      </div>
+
+      <!-- Code Lookup -->
+      <div id="lookupFields" style="display:none;">
+        <div class="field">
+          <div class="field-label">Code or keyword</div>
+          <input type="text" id="lookupQuery" placeholder="e.g. cranioplasty, 62140, J1885, 025">
+        </div>
+        <button class="btn btn-secondary" onclick="browseAllDrgs()" style="margin-bottom:4px;">Browse all MS-DRGs</button>
+        <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:8px;">
+          <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
+            <strong style="color:var(--accent);">One search, both vocabularies</strong> — keywords match CPT/HCPCS and MS-DRG descriptions side by side. Entering a code shows its record plus description-matched suggestions in the other system. There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses), so cross-matches are suggestions to verify against a coding guide.
           </div>
         </div>
       </div>
@@ -1080,6 +1136,10 @@ let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
 let tamResults = null;        // Market TAM tab results ({codes, trends, surgeons, descMap})
+let cptDict = null;           // Code Lookup: [{code, desc, services}] sorted by volume
+let drgDict = null;           // Code Lookup: [{code, desc, discharges, avgPaid}] sorted by volume
+const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v1';
+const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
 let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
 let datasetVersions = { provider: [], geography: [], inpProvider: [], inpGeo: [] }; // { year, id } newest-first
 let selectedYear = '';        // '' = latest available year
@@ -1261,12 +1321,14 @@ function switchTab(tab) {
   document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
   document.getElementById('geographyFields').style.display = tab === 'geography' ? 'block' : 'none';
   document.getElementById('tamFields').style.display = tab === 'tam' ? 'block' : 'none';
+  document.getElementById('lookupFields').style.display = tab === 'lookup' ? 'block' : 'none';
   document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
 
-  // The NPPES registry is a live snapshot with no historical years, and the
-  // TAM view is inherently multi-year — the data year selector only applies
-  // to the single-year CMS claims tabs.
-  document.getElementById('dataPeriodSection').style.display = (tab === 'npi' || tab === 'tam') ? 'none' : 'block';
+  // The NPPES registry is a live snapshot with no historical years, the TAM
+  // view is inherently multi-year, and Code Lookup dictionaries are always
+  // latest-year — the data year selector only applies to the single-year
+  // CMS claims tabs.
+  document.getElementById('dataPeriodSection').style.display = (tab === 'npi' || tab === 'tam' || tab === 'lookup') ? 'none' : 'block';
 
   currentResults = [];
   allGroupedResults = [];
@@ -1637,6 +1699,8 @@ async function executeSearch() {
       await executeNpiSearch(0);
     } else if (currentTab === 'tam') {
       await executeTamSearch(searchCodes);
+    } else if (currentTab === 'lookup') {
+      await executeLookupSearch();
     } else {
       let allRows = await fetchAllRows(searchCodes);
 
@@ -1924,6 +1988,9 @@ function validateInput() {
   if (currentTab === 'tam') {
     return document.getElementById('tamCodes').value.trim() ||
            document.getElementById('tamDrgs').value.trim();
+  }
+  if (currentTab === 'lookup') {
+    return document.getElementById('lookupQuery').value.trim();
   }
   if (currentTab === 'npi') {
     return document.getElementById('npiFirstName').value.trim() ||
@@ -2963,6 +3030,221 @@ function exportTamCSV() {
     ];
   }));
   triggerCsvDownload(headers, rows, `medintel_market_tam_${today}.csv`);
+}
+
+// ─── CODE LOOKUP ───
+// Dictionaries are derived from the national rows of the latest CMS datasets:
+// CPT/HCPCS from Physician "by Geography and Service" (code + description +
+// national volume), MS-DRG from Inpatient "by Geography and Service".
+// Cached in localStorage for a week; volume-sorted so search results rank by
+// real-world usage.
+
+function readDictCache(key) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(key) || 'null');
+    if (cached && (Date.now() - cached.fetchedAt) < VERSIONS_CACHE_TTL_MS && Array.isArray(cached.items) && cached.items.length) {
+      return cached.items;
+    }
+  } catch (e) { /* corrupt cache — rebuild */ }
+  return null;
+}
+
+function writeDictCache(key, items) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ fetchedAt: Date.now(), items }));
+  } catch (e) { /* quota — keep in memory only */ }
+}
+
+async function loadCptDict(progress) {
+  if (cptDict) return cptDict;
+  const cached = readDictCache(CPT_DICT_CACHE_KEY);
+  if (cached) { cptDict = cached; return cptDict; }
+
+  const versions = await requireVersions('geography');
+  const latest = versions[0];
+  const map = {};
+  let offset = 0;
+  for (let i = 0; i < 20; i++) {
+    if (progress) progress(`Building code dictionary (${Object.keys(map).length.toLocaleString()} codes)...`);
+    const rows = await corsFetch(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    rows.forEach(r => {
+      const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
+      if (!code) return;
+      if (!map[code]) map[code] = { code, desc: (f(r, 'HCPCS_Desc') || '').slice(0, 160), services: 0 };
+      map[code].services += getServices(r);
+    });
+    if (rows.length < FETCH_SIZE) break;
+    offset += FETCH_SIZE;
+  }
+  cptDict = Object.values(map).sort((a, b) => b.services - a.services);
+  if (!cptDict.length) { cptDict = null; throw new Error('Could not build the CPT/HCPCS dictionary from the CMS API — please try again.'); }
+  writeDictCache(CPT_DICT_CACHE_KEY, cptDict);
+  return cptDict;
+}
+
+async function loadDrgDict(progress) {
+  if (drgDict) return drgDict;
+  const cached = readDictCache(DRG_DICT_CACHE_KEY);
+  if (cached) { drgDict = cached; return drgDict; }
+
+  const versions = await requireVersions('inpGeo');
+  const latest = versions[0];
+  if (progress) progress('Building MS-DRG dictionary...');
+  const map = {};
+  let offset = 0;
+  for (let i = 0; i < 3; i++) {
+    const rows = await corsFetch(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    rows.forEach(r => {
+      const code = String(f(r, 'DRG_Cd') || '').padStart(3, '0');
+      if (!code || code === '000') return;
+      if (!map[code]) map[code] = { code, desc: (f(r, 'DRG_Desc') || '').slice(0, 160), discharges: 0, paid: 0 };
+      const d = getDischarges(r);
+      map[code].discharges += d;
+      map[code].paid += d * getAvgTotalPayment(r);
+    });
+    if (rows.length < FETCH_SIZE) break;
+    offset += FETCH_SIZE;
+  }
+  drgDict = Object.values(map).map(d => ({
+    code: d.code, desc: d.desc, discharges: d.discharges,
+    avgPaid: d.discharges ? d.paid / d.discharges : 0
+  })).sort((a, b) => b.discharges - a.discharges);
+  if (!drgDict.length) { drgDict = null; throw new Error('Could not build the MS-DRG dictionary from the CMS API — please try again.'); }
+  writeDictCache(DRG_DICT_CACHE_KEY, drgDict);
+  return drgDict;
+}
+
+async function executeLookupSearch() {
+  const q = document.getElementById('lookupQuery').value.trim();
+  if (!q) { showError('Enter a code or keyword to look up.'); return; }
+
+  const btn = document.getElementById('searchBtn');
+  const progress = msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; };
+  progress('Loading code dictionaries...');
+  const [cpt, drg] = await Promise.all([loadCptDict(progress), loadDrgDict(progress)]);
+
+  let cptMatches, drgMatches;
+  let crossNote = '';
+
+  if (/^\d{1,3}$/.test(q)) {
+    // Looks like an MS-DRG code
+    const code = q.padStart(3, '0');
+    const exact = drg.filter(d => d.code === code);
+    drgMatches = exact.length ? exact : searchDict(drg, q);
+    cptMatches = exact.length ? crossSuggest(exact[0].desc, cpt) : searchDict(cpt, q);
+    if (exact.length) crossNote = `CPT/HCPCS panel shows description-matched suggestions for DRG ${code}.`;
+  } else if (/^[A-Za-z0-9]{4,5}$/.test(q) && /\d/.test(q)) {
+    // Looks like a CPT/HCPCS code
+    const code = q.toUpperCase();
+    const exact = cpt.filter(c => c.code === code);
+    cptMatches = exact.length ? exact : searchDict(cpt, q);
+    drgMatches = exact.length ? crossSuggest(exact[0].desc, drg) : searchDict(drg, q);
+    if (exact.length) crossNote = `MS-DRG panel shows description-matched suggestions for ${code}.`;
+  } else {
+    cptMatches = searchDict(cpt, q);
+    drgMatches = searchDict(drg, q);
+  }
+
+  renderLookupResults(q, cptMatches, drgMatches, crossNote);
+}
+
+async function browseAllDrgs() {
+  if (isLoading) return;
+  isLoading = true;
+  const btn = document.getElementById('searchBtn');
+  btn.disabled = true;
+  clearError();
+  try {
+    const drg = await loadDrgDict(msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; });
+    const byCode = [...drg].sort((a, b) => a.code.localeCompare(b.code));
+    renderLookupResults('', null, byCode, '', `All ${byCode.length} MS-DRGs · sorted by DRG code`);
+  } catch (err) {
+    console.error(err);
+    showError(err.message);
+  } finally {
+    isLoading = false;
+    btn.disabled = false;
+    btn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      Search CMS Data
+    `;
+  }
+}
+
+// Append a code to a search field (no tab switch — results stay on screen).
+function addToField(fieldId, code, btnEl) {
+  const el = document.getElementById(fieldId);
+  const parsed = fieldId === 'tamDrgs' ? parseDrgs(el.value) : parseCodes(el.value);
+  if (!parsed.codes.includes(code)) {
+    el.value = el.value.trim() ? el.value.trim().replace(/[,\s]+$/, '') + ', ' + code : code;
+  }
+  if (btnEl) {
+    const orig = btnEl.textContent;
+    btnEl.textContent = '✓ Added';
+    btnEl.classList.add('added');
+    setTimeout(() => { btnEl.textContent = orig; btnEl.classList.remove('added'); }, 1400);
+  }
+}
+
+function lookupRowHtml(item, kind) {
+  const isDrg = kind === 'drg';
+  const metric = isDrg
+    ? `${fmtNumber(Math.round(item.discharges))} dschrgs · ${fmtCurrency(item.avgPaid)}/stay`
+    : `${fmtNumber(item.services)} svcs/yr`;
+  const score = item.matchScore ? `<span class="match-score" title="Description-match strength — verify against a coding guide">≈${item.matchScore}</span>` : '';
+  const actions = isDrg
+    ? `<button class="mini-btn" onclick="addToField('tamDrgs','${escapeHtml(item.code)}',this)">+ TAM DRG</button>`
+    : `<button class="mini-btn" onclick="addToField('hcpcsCode','${escapeHtml(item.code)}',this)">+ Procedure</button>
+       <button class="mini-btn" onclick="addToField('tamCodes','${escapeHtml(item.code)}',this)">+ TAM</button>`;
+  return `
+    <div class="lookup-row">
+      <div class="proc-code">${escapeHtml(item.code)}${score}</div>
+      <div class="proc-desc" title="${escapeHtml(item.desc)}">${escapeHtml(item.desc || '—')}</div>
+      <div class="lookup-metric">${metric}</div>
+      <div style="display:flex;gap:4px;">${actions}</div>
+    </div>
+  `;
+}
+
+function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride) {
+  document.getElementById('emptyState').style.display = 'none';
+  const resultsArea = document.getElementById('resultsArea');
+  resultsArea.style.display = 'block';
+
+  const cptYear = datasetVersions.geography.length ? `CY ${datasetVersions.geography[0].year}` : 'latest year';
+  const drgYear = datasetVersions.inpGeo.length ? `CY ${datasetVersions.inpGeo[0].year}` : 'latest year';
+
+  let html = `
+    <div class="results-header">
+      <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span>${titleOverride ? escapeHtml(titleOverride) : `Code Lookup — “<strong>${escapeHtml(query)}</strong>”`}</span>
+        <span class="year-badge">Volumes: ${escapeHtml(cptYear)} · Medicare FFS</span>
+      </div>
+    </div>
+    ${crossNote ? `<div class="year-note" style="margin:0 0 12px;">≈ ${escapeHtml(crossNote)} There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — treat cross-matches as leads to verify against a coding guide.</div>` : ''}
+  `;
+
+  if (cptMatches !== null) {
+    html += `
+    <div class="result-card" id="lookupCptPanel" style="margin-bottom:16px;">
+      <div class="provider-name" style="margin-bottom:8px;">CPT / HCPCS <span style="color:var(--text-3);font-size:12px;">· ${cptMatches.length} match${cptMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(cptYear)}</span></div>
+      ${cptMatches.length
+        ? cptMatches.map(m => lookupRowHtml(m, 'cpt')).join('')
+        : '<div class="year-note" style="margin:0;">No matches. Note: only codes with Medicare FFS payments appear here — very new or rarely billed codes won\'t be found.</div>'}
+    </div>`;
+  }
+
+  html += `
+    <div class="result-card" id="lookupDrgPanel">
+      <div class="provider-name" style="margin-bottom:8px;">MS-DRG (inpatient) <span style="color:var(--text-3);font-size:12px;">· ${drgMatches.length} match${drgMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(drgYear)}</span></div>
+      ${drgMatches.length
+        ? drgMatches.map(m => lookupRowHtml(m, 'drg')).join('')
+        : '<div class="year-note" style="margin:0;">No DRG matches for this query.</div>'}
+    </div>
+  `;
+
+  resultsArea.innerHTML = html;
+  document.querySelector('.main').scrollTop = 0;
 }
 
 // ─── EXPORT PROCEDURE CSV ───

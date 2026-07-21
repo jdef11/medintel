@@ -268,6 +268,76 @@ function getAvgMedicarePayment(row) {
   return isNaN(v) ? 0 : v;
 }
 
+// ─── CODE LOOKUP / DICTIONARY SEARCH ───
+// Keyword search + cross-vocabulary suggestion over code dictionaries
+// ({code, desc, ...} items). Used by the Code Lookup tab for CPT/HCPCS and
+// MS-DRG dictionaries derived from the CMS national datasets.
+
+const LOOKUP_STOPWORDS = new Set([
+  'and', 'or', 'of', 'the', 'with', 'without', 'for', 'to', 'a', 'an',
+  'other', 'procedure', 'procedures', 'service', 'services', 'on', 'in',
+  'by', 'less', 'more', 'than', 'each', 'per', 'using', 'into', 'from',
+  'not', 'at', 'w', 'wo', 'cc', 'mcc', 'w/cc', 'w/mcc', 'cm', 'mm',
+  'first', 'any', 'all', 'one', 'via', 'when'
+]);
+
+// Lowercase word tokens, stopwords and short tokens removed.
+function tokenizeMedical(str) {
+  return String(str || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(t => t.length >= 3 && !LOOKUP_STOPWORDS.has(t));
+}
+
+// True when a token matches text: substring match, with a prefix-stem
+// fallback for long tokens so "cranioplasty" matches "craniotomy".
+function tokenMatches(token, text) {
+  if (text.includes(token)) return true;
+  if (token.length > 6 && text.includes(token.slice(0, 6))) return true;
+  return false;
+}
+
+// Keyword search: every query token must match the item's description (or
+// prefix-match its code). Preserves the input ordering of `items` (dictionaries
+// are pre-sorted by volume), so results rank by real-world usage.
+function searchDict(items, query, limit = 50) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return [];
+  const tokens = tokenizeMedical(q);
+  const out = [];
+  for (const item of items) {
+    const desc = (item.desc || '').toLowerCase();
+    const code = (item.code || '').toLowerCase();
+    const hit = tokens.length
+      ? tokens.every(t => tokenMatches(t, desc) || code.startsWith(t))
+      : code.startsWith(q);
+    if (hit) {
+      out.push(item);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
+// Cross-vocabulary suggestion: score target items by how many tokens of the
+// source description they match. Heuristic by design — there is no official
+// CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — so
+// callers must label results as suggestions to verify.
+function crossSuggest(sourceDesc, targetItems, limit = 10) {
+  const tokens = tokenizeMedical(sourceDesc);
+  if (!tokens.length) return [];
+  const scored = [];
+  targetItems.forEach((item, idx) => {
+    const desc = (item.desc || '').toLowerCase();
+    const score = tokens.reduce((s, t) => s + (tokenMatches(t, desc) ? 1 : 0), 0);
+    if (score > 0) scored.push({ item, score, idx });
+  });
+  return scored
+    .sort((a, b) => b.score - a.score || a.idx - b.idx)
+    .slice(0, limit)
+    .map(s => ({ ...s.item, matchScore: s.score }));
+}
+
 // ─── DATASET VERSION DISCOVERY ───
 // data.cms.gov publishes each data year of a dataset as its own version with its
 // own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
@@ -420,5 +490,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }
