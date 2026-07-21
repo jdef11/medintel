@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 const {
   f, getPayment, getAvgCharge, getServices, getBenes,
   getProviderName, getLocation, fmtCurrency, fmtNumber,
-  escapeHtml, groupByProvider, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
+  escapeHtml, groupByProvider, groupByProcedure, extractDatasetVersions,
+  STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -541,5 +542,186 @@ describe('assignScoresAndTiers()', () => {
   it('single provider is Tier 1', () => {
     const result = assignScoresAndTiers([makeProvider('A', 100, 50000)]);
     expect(result[0].tier).toBe(1);
+  });
+});
+
+// ─── groupByProcedure() ──────────────────────────────────────────────────────
+
+describe('groupByProcedure()', () => {
+  const makeRow = (npi, code, services, avgPayment, extra = {}) => ({
+    Rndrng_NPI: npi,
+    Rndrng_Prvdr_Last_Org_Name: `Provider${npi}`,
+    Rndrng_Prvdr_Type: 'Orthopedic Surgery',
+    Rndrng_Prvdr_State_Abrvtn: 'TX',
+    HCPCS_Cd: code,
+    HCPCS_Desc: `Description for ${code}`,
+    Tot_Srvcs: String(services),
+    Avg_Mdcr_Pymt_Amt: String(avgPayment),
+    Tot_Benes: '20',
+    ...extra,
+  });
+
+  it('groups rows by HCPCS code, not provider', () => {
+    const rows = [
+      makeRow('1', '27447', 10, 100),
+      makeRow('2', '27447', 5, 100),
+      makeRow('1', '27130', 3, 200),
+    ];
+    const groups = groupByProcedure(rows);
+    expect(groups.length).toBe(2);
+    const knee = groups.find(g => g.code === '27447');
+    expect(knee.totalServices).toBe(15);
+    expect(knee.providerCount).toBe(2);
+  });
+
+  it('sums payment across providers within a code', () => {
+    const rows = [
+      makeRow('1', '27447', 10, 100), // 1000
+      makeRow('2', '27447', 5, 100),  // 500
+    ];
+    const groups = groupByProcedure(rows);
+    expect(groups[0].totalPayment).toBe(1500);
+  });
+
+  it('sorts groups by total services descending', () => {
+    const rows = [
+      makeRow('1', 'LOW', 2, 100),
+      makeRow('1', 'HIGH', 50, 100),
+      makeRow('1', 'MID', 10, 100),
+    ];
+    const codes = groupByProcedure(rows).map(g => g.code);
+    expect(codes).toEqual(['HIGH', 'MID', 'LOW']);
+  });
+
+  it('sorts providers within a group by services descending', () => {
+    const rows = [
+      makeRow('small', '27447', 2, 100),
+      makeRow('big', '27447', 40, 100),
+    ];
+    const providers = groupByProcedure(rows)[0].providers;
+    expect(providers[0].npi).toBe('big');
+    expect(providers[1].npi).toBe('small');
+  });
+
+  it('merges duplicate provider+code rows (e.g. facility vs office place of service)', () => {
+    const rows = [
+      makeRow('1', '27447', 10, 100, { Place_Of_Srvc: 'F' }),
+      makeRow('1', '27447', 4, 100, { Place_Of_Srvc: 'O' }),
+    ];
+    const g = groupByProcedure(rows)[0];
+    expect(g.providerCount).toBe(1);
+    expect(g.providers[0].services).toBe(14);
+    expect(g.totalServices).toBe(14);
+  });
+
+  it('normalizes codes to uppercase', () => {
+    const rows = [makeRow('1', 'g0447', 5, 10), makeRow('2', 'G0447', 5, 10)];
+    const groups = groupByProcedure(rows);
+    expect(groups.length).toBe(1);
+    expect(groups[0].code).toBe('G0447');
+  });
+
+  it('handles space-separated field names (CMS variant)', () => {
+    const rows = [{
+      'Rndrng NPI': '1', 'HCPCS Cd': '27447', 'HCPCS Desc': 'Knee',
+      'Tot Srvcs': '7', 'Avg Mdcr Pymt Amt': '100', 'Tot Benes': '12',
+      'Rndrng Prvdr Last Org Name': 'Smith',
+    }];
+    const g = groupByProcedure(rows)[0];
+    expect(g.code).toBe('27447');
+    expect(g.totalServices).toBe(7);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(groupByProcedure([])).toEqual([]);
+  });
+});
+
+// ─── extractDatasetVersions() ────────────────────────────────────────────────
+
+describe('extractDatasetVersions()', () => {
+  const TITLE = 'Medicare Physician & Other Practitioners - by Provider and Service';
+  const uuid = n => `${String(n).padStart(8, '0')}-0000-0000-0000-000000000000`;
+
+  it('extracts year/UUID pairs from distribution temporal ranges', () => {
+    const catalog = { dataset: [{
+      title: TITLE,
+      distribution: [
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(1)}/data`, temporal: '2021-01-01/2021-12-31' },
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(2)}/data`, temporal: '2022-01-01/2022-12-31' },
+      ],
+    }]};
+    const versions = extractDatasetVersions(catalog, TITLE);
+    expect(versions).toEqual([
+      { year: 2022, id: uuid(2) },
+      { year: 2021, id: uuid(1) },
+    ]);
+  });
+
+  it('matches titles case-insensitively with collapsed whitespace', () => {
+    const catalog = { dataset: [{
+      title: '  medicare physician & other practitioners - BY provider AND service ',
+      distribution: [
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(3)}/data`, temporal: '2020-01-01/2020-12-31' },
+      ],
+    }]};
+    expect(extractDatasetVersions(catalog, TITLE).length).toBe(1);
+  });
+
+  it('ignores datasets with other titles', () => {
+    const catalog = { dataset: [{
+      title: 'Some Other Dataset',
+      distribution: [
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(4)}/data`, temporal: '2020-01-01/2020-12-31' },
+      ],
+    }]};
+    expect(extractDatasetVersions(catalog, TITLE)).toEqual([]);
+  });
+
+  it('skips distributions without an API UUID (e.g. CSV downloads)', () => {
+    const catalog = { dataset: [{
+      title: TITLE,
+      distribution: [
+        { downloadURL: 'https://data.cms.gov/sites/default/files/file.csv', temporal: '2019-01-01/2019-12-31' },
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(5)}/data`, temporal: '2019-01-01/2019-12-31' },
+      ],
+    }]};
+    expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2019, id: uuid(5) }]);
+  });
+
+  it('supports one-dataset-entry-per-year catalogs via dataset-level identifier', () => {
+    const catalog = { dataset: [
+      { title: TITLE, temporal: '2018-01-01/2018-12-31', identifier: `https://data.cms.gov/data-api/v1/dataset/${uuid(6)}/data-viewer` },
+      { title: TITLE, temporal: '2017-01-01/2017-12-31', identifier: `https://data.cms.gov/data-api/v1/dataset/${uuid(7)}/data-viewer` },
+    ]};
+    const versions = extractDatasetVersions(catalog, TITLE);
+    expect(versions.map(v => v.year)).toEqual([2018, 2017]);
+  });
+
+  it('dedupes multiple entries for the same year', () => {
+    const catalog = { dataset: [{
+      title: TITLE,
+      distribution: [
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(8)}/data`, temporal: '2023-01-01/2023-12-31' },
+        { accessURL: `https://data.cms.gov/data-api/v1/dataset/${uuid(9)}/data`, description: 'Also 2023', temporal: '2023-01-01/2023-12-31' },
+      ],
+    }]};
+    expect(extractDatasetVersions(catalog, TITLE).length).toBe(1);
+  });
+
+  it('returns empty array for a missing or malformed catalog', () => {
+    expect(extractDatasetVersions(null, TITLE)).toEqual([]);
+    expect(extractDatasetVersions({}, TITLE)).toEqual([]);
+    expect(extractDatasetVersions({ dataset: 'nope' }, TITLE)).toEqual([]);
+  });
+});
+
+// ─── STATE_NAMES ─────────────────────────────────────────────────────────────
+
+describe('STATE_NAMES', () => {
+  it('maps every state abbreviation used by the app, plus DC and PR', () => {
+    expect(Object.keys(STATE_NAMES).length).toBe(52);
+    expect(STATE_NAMES.TX).toBe('Texas');
+    expect(STATE_NAMES.DC).toBe('District of Columbia');
   });
 });

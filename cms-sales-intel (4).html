@@ -742,6 +742,69 @@
     font-size: 12px;
   }
 
+  /* ─── DATA YEAR / TIME SCALE ─── */
+  .year-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid rgba(61,110,247,0.3);
+    padding: 3px 10px;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+  .year-badge.snapshot {
+    color: var(--green);
+    background: var(--green-dim);
+    border-color: rgba(52,211,153,0.3);
+  }
+  .year-note {
+    font-size: 11px;
+    color: var(--text-3);
+    line-height: 1.5;
+    margin-top: 6px;
+  }
+
+  /* ─── PROCEDURE TREND CHART ─── */
+  .trend-chart { padding: 4px 0; }
+  .trend-row {
+    display: grid;
+    grid-template-columns: 48px 1fr 90px 110px;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  .trend-year { color: var(--text-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .trend-bar-wrap {
+    background: var(--surface-3);
+    border-radius: 4px;
+    height: 14px;
+    overflow: hidden;
+  }
+  .trend-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    min-width: 2px;
+    transition: width 0.4s ease;
+  }
+  .trend-val { text-align: right; font-variant-numeric: tabular-nums; }
+  .trend-pay { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .trend-caption {
+    font-size: 11px;
+    color: var(--text-3);
+    margin: 6px 0 2px;
+    line-height: 1.5;
+  }
+  @media (max-width: 900px) {
+    .trend-row { grid-template-columns: 44px 1fr 80px; }
+    .trend-row > :nth-child(4) { display: none; }
+  }
+
   /* ─── RESPONSIVE ─── */
   @media (max-width: 900px) {
     .app { flex-direction: column; height: auto; }
@@ -876,6 +939,18 @@
       </div>
     </div>
 
+    <!-- Data Period (time-scale grounding) -->
+    <div class="sidebar-section" id="dataPeriodSection">
+      <div class="section-label">Data Period</div>
+      <div class="field" id="dataYearField">
+        <div class="field-label">Medicare Data Year</div>
+        <select id="dataYearSelect" onchange="onYearChange(this.value)">
+          <option value="">Latest available</option>
+        </select>
+      </div>
+      <div class="year-note" id="yearNote">Checking available data years on data.cms.gov…</div>
+    </div>
+
     <!-- CPT Code Browser -->
     <div class="sidebar-section" id="cptBrowserSection">
       <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleCptBrowser()">
@@ -915,6 +990,7 @@
         <strong>What it contains:</strong> Services, procedures, utilization counts, and Medicare payment amounts per provider, organized by NPI and HCPCS/CPT code.<br><br>
         <strong>Use case:</strong> Identify high-volume surgeons and providers who perform specific procedures — ideal for medical device sales targeting.<br><br>
         <strong>Tip:</strong> For best results, search by a specific HCPCS code (e.g. 27447 for total knee replacement) plus a state to find top-volume surgeons in a territory.<br><br>
+        <strong>Time scale:</strong> CMS claims data is published per calendar year. Use the <em>Data Year</em> selector to search a specific year, and the <em>Volume trend by year</em> panel on Procedure results to see how a procedure's national or state volume has changed over time.<br><br>
         <strong>Note:</strong> Data reflects Medicare Fee-for-Service only. Providers may have additional non-Medicare volume not reflected here. Records with ≤10 beneficiaries are redacted for privacy. First search may take a few seconds to connect.
       </div>
     </div>
@@ -941,8 +1017,21 @@ const US_STATES = [
 ];
 
 // The dataset UUID for "Medicare Physician & Other Practitioners by Provider and Service"
+// (always resolves to the latest published data year)
 const DATASET_ID = '92396110-2aed-4d63-a6a2-5d6207d46a29';
 const BASE_URL = `https://data.cms.gov/data-api/v1/dataset/${DATASET_ID}/data`;
+const DATA_API_ROOT = 'https://data.cms.gov/data-api/v1/dataset';
+
+// ─── TIME SCALE / DATASET VERSIONS ───
+// CMS publishes each calendar year of a dataset as its own version with its own
+// UUID. The official machine-readable catalog lists every version; we discover
+// the year → UUID mapping at runtime and cache it, so the app never hardcodes
+// version UUIDs that rotate as CMS republishes data.
+const CATALOG_URL = 'https://data.cms.gov/data.json';
+const PROVIDER_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Provider and Service';
+const GEO_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Geography and Service';
+const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v1';
+const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog weekly
 
 // CORS proxies — we try multiple in order since free proxies can go down
 const CORS_PROXIES = [
@@ -955,6 +1044,11 @@ let activeProxyIndex = 0;
 let currentTab = 'provider';
 let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
+let procedureGroups = [];     // procedure-grouped results for the Procedure tab
+let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
+let datasetVersions = { provider: [], geography: [] }; // { year, id } newest-first
+let selectedYear = '';        // '' = latest available year
+const trendCache = {};        // yearly trend results, keyed by `${code}|${state}`
 let displayPage = 0;          // current display page (CMS tabs)
 let npiPage = 0;              // current page for NPI results
 let npiTotal = 0;             // total count for NPI results
@@ -993,6 +1087,108 @@ function init() {
   document.querySelectorAll('input[type="text"]').forEach(input => {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
   });
+
+  // Discover which data years CMS has published (non-blocking; searches fall
+  // back to the latest year until this resolves).
+  loadDatasetVersions().catch(err => console.log('Dataset version discovery failed:', err.message));
+}
+
+// ─── DATA YEAR DISCOVERY ───
+async function fetchCatalog() {
+  const validate = obj => obj && Array.isArray(obj.dataset);
+  // Direct first (works when hosted; the catalog is a large static file)
+  try {
+    const resp = await fetchWithTimeout(CATALOG_URL, 25000);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (validate(data)) return data;
+    }
+  } catch(e) {
+    console.log('Catalog direct fetch failed, trying proxies...', e.message);
+  }
+  const proxyOrder = CORS_PROXIES.map((_, i) => (activeProxyIndex + i) % CORS_PROXIES.length);
+  for (const idx of proxyOrder) {
+    try {
+      const resp = await fetchWithTimeout(CORS_PROXIES[idx](CATALOG_URL), 45000);
+      if (!resp.ok) continue;
+      const data = JSON.parse(await resp.text());
+      if (validate(data)) { activeProxyIndex = idx; return data; }
+    } catch(e) { continue; }
+  }
+  return null;
+}
+
+async function loadDatasetVersions() {
+  // Serve from cache when fresh
+  try {
+    const cached = JSON.parse(localStorage.getItem(VERSIONS_CACHE_KEY) || 'null');
+    if (cached && (Date.now() - cached.fetchedAt) < VERSIONS_CACHE_TTL_MS &&
+        Array.isArray(cached.provider) && cached.provider.length) {
+      datasetVersions = { provider: cached.provider, geography: cached.geography || [] };
+      populateYearSelect();
+      return;
+    }
+  } catch(e) { /* corrupt cache — refetch */ }
+
+  const catalog = await fetchCatalog();
+  if (!catalog) {
+    document.getElementById('yearNote').textContent =
+      'Could not reach the data.cms.gov catalog — searches will use the latest published data year. Reload the page to retry.';
+    return;
+  }
+  datasetVersions = {
+    provider: extractDatasetVersions(catalog, PROVIDER_DATASET_TITLE),
+    geography: extractDatasetVersions(catalog, GEO_DATASET_TITLE)
+  };
+  try {
+    localStorage.setItem(VERSIONS_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), ...datasetVersions }));
+  } catch(e) { /* storage full/unavailable — fine, versions stay in memory */ }
+  populateYearSelect();
+}
+
+function populateYearSelect() {
+  const years = datasetVersions.provider;
+  const note = document.getElementById('yearNote');
+  if (!years.length) {
+    note.textContent = 'No historical data years found in the CMS catalog — searches will use the latest published data year.';
+    return;
+  }
+  const sel = document.getElementById('dataYearSelect');
+  const latest = years[0].year;
+  const earliest = years[years.length - 1].year;
+  sel.innerHTML = `<option value="">Latest available (CY ${latest})</option>` +
+    years.map(v => `<option value="${v.year}">CY ${v.year}</option>`).join('');
+  if (selectedYear && years.some(v => String(v.year) === String(selectedYear))) {
+    sel.value = String(selectedYear);
+  }
+  note.textContent = `Medicare claims data is annual — every search runs against a single calendar year. CY ${earliest}–CY ${latest} available.`;
+}
+
+function onYearChange(val) {
+  selectedYear = val;
+}
+
+// Base data-API URL for the currently selected data year (falls back to latest).
+function getDatasetBase() {
+  if (selectedYear) {
+    const v = datasetVersions.provider.find(x => String(x.year) === String(selectedYear));
+    if (v) return `${DATA_API_ROOT}/${v.id}/data`;
+  }
+  return BASE_URL;
+}
+
+// Human-readable label of the data year the current results came from.
+function dataYearLabel() {
+  if (selectedYear) return `CY ${selectedYear}`;
+  if (datasetVersions.provider.length) return `CY ${datasetVersions.provider[0].year} (latest)`;
+  return 'Latest data year';
+}
+
+// Raw year value for CSV exports.
+function dataYearValue() {
+  if (selectedYear) return selectedYear;
+  if (datasetVersions.provider.length) return String(datasetVersions.provider[0].year);
+  return 'latest';
 }
 
 // ─── TAB SWITCHING ───
@@ -1006,8 +1202,13 @@ function switchTab(tab) {
   document.getElementById('geographyFields').style.display = tab === 'geography' ? 'block' : 'none';
   document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
 
+  // The NPPES registry is a live snapshot with no historical years — the data
+  // year selector only applies to the CMS claims tabs.
+  document.getElementById('dataPeriodSection').style.display = tab === 'npi' ? 'none' : 'block';
+
   currentResults = [];
   allGroupedResults = [];
+  procedureGroups = [];
   displayPage = 0;
   npiPage = 0;
   npiTotal = 0;
@@ -1111,7 +1312,7 @@ function updateSelectedCodeTags() {
 
 // ─── BUILD API URL ───
 function buildApiUrl(offset = 0) {
-  let url = `${BASE_URL}?size=${FETCH_SIZE}&offset=${offset}`;
+  let url = `${getDatasetBase()}?size=${FETCH_SIZE}&offset=${offset}`;
   const filters = [];
 
   if (currentTab === 'provider') {
@@ -1270,7 +1471,7 @@ async function fetchCodeRows(code, stateVal) {
   let offset = 0;
   const MAX_FETCHES = 3;
   for (let i = 0; i < MAX_FETCHES; i++) {
-    let url = `${BASE_URL}?size=${FETCH_SIZE}&offset=${offset}`;
+    let url = `${getDatasetBase()}?size=${FETCH_SIZE}&offset=${offset}`;
     url += `&filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(code)}`;
     if (stateVal) url += `&filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(stateVal)}`;
     console.log(`Fetching code ${code}:`, url);
@@ -1329,8 +1530,10 @@ async function executeSearch() {
   isLoading = true;
   displayPage = 0;
   minVolumeFilter = 0;
-  currentSortOrder = 'score';
+  currentSortOrder = currentTab === 'procedure' ? 'services' : 'score';
   allGroupedResults = [];
+  procedureGroups = [];
+  resultsCapped = false;
   const btn = document.getElementById('searchBtn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Searching CMS...';
@@ -1360,10 +1563,20 @@ async function executeSearch() {
         }
       }
 
-      // Group, score, and assign tiers
-      const grouped = groupByProvider(allRows);
-      allGroupedResults = assignScoresAndTiers(grouped);
-      renderResults();
+      // Totals are computed from the rows we could fetch; flag when the fetch
+      // hit its cap so the UI can say the aggregates are partial.
+      resultsCapped = allRows.length >= FETCH_SIZE * 3;
+
+      if (currentTab === 'procedure') {
+        // Procedure tab: group by HCPCS code (one card per procedure)
+        procedureGroups = groupByProcedure(allRows);
+        renderProcedureResults();
+      } else {
+        // Group by provider, score, and assign tiers
+        const grouped = groupByProvider(allRows);
+        allGroupedResults = assignScoresAndTiers(grouped);
+        renderResults();
+      }
     }
   } catch (err) {
     console.error(err);
@@ -1467,9 +1680,12 @@ function renderNpiResults() {
 
   let html = `
     <div class="results-header">
-      <div class="results-count">
-        Found <strong>${npiTotal.toLocaleString()}</strong> NPI records
-        ${npiPage > 0 ? `(page ${npiPage + 1})` : ''}
+      <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span>
+          Found <strong>${npiTotal.toLocaleString()}</strong> NPI records
+          ${npiPage > 0 ? `(page ${npiPage + 1})` : ''}
+        </span>
+        <span class="year-badge snapshot" title="The NPPES registry is a live directory — results reflect the registry as of today, not a historical year">Live registry snapshot — ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
       </div>
       <div style="display:flex;gap:8px;">
         <button class="export-btn" onclick="exportNpiCSV()">
@@ -1649,16 +1865,50 @@ function getFilteredSorted() {
   return results;
 }
 
+function getFilteredSortedProcedures() {
+  let results = procedureGroups.filter(g => g.totalServices >= minVolumeFilter);
+  if (currentSortOrder === 'payment') {
+    results = [...results].sort((a, b) => b.totalPayment - a.totalPayment);
+  } else if (currentSortOrder === 'providers') {
+    results = [...results].sort((a, b) => b.providerCount - a.providerCount);
+  } else {
+    results = [...results].sort((a, b) => b.totalServices - a.totalServices);
+  }
+  return results;
+}
+
+// The procedure tab renders procedure groups; the other CMS tabs render providers.
+function renderActiveResults() {
+  if (currentTab === 'procedure') renderProcedureResults();
+  else renderResults();
+}
+
+function activeFilteredList() {
+  return currentTab === 'procedure' ? getFilteredSortedProcedures() : getFilteredSorted();
+}
+
 function applyVolumeFilter(val) {
   minVolumeFilter = parseInt(val, 10) || 0;
   displayPage = 0;
-  renderResults();
+  renderActiveResults();
 }
 
 function applySort(order) {
   currentSortOrder = order;
   displayPage = 0;
-  renderResults();
+  renderActiveResults();
+}
+
+// Shared header badge grounding results in their data year.
+function yearBadgeHtml() {
+  return `<span class="year-badge" title="Medicare Fee-for-Service claims for this calendar year">${escapeHtml(dataYearLabel())} · Medicare FFS</span>`;
+}
+
+// Caveat shown when the API row cap was hit and aggregates are partial.
+function cappedNoteHtml() {
+  return resultsCapped
+    ? `<div class="year-note" style="margin:0 0 12px;">⚠ Totals are computed from the first ${(FETCH_SIZE * 3).toLocaleString()} rows returned by the CMS API — narrow the search (state or code filter) for complete aggregates.</div>`
+    : '';
 }
 
 // ─── TIER LABEL HELPERS ───
@@ -1708,10 +1958,13 @@ function renderResults() {
 
   let html = `
     <div class="results-header">
-      <div class="results-count">
-        <strong>${filtered.length}</strong> provider${filtered.length !== 1 ? 's' : ''}
-        ${hiddenCount > 0 ? `<span style="color:var(--text-3)"> (${hiddenCount} below volume threshold)</span>` : ''}
-        ${totalPages > 1 ? `<span style="color:var(--text-3)"> · page ${displayPage + 1} of ${totalPages}</span>` : ''}
+      <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span>
+          <strong>${filtered.length}</strong> provider${filtered.length !== 1 ? 's' : ''}
+          ${hiddenCount > 0 ? `<span style="color:var(--text-3)"> (${hiddenCount} below volume threshold)</span>` : ''}
+          ${totalPages > 1 ? `<span style="color:var(--text-3)"> · page ${displayPage + 1} of ${totalPages}</span>` : ''}
+        </span>
+        ${yearBadgeHtml()}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="export-btn" onclick="exportCSV()">
@@ -1740,7 +1993,7 @@ function renderResults() {
         <span style="color:var(--border);">■</span> Tier 3
       </div>
     </div>
-
+    ${cappedNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -1822,12 +2075,288 @@ function renderResults() {
 }
 
 function prevPage() {
-  if (displayPage > 0) { displayPage--; renderResults(); }
+  if (displayPage > 0) { displayPage--; renderActiveResults(); }
 }
 
 function nextPage() {
-  const filtered = getFilteredSorted();
-  if (displayPage + 1 < Math.ceil(filtered.length / DISPLAY_PAGE_SIZE)) { displayPage++; renderResults(); }
+  const filtered = activeFilteredList();
+  if (displayPage + 1 < Math.ceil(filtered.length / DISPLAY_PAGE_SIZE)) { displayPage++; renderActiveResults(); }
+}
+
+// ─── RENDER PROCEDURE-GROUPED RESULTS (Procedure tab) ───
+
+// DOM ids can't safely contain arbitrary strings — HCPCS codes are alphanumeric,
+// but strip anything else defensively.
+function codeKey(code) {
+  return String(code).replace(/[^A-Za-z0-9]/g, '');
+}
+
+function renderProcedureResults() {
+  const emptyState = document.getElementById('emptyState');
+  const resultsArea = document.getElementById('resultsArea');
+
+  if (!procedureGroups.length) {
+    const searchedCode = selectedCodes.length > 0
+      ? selectedCodes.join(', ')
+      : document.getElementById('hcpcsCode').value.trim();
+    const procedureNote = searchedCode
+      ? `<p>No Medicare Part B data found for code(s) <strong>${escapeHtml(searchedCode)}</strong> in ${escapeHtml(dataYearLabel())}. This can happen when:</p>
+         <ul style="text-align:left;margin:8px 0 0;padding-left:20px;color:var(--text-2);font-size:0.9em;">
+           <li>The procedure is low-volume and CMS suppresses records with ≤10 beneficiaries per provider</li>
+           <li>The code primarily generates inpatient (Part A) facility claims, not Part B physician claims</li>
+         </ul>
+         <p style="margin-top:8px;">Try a broader state filter, a different data year, or related procedure codes.</p>`
+      : `<p>Try broadening your search criteria or double-check the procedure code or keyword.</p>`;
+    emptyState.innerHTML = `
+      <div class="empty-icon">📭</div>
+      <h2>No Results Found</h2>
+      ${procedureNote}
+    `;
+    emptyState.style.display = 'flex';
+    resultsArea.style.display = 'none';
+    return;
+  }
+
+  emptyState.style.display = 'none';
+  resultsArea.style.display = 'block';
+
+  const filtered = getFilteredSortedProcedures();
+  const start = displayPage * DISPLAY_PAGE_SIZE;
+  const pageGroups = filtered.slice(start, start + DISPLAY_PAGE_SIZE);
+  const totalPages = Math.ceil(filtered.length / DISPLAY_PAGE_SIZE);
+  const hasPrev = displayPage > 0;
+  const hasNext = displayPage + 1 < totalPages;
+  const hiddenCount = procedureGroups.length - filtered.length;
+  const stateVal = document.getElementById('stateSelectProc').value;
+
+  let html = `
+    <div class="results-header">
+      <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span>
+          <strong>${filtered.length}</strong> procedure${filtered.length !== 1 ? 's' : ''}
+          ${stateVal ? `<span style="color:var(--text-3)"> in ${escapeHtml(stateVal)}</span>` : ''}
+          ${hiddenCount > 0 ? `<span style="color:var(--text-3)"> (${hiddenCount} below volume threshold)</span>` : ''}
+          ${totalPages > 1 ? `<span style="color:var(--text-3)"> · page ${displayPage + 1} of ${totalPages}</span>` : ''}
+        </span>
+        ${yearBadgeHtml()}
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="export-btn" onclick="exportProcedureCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <label>Min services/year:</label>
+      <input type="number" min="0" step="5" value="${minVolumeFilter}"
+             onchange="applyVolumeFilter(this.value)" style="width:72px;">
+      <label style="margin-left:8px;">Sort by:</label>
+      <select onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
+        <option value="services" ${currentSortOrder === 'services' ? 'selected' : ''}>Total Services</option>
+        <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
+        <option value="providers" ${currentSortOrder === 'providers' ? 'selected' : ''}>Provider Count</option>
+      </select>
+    </div>
+    ${cappedNoteHtml()}
+    <div class="results-grid">
+  `;
+
+  pageGroups.forEach(g => {
+    const key = codeKey(g.code);
+    const topProviders = g.providers.slice(0, 25);
+    html += `
+      <div class="result-card">
+        <div class="card-top">
+          <div class="provider-info">
+            <div class="provider-name">
+              ${escapeHtml(g.code)}
+              <span class="npi-tag">HCPCS</span>
+            </div>
+            <div class="provider-specialty">${escapeHtml(g.desc || 'No description available')}</div>
+            <div class="provider-location">${stateVal ? escapeHtml(STATE_NAMES[stateVal] || stateVal) : 'All states'} · ${escapeHtml(dataYearLabel())}</div>
+          </div>
+          <div class="payment-badge">
+            <div class="payment-amount">${fmtNumber(g.totalServices)}</div>
+            <div class="payment-label">Total Services (${escapeHtml(dataYearLabel())})</div>
+          </div>
+        </div>
+        <div class="card-metrics">
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.providerCount)}</div>
+            <div class="metric-label">Providers</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
+            <div class="metric-label">Beneficiaries</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtCurrency(g.totalPayment)}</div>
+            <div class="metric-label">Total Medicare Payment</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtCurrency(g.totalPayment / (g.totalServices || 1))}</div>
+            <div class="metric-label">Avg Payment / Service</div>
+          </div>
+        </div>
+        <button class="procedures-toggle" id="trend-btn-${key}" onclick="toggleTrend('${escapeHtml(g.code)}')">
+          <span class="arrow">▼</span> Volume trend by year
+        </button>
+        <div class="procedures-list" id="trend-${key}"></div>
+        <button class="procedures-toggle" id="proc-btn-${key}" onclick="toggleProcedures('${key}')">
+          <span class="arrow">▼</span> Top ${topProviders.length} of ${fmtNumber(g.providerCount)} provider${g.providerCount !== 1 ? 's' : ''} by volume
+        </button>
+        <div class="procedures-list" id="proc-list-${key}">
+          <div class="proc-row proc-row-header">
+            <div>NPI</div><div>Provider</div><div>Specialty</div><div>Services</div><div>Payment</div>
+          </div>
+          ${topProviders.map(p => `
+            <div class="proc-row">
+              <div class="proc-code">${escapeHtml(p.npi)}</div>
+              <div class="proc-desc" title="${escapeHtml(p.name)} — ${escapeHtml(p.location)}">${escapeHtml(p.name)}</div>
+              <div class="proc-desc">${escapeHtml(p.specialty)}</div>
+              <div class="proc-num">${fmtNumber(p.services)}</div>
+              <div class="proc-num">${fmtCurrency(p.payment)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+  html += `
+    <div class="pagination">
+      <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${displayPage + 1} of ${totalPages || 1}</span>
+      <button class="page-btn" onclick="nextPage()" ${!hasNext ? 'disabled' : ''}>Next →</button>
+    </div>
+  `;
+
+  resultsArea.innerHTML = html;
+  document.querySelector('.main').scrollTop = 0;
+}
+
+// ─── PROCEDURE VOLUME TREND (total procedures over time) ───
+// Uses the CMS "by Geography and Service" dataset: one pre-aggregated row per
+// geography + HCPCS code + place of service, so one small request per data year
+// gives the national (or state) total service count for a procedure.
+async function toggleTrend(code) {
+  const key = codeKey(code);
+  const box = document.getElementById(`trend-${key}`);
+  const btn = document.getElementById(`trend-btn-${key}`);
+  if (!box || !btn) return;
+  const opening = !box.classList.contains('open');
+  box.classList.toggle('open');
+  btn.classList.toggle('open');
+  if (!opening || box.dataset.loaded) return;
+
+  box.innerHTML = '<div class="trend-caption"><div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px;"></div>Loading yearly volume from CMS…</div>';
+  try {
+    const trend = await fetchTrend(code);
+    renderTrend(box, code, trend);
+    box.dataset.loaded = '1';
+  } catch (err) {
+    console.error(err);
+    box.innerHTML = `<div class="trend-caption" style="color:var(--red);">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function fetchTrend(code) {
+  if (!datasetVersions.geography.length) {
+    await loadDatasetVersions(); // retry catalog discovery on demand
+  }
+  const versions = datasetVersions.geography;
+  if (!versions.length) {
+    throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
+  }
+
+  const stateVal = document.getElementById('stateSelectProc').value;
+  const cacheKey = `${code.toUpperCase()}|${stateVal}`;
+  if (trendCache[cacheKey]) return trendCache[cacheKey];
+
+  const results = await Promise.all(versions.map(async v => {
+    let url = `${DATA_API_ROOT}/${v.id}/data?size=50`;
+    url += `&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
+    if (stateVal) {
+      const geoDesc = STATE_NAMES[stateVal] || stateVal;
+      url += `&filter[Rndrng_Prvdr_Geo_Lvl]=State&filter[Rndrng_Prvdr_Geo_Desc]=${encodeURIComponent(geoDesc)}`;
+    } else {
+      url += `&filter[Rndrng_Prvdr_Geo_Lvl]=National`;
+    }
+    try {
+      const rows = await corsFetch(url);
+      let services = 0, payment = 0;
+      rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
+      return { year: v.year, services, payment, ok: true };
+    } catch (e) {
+      console.log(`Trend fetch failed for CY ${v.year}:`, e.message);
+      return { year: v.year, services: 0, payment: 0, ok: false };
+    }
+  }));
+
+  const trend = results.sort((a, b) => a.year - b.year);
+  if (!trend.some(t => t.ok)) {
+    throw new Error('Could not fetch yearly volume from the CMS API — please try again.');
+  }
+  trendCache[cacheKey] = trend;
+  return trend;
+}
+
+function renderTrend(box, code, trend) {
+  const stateVal = document.getElementById('stateSelectProc').value;
+  const scope = stateVal ? `${STATE_NAMES[stateVal] || stateVal}` : 'National';
+  const max = Math.max(...trend.map(t => t.services), 1);
+
+  box.innerHTML = `
+    <div class="trend-caption">
+      ${escapeHtml(scope)} Medicare FFS service volume for <strong style="color:var(--amber);">${escapeHtml(code)}</strong> by calendar year
+      (CMS “by Geography &amp; Service” dataset — records with ≤10 beneficiaries are suppressed).
+    </div>
+    <div class="trend-chart">
+      <div class="trend-row proc-row-header" style="border-bottom:1px solid var(--border);">
+        <div>Year</div><div></div><div style="text-align:right;">Services</div><div style="text-align:right;">Medicare Paid</div>
+      </div>
+      ${trend.map(t => t.ok ? `
+        <div class="trend-row">
+          <div class="trend-year">${t.year}</div>
+          <div class="trend-bar-wrap"><div class="trend-bar" style="width:${Math.max(1, (t.services / max) * 100)}%"></div></div>
+          <div class="trend-val">${fmtNumber(t.services)}</div>
+          <div class="trend-pay">${fmtCurrency(t.payment)}</div>
+        </div>` : `
+        <div class="trend-row">
+          <div class="trend-year">${t.year}</div>
+          <div class="trend-caption" style="grid-column:2/-1;margin:0;">data unavailable (request failed)</div>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+// ─── EXPORT PROCEDURE CSV ───
+function exportProcedureCSV() {
+  if (!procedureGroups.length) return;
+  const data = getFilteredSortedProcedures();
+  const headers = [
+    'Data Year','HCPCS Code','Description',
+    'Total Services','Providers','Total Beneficiaries',
+    'Total Medicare Payment','Avg Payment Per Service',
+    'Top Provider NPIs','Date Exported'
+  ];
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = data.map(g => [
+    dataYearValue(),
+    g.code,
+    `"${(g.desc || '').replace(/"/g,'""')}"`,
+    g.totalServices,
+    g.providerCount,
+    g.totalBeneficiaries,
+    g.totalPayment.toFixed(2),
+    (g.totalPayment / (g.totalServices || 1)).toFixed(2),
+    `"${g.providers.slice(0, 10).map(p => p.npi).join('; ')}"`,
+    today
+  ]);
+  triggerCsvDownload(headers, rows, `cms_procedures_${dataYearValue()}_${today}.csv`);
 }
 
 // ─── EXPORT (standard CSV) ───
@@ -1835,7 +2364,7 @@ function exportCSV() {
   if (!allGroupedResults.length) return;
   const data = getFilteredSorted();
   const headers = [
-    'NPI','Provider Name','Credentials','Specialty','Entity Type',
+    'Data Year','NPI','Provider Name','Credentials','Specialty','Entity Type',
     'Street','City','State','Zip',
     'Tier','Complexity Score',
     'Total Procedure Codes','Total Services','Total Beneficiaries','Total Medicare Payment',
@@ -1843,6 +2372,7 @@ function exportCSV() {
   ];
   const today = new Date().toISOString().slice(0, 10);
   const rows = data.map(g => [
+    dataYearValue(),
     g.npi,
     `"${g.name.replace(/"/g,'""')}"`,
     `"${g.credentials.replace(/"/g,'""')}"`,
@@ -1876,6 +2406,7 @@ function triggerCsvDownload(headers, rows, filename) {
 
 // ─── SHAREPOINT EXPORT ───
 const SP_FIELDS = [
+  { key: 'dataYear',       default: 'Data Year' },
   { key: 'npi',            default: 'NPI' },
   { key: 'name',           default: 'Provider Name' },
   { key: 'credentials',    default: 'Credentials' },
@@ -1933,6 +2464,7 @@ function exportSharePointCSV(mapping) {
 
   const rows = data.map(g => SP_FIELDS.map(field => {
     switch (field.key) {
+      case 'dataYear':       return dataYearValue();
       case 'npi':            return g.npi;
       case 'name':           return `"${g.name.replace(/"/g,'""')}"`;
       case 'credentials':    return `"${g.credentials.replace(/"/g,'""')}"`;
@@ -1974,6 +2506,8 @@ function clearSearch() {
   clearSelectedCodes();
   currentResults = [];
   allGroupedResults = [];
+  procedureGroups = [];
+  resultsCapped = false;
   displayPage = 0;
   npiPage = 0;
   npiTotal = 0;
