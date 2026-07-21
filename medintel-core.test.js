@@ -4,6 +4,7 @@ const {
   getProviderName, getLocation, fmtCurrency, fmtNumber,
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
+  tokenizeMedical, searchDict, crossSuggest,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -816,5 +817,90 @@ describe('hospital accessors', () => {
     expect(getAvgMedicarePayment({ Avg_Mdcr_Pymt_Amt: '25000' })).toBe(25000);
     expect(getAvgTotalPayment({})).toBe(0);
     expect(getAvgMedicarePayment({})).toBe(0);
+  });
+});
+
+// ─── Code Lookup: tokenizeMedical / searchDict / crossSuggest ────────────────
+
+describe('tokenizeMedical()', () => {
+  it('lowercases, splits on non-alphanumerics, drops stopwords and short tokens', () => {
+    expect(tokenizeMedical('Repair of skull bone defect, 5 cm or less'))
+      .toEqual(['repair', 'skull', 'bone', 'defect']);
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(tokenizeMedical('')).toEqual([]);
+    expect(tokenizeMedical(undefined)).toEqual([]);
+  });
+});
+
+describe('searchDict()', () => {
+  const dict = [
+    { code: '27447', desc: 'Total knee arthroplasty', services: 500 },
+    { code: '62140', desc: 'Repair of skull bone defect, 5 cm or less', services: 133 },
+    { code: '62141', desc: 'Repair of skull bone defect, more than 5.0 cm', services: 86 },
+    { code: 'J1885', desc: 'Ketorolac injection', services: 90000 },
+  ];
+
+  it('matches items whose description contains every query token', () => {
+    expect(searchDict(dict, 'skull defect').map(i => i.code)).toEqual(['62140', '62141']);
+  });
+
+  it('preserves dictionary order (volume ranking)', () => {
+    expect(searchDict(dict, 'repair skull')[0].code).toBe('62140');
+  });
+
+  it('matches by code prefix', () => {
+    expect(searchDict(dict, '6214').map(i => i.code)).toEqual(['62140', '62141']);
+  });
+
+  it('is case-insensitive', () => {
+    expect(searchDict(dict, 'KNEE').map(i => i.code)).toEqual(['27447']);
+  });
+
+  it('applies prefix-stem fallback for long tokens (cranioplasty ≈ craniotomy)', () => {
+    const drgs = [{ code: '025', desc: 'CRANIOTOMY AND ENDOVASCULAR INTRACRANIAL PROCEDURES W MCC' }];
+    expect(searchDict(drgs, 'cranioplasty').map(i => i.code)).toEqual(['025']);
+  });
+
+  it('respects the limit', () => {
+    expect(searchDict(dict, 'skull', 1).length).toBe(1);
+  });
+
+  it('returns empty for empty query', () => {
+    expect(searchDict(dict, '')).toEqual([]);
+  });
+});
+
+describe('crossSuggest()', () => {
+  const drgs = [
+    { code: '025', desc: 'CRANIOTOMY AND ENDOVASCULAR INTRACRANIAL PROCEDURES W MCC' },
+    { code: '470', desc: 'MAJOR HIP AND KNEE JOINT REPLACEMENT W/O MCC' },
+    { code: '981', desc: 'EXTENSIVE OR PROCEDURE UNRELATED TO PRINCIPAL DIAGNOSIS' },
+  ];
+
+  it('ranks targets by description-token overlap', () => {
+    const out = crossSuggest('Total knee arthroplasty (joint replacement)', drgs);
+    expect(out[0].code).toBe('470');
+    expect(out[0].matchScore).toBeGreaterThan(0);
+  });
+
+  it('excludes zero-score targets', () => {
+    const out = crossSuggest('Total knee arthroplasty', drgs);
+    expect(out.map(o => o.code)).not.toContain('025');
+  });
+
+  it('uses prefix-stem so intracranial-family terms cross-match', () => {
+    const out = crossSuggest('Incision of intracranial artery', drgs);
+    expect(out.map(o => o.code)).toContain('025');
+  });
+
+  it('returns empty for empty source description', () => {
+    expect(crossSuggest('', drgs)).toEqual([]);
+  });
+
+  it('respects the limit', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ code: String(i), desc: 'knee replacement' }));
+    expect(crossSuggest('knee replacement', many, 5).length).toBe(5);
   });
 });
