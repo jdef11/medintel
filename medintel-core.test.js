@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 const {
   f, getPayment, getAvgCharge, getServices, getBenes,
   getProviderName, getLocation, fmtCurrency, fmtNumber,
-  escapeHtml, groupByProvider, groupByProcedure, parseCodes, extractDatasetVersions,
-  STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
+  escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
+  getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
+  extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -770,5 +771,50 @@ describe('parseCodes()', () => {
     expect(parseCodes('').invalid).toEqual([]);
     expect(parseCodes(undefined).codes).toEqual([]);
     expect(parseCodes('  \n ,, ').codes).toEqual([]);
+  });
+});
+
+// ─── parseDrgs() ─────────────────────────────────────────────────────────────
+
+describe('parseDrgs()', () => {
+  it('parses comma/space-separated DRG codes and zero-pads to 3 digits', () => {
+    expect(parseDrgs('025, 026 27').codes).toEqual(['025', '026', '027']);
+  });
+
+  it('dedupes equivalent padded/unpadded codes', () => {
+    expect(parseDrgs('25, 025').codes).toEqual(['025']);
+  });
+
+  it('collects invalid tokens', () => {
+    const r = parseDrgs('025, DRG25, 1234');
+    expect(r.codes).toEqual(['025']);
+    expect(r.invalid).toEqual(['DRG25', '1234']);
+  });
+
+  it('returns empty results for empty input', () => {
+    expect(parseDrgs('')).toEqual({ codes: [], invalid: [] });
+  });
+});
+
+// ─── Hospital (inpatient) field accessors ────────────────────────────────────
+
+describe('hospital accessors', () => {
+  it('getDischarges reads Tot_Dschrgs and space variant', () => {
+    expect(getDischarges({ Tot_Dschrgs: '42' })).toBe(42);
+    expect(getDischarges({ 'Tot Dschrgs': '17' })).toBe(17);
+    expect(getDischarges({})).toBe(0);
+  });
+
+  it('getAvgCoveredCharge tries known spelling variants', () => {
+    expect(getAvgCoveredCharge({ Avg_Submtd_Cvrd_Chrg: '120000.5' })).toBe(120000.5);
+    expect(getAvgCoveredCharge({ Avg_Sbmtd_Cvrd_Chrg: '99000' })).toBe(99000);
+    expect(getAvgCoveredCharge({})).toBe(0);
+  });
+
+  it('getAvgTotalPayment / getAvgMedicarePayment read their fields', () => {
+    expect(getAvgTotalPayment({ Avg_Tot_Pymt_Amt: '30000' })).toBe(30000);
+    expect(getAvgMedicarePayment({ Avg_Mdcr_Pymt_Amt: '25000' })).toBe(25000);
+    expect(getAvgTotalPayment({})).toBe(0);
+    expect(getAvgMedicarePayment({})).toBe(0);
   });
 });

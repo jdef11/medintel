@@ -219,6 +219,55 @@ function parseCodes(input) {
   return { codes, invalid };
 }
 
+// ─── MS-DRG PARSING ───
+// Parses a pasted list of MS-DRG codes (1–3 digits, e.g. "025, 026, 27").
+// DRGs are zero-padded to 3 digits as published by CMS. Returns { codes, invalid }.
+function parseDrgs(input) {
+  const tokens = String(input || '').split(/[\s,;]+/).filter(Boolean);
+  const codes = [];
+  const invalid = [];
+  const seen = new Set();
+  tokens.forEach(t => {
+    if (/^\d{1,3}$/.test(t)) {
+      const c = t.padStart(3, '0');
+      if (!seen.has(c)) { seen.add(c); codes.push(c); }
+    } else {
+      invalid.push(t);
+    }
+  });
+  return { codes, invalid };
+}
+
+// ─── HOSPITAL (INPATIENT) FIELD ACCESSORS ───
+// The Medicare Inpatient Hospitals datasets report per-DRG averages; totals are
+// derived as discharges × average. Field spellings have varied across dataset
+// years, so try the known variants.
+function getDischarges(row) {
+  const v = parseFloat(f(row, 'Tot_Dschrgs'));
+  if (!isNaN(v)) return v;
+  const v2 = parseFloat(f(row, 'Tot_Dschrg_Cnt'));
+  if (!isNaN(v2)) return v2;
+  return 0;
+}
+
+function getAvgCoveredCharge(row) {
+  for (const name of ['Avg_Submtd_Cvrd_Chrg', 'Avg_Sbmtd_Cvrd_Chrg', 'Avg_Cvrd_Chrg']) {
+    const v = parseFloat(f(row, name));
+    if (!isNaN(v)) return v;
+  }
+  return 0;
+}
+
+function getAvgTotalPayment(row) {
+  const v = parseFloat(f(row, 'Avg_Tot_Pymt_Amt'));
+  return isNaN(v) ? 0 : v;
+}
+
+function getAvgMedicarePayment(row) {
+  const v = parseFloat(f(row, 'Avg_Mdcr_Pymt_Amt'));
+  return isNaN(v) ? 0 : v;
+}
+
 // ─── DATASET VERSION DISCOVERY ───
 // data.cms.gov publishes each data year of a dataset as its own version with its
 // own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
@@ -371,5 +420,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }

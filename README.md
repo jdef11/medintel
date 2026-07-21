@@ -72,12 +72,16 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 | **Provider** | CMS Medicare | Name, NPI, specialty, state | Payment totals, procedure volumes, beneficiary counts |
 | **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — total services, provider count, payment per code, with a per-provider breakdown and a multi-year volume trend |
 | **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
-| **Market TAM** | CMS Medicare (Geography & Provider datasets) | A code family + payer-mix/ASP assumptions | National FFS volume per year, modeled all-payer volume, modeled device TAM, top surgeons |
+| **Market TAM** | CMS Medicare (Physician + Inpatient Hospital datasets) | A CPT code family, MS-DRG codes, payer-mix/ASP assumptions | National FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals |
 | **NPI Lookup** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
 
 ### Market TAM Tab
 
 Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and get: national Medicare FFS procedure volume (latest year + full multi-year trend), modeled total US procedures across all payers, modeled addressable case count, modeled total US TAM, and the top surgeons by volume. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
+
+### Hospital Billing View (MS-DRG)
+
+Because physician fees don't represent the money that buys devices, the TAM tab also takes **MS-DRG codes** (from any device coding guide). It pulls the Medicare Inpatient Hospitals datasets and shows, per year: national inpatient discharges, what hospitals **billed** (covered charges), what hospitals were **paid** (total, all sources — device cost bundled in), and Medicare's portion — plus the **top hospitals by discharge volume** for targeting. Caveat shown in-app: a DRG bundles every procedure in its group, so treat DRG dollars as facility-side context/ceiling and use per-CPT volume for procedure-level math.
 
 ### Bulk Code Search
 

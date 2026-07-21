@@ -917,6 +917,10 @@
           <textarea id="tamCodes" rows="3" placeholder="Paste the code family — e.g. 62140, 62141, 62142, 62143, 62145, 62146, 62147"></textarea>
         </div>
         <div class="field">
+          <div class="field-label">MS-DRG code(s) — hospital billing view</div>
+          <input type="text" id="tamDrgs" placeholder="e.g. 025, 026, 027 (from your coding guide)">
+        </div>
+        <div class="field">
           <div class="field-label">Medicare FFS share of all cases (%)</div>
           <input type="text" id="tamFfsShare" placeholder="e.g. 40" value="40">
         </div>
@@ -1058,7 +1062,9 @@ const DATA_API_ROOT = 'https://data.cms.gov/data-api/v1/dataset';
 const CATALOG_URL = 'https://data.cms.gov/data.json';
 const PROVIDER_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Provider and Service';
 const GEO_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Geography and Service';
-const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v1';
+const INP_PROVIDER_DATASET_TITLE = 'Medicare Inpatient Hospitals - by Provider and Service';
+const INP_GEO_DATASET_TITLE = 'Medicare Inpatient Hospitals - by Geography and Service';
+const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v2';
 const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog weekly
 
 // CORS proxies — we try multiple in order since free proxies can go down
@@ -1075,7 +1081,7 @@ let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
 let tamResults = null;        // Market TAM tab results ({codes, trends, surgeons, descMap})
 let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
-let datasetVersions = { provider: [], geography: [] }; // { year, id } newest-first
+let datasetVersions = { provider: [], geography: [], inpProvider: [], inpGeo: [] }; // { year, id } newest-first
 let selectedYear = '';        // '' = latest available year
 const trendCache = {};        // yearly trend results, keyed by `${code}|${state}`
 let displayPage = 0;          // current display page (CMS tabs)
@@ -1164,7 +1170,12 @@ async function loadDatasetVersions() {
     const cached = JSON.parse(localStorage.getItem(VERSIONS_CACHE_KEY) || 'null');
     if (cached && (Date.now() - cached.fetchedAt) < VERSIONS_CACHE_TTL_MS &&
         Array.isArray(cached.provider) && cached.provider.length) {
-      datasetVersions = { provider: cached.provider, geography: cached.geography || [] };
+      datasetVersions = {
+        provider: cached.provider,
+        geography: cached.geography || [],
+        inpProvider: cached.inpProvider || [],
+        inpGeo: cached.inpGeo || []
+      };
       populateYearSelect();
       return;
     }
@@ -1178,7 +1189,9 @@ async function loadDatasetVersions() {
   }
   datasetVersions = {
     provider: extractDatasetVersions(catalog, PROVIDER_DATASET_TITLE),
-    geography: extractDatasetVersions(catalog, GEO_DATASET_TITLE)
+    geography: extractDatasetVersions(catalog, GEO_DATASET_TITLE),
+    inpProvider: extractDatasetVersions(catalog, INP_PROVIDER_DATASET_TITLE),
+    inpGeo: extractDatasetVersions(catalog, INP_GEO_DATASET_TITLE)
   };
   try {
     localStorage.setItem(VERSIONS_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), ...datasetVersions }));
@@ -1909,7 +1922,8 @@ function validateInput() {
            document.getElementById('cityInput').value.trim();
   }
   if (currentTab === 'tam') {
-    return document.getElementById('tamCodes').value.trim();
+    return document.getElementById('tamCodes').value.trim() ||
+           document.getElementById('tamDrgs').value.trim();
   }
   if (currentTab === 'npi') {
     return document.getElementById('npiFirstName').value.trim() ||
@@ -2490,15 +2504,37 @@ async function fetchProviderTrend(npi) {
 async function executeTamSearch(codes) {
   const btn = document.getElementById('searchBtn');
 
-  btn.innerHTML = `<div class="spinner"></div> Fetching national volume (${codes.length} code${codes.length > 1 ? 's' : ''})...`;
-  const trends = await Promise.all(codes.map(code =>
-    fetchTrend(code, '')
-      .then(trend => ({ code, trend }))
-      .catch(e => ({ code, trend: null, error: e.message }))
-  ));
+  const drgParsed = parseDrgs(document.getElementById('tamDrgs').value);
+  if (drgParsed.invalid.length) {
+    showError(`Unrecognized MS-DRG code(s): ${drgParsed.invalid.slice(0, 10).join(', ')} — DRGs are 1–3 digit numbers (e.g. 025, 026, 027).`);
+    return;
+  }
+  const drgs = drgParsed.codes;
+  if (!codes.length && !drgs.length) {
+    showError('Enter HCPCS/CPT code(s) and/or MS-DRG code(s) to size the market.');
+    return;
+  }
 
-  btn.innerHTML = '<div class="spinner"></div> Finding top surgeons...';
-  const rowArrays = await Promise.all(codes.map(code => fetchCodeRows(code, '').catch(() => [])));
+  btn.innerHTML = `<div class="spinner"></div> Fetching national volume (${codes.length + drgs.length} code${codes.length + drgs.length > 1 ? 's' : ''})...`;
+  const [trends, drgTrends] = await Promise.all([
+    Promise.all(codes.map(code =>
+      fetchTrend(code, '')
+        .then(trend => ({ code, trend }))
+        .catch(e => ({ code, trend: null, error: e.message }))
+    )),
+    Promise.all(drgs.map(drg =>
+      fetchDrgTrend(drg)
+        .then(r => ({ code: drg, trend: r.trend, desc: r.desc }))
+        .catch(e => ({ code: drg, trend: null, desc: '', error: e.message }))
+    ))
+  ]);
+
+  btn.innerHTML = '<div class="spinner"></div> Finding top surgeons & hospitals...';
+  const [rowArrays, hospitalData] = await Promise.all([
+    Promise.all(codes.map(code => fetchCodeRows(code, '').catch(() => []))),
+    drgs.length ? fetchDrgHospitals(drgs).catch(e => { console.log('Hospital fetch failed:', e.message); return { hospitals: [], capped: false }; })
+                : Promise.resolve({ hospitals: [], capped: false })
+  ]);
   const codeSet = new Set(codes);
   const rows = rowArrays.flat().filter(r => codeSet.has((f(r, 'HCPCS_Cd') || '').toUpperCase()));
 
@@ -2510,15 +2546,105 @@ async function executeTamSearch(codes) {
 
   const surgeons = groupByProvider(rows).sort((a, b) => b.totalServices - a.totalServices);
 
-  if (!trends.some(t => t.trend) && !surgeons.length) {
+  if (!trends.some(t => t.trend) && !surgeons.length && !drgTrends.some(t => t.trend)) {
     tamResults = null;
     procedureGroups = []; // reuse the no-results empty state
-    renderNoTamResults(codes);
+    renderNoTamResults(codes.concat(drgs));
     return;
   }
 
-  tamResults = { codes, trends, surgeons, descMap };
+  tamResults = { codes, trends, surgeons, descMap, drgs, drgTrends, hospitals: hospitalData.hospitals, hospitalsCapped: hospitalData.capped };
   renderTamResults();
+}
+
+// ─── HOSPITAL (INPATIENT DRG) DATA ───
+// National per-DRG yearly totals from the Inpatient "by Geography and Service"
+// dataset. Rows report discharges + per-stay averages; totals = discharges × avg.
+async function fetchDrgTrend(drg) {
+  const versions = await requireVersions('inpGeo');
+  const cacheKey = `drg:${drg}`;
+  if (trendCache[cacheKey]) return trendCache[cacheKey];
+
+  let desc = '';
+  const results = await Promise.all(versions.map(async v => {
+    try {
+      let rows = await corsFetch(`${DATA_API_ROOT}/${v.id}/data?size=50&filter[DRG_Cd]=${encodeURIComponent(drg)}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+      // Some dataset years store DRG codes without leading zeros
+      if (!rows.length && drg !== String(parseInt(drg, 10))) {
+        rows = await corsFetch(`${DATA_API_ROOT}/${v.id}/data?size=50&filter[DRG_Cd]=${parseInt(drg, 10)}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+      }
+      let discharges = 0, paid = 0, billed = 0, mdcrPaid = 0;
+      rows.forEach(r => {
+        const d = getDischarges(r);
+        discharges += d;
+        paid += d * getAvgTotalPayment(r);
+        billed += d * getAvgCoveredCharge(r);
+        mdcrPaid += d * getAvgMedicarePayment(r);
+        if (!desc) desc = f(r, 'DRG_Desc') || '';
+      });
+      // renderTrendChart reads {services, payment}: bar = discharges, $ = paid to hospitals
+      return { year: v.year, services: discharges, payment: paid, billed, mdcrPaid, ok: true };
+    } catch (e) {
+      console.log(`DRG trend fetch failed for CY ${v.year}:`, e.message);
+      return { year: v.year, services: 0, payment: 0, billed: 0, mdcrPaid: 0, ok: false };
+    }
+  }));
+
+  const trend = results.sort((a, b) => a.year - b.year);
+  if (!trend.some(t => t.ok)) {
+    throw new Error('Could not fetch inpatient DRG data from the CMS API — please try again.');
+  }
+  const out = { trend, desc };
+  trendCache[cacheKey] = out;
+  return out;
+}
+
+// Top hospitals by discharges for a DRG set (latest Inpatient by-Provider dataset).
+async function fetchDrgHospitals(drgs) {
+  const versions = await requireVersions('inpProvider');
+  const latest = versions[0];
+  let capped = false;
+
+  const arrays = await Promise.all(drgs.map(async drg => {
+    let rows = [];
+    let offset = 0;
+    for (let i = 0; i < 3; i++) {
+      let page = await corsFetch(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[DRG_Cd]=${encodeURIComponent(drg)}`);
+      if (!page.length && offset === 0 && drg !== String(parseInt(drg, 10))) {
+        page = await corsFetch(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[DRG_Cd]=${parseInt(drg, 10)}`);
+      }
+      rows = rows.concat(page);
+      if (page.length < FETCH_SIZE) break;
+      offset += FETCH_SIZE;
+      if (i === 2) capped = true;
+    }
+    return rows;
+  }));
+
+  const map = {};
+  arrays.flat().forEach(r => {
+    const ccn = f(r, 'Rndrng_Prvdr_CCN') || f(r, 'Rndrng_Prvdr_Org_Name') || 'unknown';
+    if (!map[ccn]) {
+      map[ccn] = {
+        ccn,
+        name: f(r, 'Rndrng_Prvdr_Org_Name') || 'Hospital',
+        city: f(r, 'Rndrng_Prvdr_City') || '',
+        state: f(r, 'Rndrng_Prvdr_State_Abrvtn') || '',
+        discharges: 0, paid: 0, billed: 0
+      };
+    }
+    const h = map[ccn];
+    const d = getDischarges(r);
+    h.discharges += d;
+    h.paid += d * getAvgTotalPayment(r);
+    h.billed += d * getAvgCoveredCharge(r);
+  });
+
+  return {
+    hospitals: Object.values(map).sort((a, b) => b.discharges - a.discharges),
+    capped,
+    year: latest.year
+  };
 }
 
 function renderNoTamResults(codes) {
@@ -2553,7 +2679,7 @@ function tamAssumptions() {
 
 function renderTamResults() {
   if (!tamResults) return;
-  const { codes, trends, surgeons, descMap } = tamResults;
+  const { codes, trends, surgeons, descMap, drgs = [], drgTrends = [], hospitals = [], hospitalsCapped = false } = tamResults;
   const { share, portion, asp } = tamAssumptions();
 
   document.getElementById('emptyState').style.display = 'none';
@@ -2591,11 +2717,40 @@ function renderTamResults() {
 
   const failedCodes = perCode.filter(c => !c.year);
 
+  // Hospital (DRG) aggregates — latest year per DRG + combined yearly series
+  const perDrg = drgTrends.map(t => {
+    const latest = latestOkEntry(t.trend);
+    return {
+      code: t.code,
+      desc: t.desc || '',
+      year: latest ? latest.year : null,
+      discharges: latest ? latest.services : 0,
+      paid: latest ? latest.payment : 0,
+      billed: latest ? (latest.billed || 0) : 0,
+      mdcrPaid: latest ? (latest.mdcrPaid || 0) : 0,
+      error: t.error || null,
+    };
+  });
+  const drgYear = Math.max(...perDrg.map(d => d.year || 0), 0);
+  const hospPaid = perDrg.reduce((s, d) => s + d.paid, 0);
+  const hospBilled = perDrg.reduce((s, d) => s + d.billed, 0);
+  const hospMdcr = perDrg.reduce((s, d) => s + d.mdcrPaid, 0);
+  const hospDischarges = perDrg.reduce((s, d) => s + d.discharges, 0);
+  const drgByYear = {};
+  drgTrends.forEach(t => (t.trend || []).forEach(e => {
+    if (!e.ok) return;
+    if (!drgByYear[e.year]) drgByYear[e.year] = { year: e.year, services: 0, payment: 0, ok: true };
+    drgByYear[e.year].services += e.services;
+    drgByYear[e.year].payment += e.payment;
+  }));
+  const drgCombined = Object.values(drgByYear).sort((a, b) => a.year - b.year);
+  const hasHospital = drgs.length > 0 && perDrg.some(d => d.year);
+
   let html = `
     <div class="results-header">
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        <span>Market TAM — <strong>${codes.length}</strong> code${codes.length !== 1 ? 's' : ''}</span>
-        <span class="year-badge">CY ${baseYear || '—'} base · national Medicare FFS</span>
+        <span>Market TAM — <strong>${codes.length}</strong> CPT${drgs.length ? ` + <strong>${drgs.length}</strong> DRG` : ''} code${codes.length + drgs.length !== 1 ? 's' : ''}</span>
+        <span class="year-badge">CY ${(baseYear || drgYear) || '—'} base · national Medicare FFS</span>
       </div>
       <div style="display:flex;gap:8px;">
         <button class="export-btn" onclick="exportTamCSV()">
@@ -2605,6 +2760,7 @@ function renderTamResults() {
       </div>
     </div>
 
+    ${codes.length ? `
     <div class="result-card" style="margin-bottom:16px;">
       <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
         <div class="metric">
@@ -2624,15 +2780,79 @@ function renderTamResults() {
           <div class="metric-label">${estTAM ? `Est. Total US TAM / yr (@ ${fmtCurrency(asp)} ASP)` : 'Est. Total US TAM — enter an ASP'}</div>
         </div>
         <div class="metric">
-          <div class="metric-value">${fmtCurrency(totalProfPay)}</div>
-          <div class="metric-label">FFS Surgeon Fees Paid · CY ${baseYear || '—'}</div>
+          <div class="metric-value">${hasHospital ? fmtCurrency(hospPaid) : '—'}</div>
+          <div class="metric-label">${hasHospital ? `Paid to Hospitals (DRG set) · CY ${drgYear}` : 'Hospital view — add MS-DRG codes'}</div>
         </div>
       </div>
       <div class="year-note">
-        Volume is national Medicare Fee-for-Service (Part B professional claims). Hospitals' device spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share × ${portion}% addressable portion${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
+        Procedure counts come from Medicare FFS claims (the surgeon's claim is the only public CPT-level counter — the fee itself doesn't matter here). Hospital dollars come from inpatient DRG data below. Device spend is bundled into DRG payments and never itemized, so the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share × ${portion}% addressable portion${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
       </div>
+    </div>` : ''}
+
+    ${hasHospital ? `
+    <div class="result-card" style="margin-bottom:16px;">
+      <div class="provider-name" style="margin-bottom:8px;">Hospital billing &amp; payments — MS-DRG ${escapeHtml(drgs.join(', '))} <span class="year-badge">CY ${drgYear} · Medicare FFS inpatient</span></div>
+      <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
+        <div class="metric">
+          <div class="metric-value">${fmtNumber(Math.round(hospDischarges))}</div>
+          <div class="metric-label">Inpatient Discharges · CY ${drgYear}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">${fmtCurrency(hospBilled)}</div>
+          <div class="metric-label">Hospitals Billed (covered charges)</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value" style="color:var(--green);">${fmtCurrency(hospPaid)}</div>
+          <div class="metric-label">Hospitals Paid (total, all sources)</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">${fmtCurrency(hospMdcr)}</div>
+          <div class="metric-label">Medicare's Portion</div>
+        </div>
+      </div>
+      <div class="year-note">
+        “Billed” is chargemaster charges; “Paid” is what hospitals actually received per DRG stay (Medicare + beneficiary + other payers), device cost included but not itemized.
+        <strong>MS-DRGs bundle every procedure in the group</strong> — e.g. craniotomy DRGs include far more than your code family — so treat these as the facility-side ceiling and use the per-CPT volume above for procedure-level math.
+      </div>
+      <div class="proc-row proc-row-header">
+        <div>DRG</div><div>Description</div><div>Discharges</div><div>Billed</div><div>Paid</div>
+      </div>
+      ${perDrg.map(d => d.year ? `
+        <div class="proc-row">
+          <div class="proc-code">${escapeHtml(d.code)}</div>
+          <div class="proc-desc" title="${escapeHtml(d.desc)}">${escapeHtml(d.desc || '—')}${d.year !== drgYear ? ` <span style="color:var(--text-3);">(CY ${d.year})</span>` : ''}</div>
+          <div class="proc-num">${fmtNumber(Math.round(d.discharges))}</div>
+          <div class="proc-num">${fmtCurrency(d.billed)}</div>
+          <div class="proc-num">${fmtCurrency(d.paid)}</div>
+        </div>` : `
+        <div class="proc-row">
+          <div class="proc-code">${escapeHtml(d.code)}</div>
+          <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no data found${d.error ? ` — ${escapeHtml(d.error)}` : ''}</div>
+        </div>`).join('')}
+      <div class="procedures-list open" style="margin-top:12px;" id="tam-drg-trend"></div>
     </div>
 
+    <div class="result-card" style="margin-bottom:16px;">
+      <div class="provider-name" style="margin-bottom:4px;">Top hospitals by volume — MS-DRG ${escapeHtml(drgs.join(', '))} · CY ${drgYear}</div>
+      <div class="year-note" style="margin:0 0 10px;">
+        Ranked by inpatient discharges across the DRG set.${hospitalsCapped ? ' List may be incomplete — the fetch hit its row cap.' : ''}
+      </div>
+      ${hospitals.length ? `
+      <div class="proc-row proc-row-header">
+        <div>#</div><div>Hospital</div><div>Location</div><div>Discharges</div><div>Paid</div>
+      </div>
+      ${hospitals.slice(0, 15).map((h, i) => `
+        <div class="proc-row">
+          <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
+          <div class="proc-desc" title="CCN ${escapeHtml(h.ccn)}">${escapeHtml(h.name)}</div>
+          <div class="proc-desc">${escapeHtml([h.city, h.state].filter(Boolean).join(', '))}</div>
+          <div class="proc-num">${fmtNumber(Math.round(h.discharges))}</div>
+          <div class="proc-num">${fmtCurrency(h.paid)}</div>
+        </div>
+      `).join('')}` : '<div class="year-note" style="margin:0;">No hospital-level rows found for these DRGs.</div>'}
+    </div>` : ''}
+
+    ${codes.length ? `
     <div class="result-card" style="margin-bottom:16px;">
       <div class="provider-name" style="margin-bottom:8px;">Combined market volume by year</div>
       <div class="procedures-list open" style="border-top:none;margin-top:0;padding-top:0;" id="tam-combined-trend"></div>
@@ -2675,28 +2895,38 @@ function renderTamResults() {
           <div class="proc-num">${fmtCurrency(s.totalPayment)}</div>
         </div>
       `).join('')}` : '<div class="year-note" style="margin:0;">No unsuppressed providers found for these codes — every billing surgeon had ≤10 Medicare beneficiaries per code.</div>'}
-    </div>
+    </div>` : ''}
   `;
 
   resultsArea.innerHTML = html;
-  renderTrendChart(
-    document.getElementById('tam-combined-trend'),
-    `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}`,
-    combined
-  );
+  if (codes.length) {
+    renderTrendChart(
+      document.getElementById('tam-combined-trend'),
+      `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}`,
+      combined
+    );
+  }
+  if (hasHospital) {
+    renderTrendChart(
+      document.getElementById('tam-drg-trend'),
+      `National inpatient discharges (bars) and total payments to hospitals across MS-DRG ${escapeHtml(drgs.join(', '))} by calendar year.`,
+      drgCombined
+    );
+  }
   document.querySelector('.main').scrollTop = 0;
 }
 
 function exportTamCSV() {
   if (!tamResults) return;
-  const { trends, descMap } = tamResults;
+  const { trends, descMap, drgTrends = [] } = tamResults;
   const { share, portion, asp } = tamAssumptions();
   const today = new Date().toISOString().slice(0, 10);
   const headers = [
-    'HCPCS Code','Description','Latest Data Year','Medicare FFS Services',
+    'Row Type','Code','Description','Latest Data Year','Medicare FFS Services / Discharges',
     'Est Total US Procedures','FFS Share Assumption (%)',
     'Est Addressable Cases','Addressable Portion Assumption (%)',
-    'Device ASP Assumption','Est Total US TAM','FFS Surgeon Fees Paid','Date Exported'
+    'Device ASP Assumption','Est Total US TAM',
+    'Hospitals Billed (Cvrd Chrgs)','Hospitals Paid (Total)','Date Exported'
   ];
   const rows = trends.map(t => {
     const latest = latestOkEntry(t.trend);
@@ -2704,6 +2934,7 @@ function exportTamCSV() {
     const estTotal = Math.round(services / (share / 100));
     const estAddressable = Math.round(estTotal * (portion / 100));
     return [
+      'CPT',
       t.code,
       `"${(descMap[t.code] || '').replace(/"/g,'""')}"`,
       latest ? latest.year : '',
@@ -2714,10 +2945,23 @@ function exportTamCSV() {
       portion,
       asp || '',
       asp ? (estAddressable * asp).toFixed(2) : '',
-      latest ? latest.payment.toFixed(2) : '',
+      '', '',
       today
     ];
-  });
+  }).concat(drgTrends.map(t => {
+    const latest = latestOkEntry(t.trend);
+    return [
+      'MS-DRG',
+      t.code,
+      `"${(t.desc || '').replace(/"/g,'""')}"`,
+      latest ? latest.year : '',
+      latest ? Math.round(latest.services) : 0,
+      '', '', '', '', '', '',
+      latest ? (latest.billed || 0).toFixed(2) : '',
+      latest ? (latest.payment || 0).toFixed(2) : '',
+      today
+    ];
+  }));
   triggerCsvDownload(headers, rows, `medintel_market_tam_${today}.csv`);
 }
 
