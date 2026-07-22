@@ -9,6 +9,12 @@
 // breaks the deployed app. It has NO effect on the build and is not run in CI
 // (the sandbox/CI has no route to data.cms.gov).
 
+// Needs Node 18+ (global fetch). Fail with a clear message on older runtimes.
+if (typeof fetch !== 'function') {
+  console.error('This script needs Node 18 or newer (global fetch). Your version: ' + process.version);
+  process.exit(1);
+}
+
 const CATALOG_URL = 'https://data.cms.gov/data.json';
 const DATA_API_ROOT = 'https://data.cms.gov/data-api/v1/dataset';
 
@@ -61,7 +67,13 @@ async function main() {
   try {
     catalog = await getJson(CATALOG_URL);
     Array.isArray(catalog.dataset) ? ok(`dataset array present (${catalog.dataset.length} entries)`) : bad('no dataset array');
-  } catch (e) { bad(`catalog fetch failed: ${e.message}`); return finish(); }
+  } catch (e) {
+    // A 403/timeout here is a NETWORK/policy problem (blocked egress, proxy),
+    // not evidence that the app's assumptions drifted — say so plainly.
+    console.log(`  ✗ catalog fetch failed: ${e.message}`);
+    console.log('\n⚠ Could not reach data.cms.gov — this is a network/egress problem (blocked host, proxy, or offline), NOT an app data-drift issue. Run this from a machine with plain internet access to CMS.');
+    process.exit(2);
+  }
 
   console.log('\n2. Each dataset title resolves to at least one versioned UUID');
   const resolved = {};

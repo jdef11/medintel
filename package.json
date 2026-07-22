@@ -4,7 +4,8 @@
   "description": "Medical device sales intelligence — CMS Medicare data explorer",
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke": "node scripts/live-smoke.mjs"
   },
   "devDependencies": {
     "vitest": "^2.0.0"

@@ -219,7 +219,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 157 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
-- **`node scripts/live-smoke.mjs`** (run manually, network required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
+- **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
 - Manual UI validation: open in a browser (or `npx serve .`), exercise all six tabs with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
 
 ---
@@ -256,4 +256,4 @@ No environment variables, no server-side configuration, no database.
 
 - Work on a feature branch; push with `git push -u origin <branch-name>`, open a PR against `main`.
 - The GitHub Pages deploy (`.github/workflows/deploy.yml`) runs `npm test` and, on success, publishes `main` — so keep the suite green.
-- Run `npm test` before pushing; for changes that touch live-CMS assumptions, also run `node scripts/live-smoke.mjs` from a networked machine.
+- Run `npm test` before pushing; for changes that touch live-CMS assumptions, also run `npm run smoke` from a networked machine.
