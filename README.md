@@ -193,7 +193,7 @@ Look any of these up (and find related codes and their MS-DRGs) in the **Code Lo
 
 All are free, public, and maintained by the Centers for Medicare & Medicaid Services (CMS). Each CMS dataset has one versioned `{id}` per calendar year, discovered at runtime from the [catalog](https://data.cms.gov/data.json).
 
-**Verifying live-API assumptions:** `node scripts/live-smoke.mjs` (run from a network-connected machine) checks that all dataset titles resolve and the fields the app reads still exist — run it after a CMS data refresh.
+**Verifying live-API assumptions:** run `npm run smoke` (from any network-connected machine, Node 18+). It hits the real CMS API and checks that all dataset titles resolve and the exact fields the app reads still exist — run it after a CMS data refresh, or once after deploy to confirm the unique-beneficiary dataset is wired correctly. It prints a pass/fail per check and exits non-zero if anything drifted; it makes no changes.
 
 ---
 
