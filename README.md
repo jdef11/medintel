@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-80%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-157%20passing-brightgreen)
 
 ---
 
@@ -55,7 +55,7 @@ Providers are automatically tiered within each result set:
 
 Filter results to providers above a minimum annual procedure threshold — cut the noise and focus on high-volume revision specialists.
 
-### Four Search Modes
+### Six Search Modes
 
 | Tab | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
@@ -182,12 +182,18 @@ Look any of these up (and find related codes and their MS-DRGs) in the **Code Lo
 
 ## Data Sources
 
-| API | Endpoint | Auth Required |
-|-----|----------|:---:|
-| **CMS Medicare Physician & Other Practitioners** | `data.cms.gov/data-api/v1/dataset/{id}/data` | No |
-| **NPPES NPI Registry** | `npiregistry.cms.hhs.gov/api/?version=2.1` | No |
+| Dataset / API | Endpoint | Used for | Auth |
+|-----|----------|----------|:---:|
+| **Physician & Other Practitioners — by Provider and Service** | `data.cms.gov/data-api/v1/dataset/{id}/data` | Provider/Procedure/Geography searches | No |
+| **Physician & Other Practitioners — by Provider** (summary) | same, different `{id}` | True unique beneficiary counts | No |
+| **Physician & Other Practitioners — by Geography and Service** | same, different `{id}` | National/state volume trends, code dictionary | No |
+| **Medicare Inpatient Hospitals — by Geography and Service** | same, different `{id}` | Per-DRG hospital billing/payments, DRG dictionary | No |
+| **Medicare Inpatient Hospitals — by Provider and Service** | same, different `{id}` | Top hospitals by DRG | No |
+| **NPPES NPI Registry** | `npiregistry.cms.hhs.gov/api/?version=2.1` | NPI Lookup tab | No |
 
-Both APIs are free, public, and maintained by the Centers for Medicare & Medicaid Services (CMS).
+All are free, public, and maintained by the Centers for Medicare & Medicaid Services (CMS). Each CMS dataset has one versioned `{id}` per calendar year, discovered at runtime from the [catalog](https://data.cms.gov/data.json).
+
+**Verifying live-API assumptions:** `node scripts/live-smoke.mjs` (run from a network-connected machine) checks that all dataset titles resolve and the fields the app reads still exist — run it after a CMS data refresh.
 
 ---
 
@@ -204,7 +210,7 @@ Both APIs are free, public, and maintained by the Centers for Medicare & Medicai
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 80 unit tests via Vitest (`npm test`)
+- **Test suite:** 157 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile

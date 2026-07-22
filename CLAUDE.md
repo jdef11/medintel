@@ -14,7 +14,7 @@
 
 ```
 /
-├── cms-sales-intel (4).html   # The entire application (~1,500 lines)
+├── cms-sales-intel (4).html   # The entire UI (HTML/CSS + inline app script)
 ├── README.md                  # User-facing documentation and example searches
 ├── LICENSE                    # MIT License
 └── CLAUDE.md                  # This file
@@ -28,7 +28,7 @@ There are no subdirectories, no source maps, no compiled assets, and no configur
 
 The HTML file is divided into three sections:
 
-### 1. CSS (lines ~8–527)
+### 1. CSS (the `<style>` block in the `<head>`)
 
 Embedded in a `<style>` block. Uses CSS custom properties (variables) defined on `:root` for the entire design system:
 
@@ -40,7 +40,7 @@ Embedded in a `<style>` block. Uses CSS custom properties (variables) defined on
 
 CSS class naming: **kebab-case** (`.result-card`, `.procedures-list`, `.empty-state`)
 
-### 2. HTML (lines ~540–691)
+### 2. HTML (the `<body>` markup)
 
 Two-pane layout:
 - **Sidebar** (350px fixed): search tabs, input fields, search button, error box
@@ -48,28 +48,35 @@ Two-pane layout:
 
 HTML element IDs: **camelCase** (`searchBtn`, `resultsArea`, `emptyState`)
 
-### 3. JavaScript (lines ~693–1495)
+### 3. JavaScript (the inline `<script>` after `medintel-core.js`)
 
 Embedded in a `<script>` block. No modules, no imports. All functions are global. Key state variables are module-level:
 
 ```javascript
-let currentTab = 'provider'   // Active search tab
-let currentResults = []        // Current page results
-let currentPage = 0            // Current page (0-indexed)
-let totalFound = 0             // Total API results
-let isLoading = false          // Prevent double-submit
-let activeProxyIndex = 0       // Last successful CORS proxy
+let currentTab = 'provider'      // Active search tab
+let currentResults = []          // Raw rows for the NPI tab
+let allGroupedResults = []       // Grouped+scored providers (CMS tabs)
+let procedureGroups = []         // Procedure-grouped results (Procedure tab)
+let tamResults = null            // Market TAM tab results
+let displayPage = 0              // Client-side results page (CMS tabs)
+let npiPage = 0                  // NPI results page
+let isLoading = false            // Prevent double-submit
+let searchGen = 0                // Generation token — discards superseded searches
+let activeProxyIndex = 0         // Last successful CORS proxy
+let selectedYear = ''            // '' = latest; else a specific data year
 ```
+
+Pagination is client-side (`displayPage` + `prevPage`/`nextPage`) for the CMS tabs; the NPI tab paginates server-side via `executeNpiSearch(offset)` (guarded by `gotoNpiPage`). There is no `currentPage`/`totalFound` — results are grouped in memory and sliced per page.
 
 JavaScript function naming: **camelCase** (`executeSearch`, `groupByProvider`, `exportCSV`)
 
-Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `PAGE_SIZE`, `CORS_PROXIES`).
+Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `FETCH_SIZE`, `CORS_PROXIES`).
 
 ---
 
 ## Search Modes
 
-The app has four tabs, each with different input fields and API targets:
+The app has six tabs, each with different input fields and API targets:
 
 | Tab | API | Key Inputs | Query Parameter |
 |-----|-----|-----------|----------------|
@@ -204,22 +211,16 @@ const city = f(row, 'Rndrng_Prvdr_City');
 
 ### Pagination
 
-Pagination is offset-based. `executeSearch(offset)` is called with:
-- `offset = 0` for a new search
-- `offset = currentPage * PAGE_SIZE` for page navigation
-
-The `totalFound` variable holds the API's `filteredCount` and is used to show/hide the Next button.
+CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows in memory, then `renderResults()`/`renderProcedureResults()` slice `displayPage * DISPLAY_PAGE_SIZE`; `prevPage`/`nextPage` re-render. The NPI tab paginates **server-side** — `executeNpiSearch(offset)`, driven by `gotoNpiPage(offset)` (which enforces the loading guard and error handling). NPPES exposes no grand total, so the UI shows "more available →" rather than a page count.
 
 ---
 
 ## Testing
 
-There is no test suite. Validation is manual:
-- Open the file in a browser (or `npx serve .`)
-- Test all four search tabs with valid and invalid inputs
-- Check CSV export downloads
-- Test pagination if a search returns >50 results
-- Test with browser devtools network throttling to verify proxy fallback behavior
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 157 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+
+- **`node scripts/live-smoke.mjs`** (run manually, network required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
+- Manual UI validation: open in a browser (or `npx serve .`), exercise all six tabs with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
 
 ---
 
@@ -253,12 +254,6 @@ No environment variables, no server-side configuration, no database.
 
 ## Git Workflow
 
-- Branch: `claude/claude-md-mm9pmui0q3dfxmju-Xrefs`
-- Remote: `origin`
-- Push with: `git push -u origin <branch-name>`
-
-```bash
-git add CLAUDE.md
-git commit -m "Add CLAUDE.md with codebase documentation"
-git push -u origin claude/claude-md-mm9pmui0q3dfxmju-Xrefs
-```
+- Work on a feature branch; push with `git push -u origin <branch-name>`, open a PR against `main`.
+- The GitHub Pages deploy (`.github/workflows/deploy.yml`) runs `npm test` and, on success, publishes `main` — so keep the suite green.
+- Run `npm test` before pushing; for changes that touch live-CMS assumptions, also run `node scripts/live-smoke.mjs` from a networked machine.
