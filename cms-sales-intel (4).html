@@ -1097,10 +1097,11 @@ const DATA_API_ROOT = 'https://data.cms.gov/data-api/v1/dataset';
 // version UUIDs that rotate as CMS republishes data.
 const CATALOG_URL = 'https://data.cms.gov/data.json';
 const PROVIDER_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Provider and Service';
+const PROV_SUMMARY_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Provider';
 const GEO_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Geography and Service';
 const INP_PROVIDER_DATASET_TITLE = 'Medicare Inpatient Hospitals - by Provider and Service';
 const INP_GEO_DATASET_TITLE = 'Medicare Inpatient Hospitals - by Geography and Service';
-const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v2';
+const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v3';
 const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog weekly
 
 // CORS proxies — we try multiple in order since free proxies can go down
@@ -1121,7 +1122,7 @@ let drgDict = null;           // Code Lookup: [{code, desc, discharges, avgPaid}
 const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v1';
 const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
 let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
-let datasetVersions = { provider: [], geography: [], inpProvider: [], inpGeo: [] }; // { year, id } newest-first
+let datasetVersions = { provider: [], provSummary: [], geography: [], inpProvider: [], inpGeo: [] }; // { year, id } newest-first
 let selectedYear = '';        // '' = latest available year
 const trendCache = {};        // yearly trend results, keyed by `${code}|${state}`
 let displayPage = 0;          // current display page (CMS tabs)
@@ -1219,6 +1220,7 @@ async function loadDatasetVersions() {
         Array.isArray(cached.provider) && cached.provider.length) {
       datasetVersions = {
         provider: sanitizeVersions(cached.provider),
+        provSummary: sanitizeVersions(cached.provSummary),
         geography: sanitizeVersions(cached.geography),
         inpProvider: sanitizeVersions(cached.inpProvider),
         inpGeo: sanitizeVersions(cached.inpGeo)
@@ -1236,6 +1238,7 @@ async function loadDatasetVersions() {
   }
   datasetVersions = {
     provider: extractDatasetVersions(catalog, PROVIDER_DATASET_TITLE),
+    provSummary: extractDatasetVersions(catalog, PROV_SUMMARY_DATASET_TITLE),
     geography: extractDatasetVersions(catalog, GEO_DATASET_TITLE),
     inpProvider: extractDatasetVersions(catalog, INP_PROVIDER_DATASET_TITLE),
     inpGeo: extractDatasetVersions(catalog, INP_GEO_DATASET_TITLE)
@@ -1287,6 +1290,43 @@ function latestProviderBase() {
     return { base: `${DATA_API_ROOT}/${v.id}/data`, year: v.year };
   }
   return { base: BASE_URL, year: null };
+}
+
+// Base for the "by Provider" SUMMARY dataset (one row per NPI/year with a true
+// distinct-beneficiary count across all of a provider's services). Matched to
+// the data year currently in view so the unique count lines up with the
+// per-procedure rows on screen. Returns null if the dataset wasn't discovered.
+function provSummaryBase() {
+  const versions = datasetVersions.provSummary;
+  if (!versions || !versions.length) return null;
+  if (selectedYear) {
+    const v = versions.find(x => String(x.year) === String(selectedYear));
+    if (v) return `${DATA_API_ROOT}/${v.id}/data`;
+  }
+  return `${DATA_API_ROOT}/${versions[0].id}/data`;
+}
+
+// npi -> true unique beneficiary count, cached per (base, npi). Fetches the
+// summary row for each NPI. Bounded by the caller to the providers on screen.
+const benesCache = {};
+let beneGen = 0; // generation token so late bene fetches don't patch a newer render
+async function fetchProviderBenes(npis) {
+  const base = provSummaryBase();
+  if (!base) return {}; // dataset unavailable — callers keep the sum fallback
+  const out = {};
+  await Promise.all(npis.map(async npi => {
+    const key = `${base}|${npi}`;
+    if (benesCache[key] !== undefined) { out[npi] = benesCache[key]; return; }
+    try {
+      const rows = await corsFetch(`${base}?size=1&filter[Rndrng_NPI]=${encodeURIComponent(npi)}`);
+      const v = (rows && rows.length) ? getBenes(rows[0]) : null;
+      benesCache[key] = v;
+      out[npi] = v;
+    } catch (e) {
+      out[npi] = null; // leave the summed fallback in place for this NPI
+    }
+  }));
+  return out;
 }
 
 // Human-readable label of the data year the current results came from.
@@ -2089,8 +2129,8 @@ function renderResults() {
             <div class="metric-label">Total Services · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="metric">
-            <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
-            <div class="metric-label" title="Sum of per-procedure beneficiary counts — a patient seen for multiple codes is counted more than once, so this overstates unique patients.">Beneficiary-count sum †</div>
+            <div class="metric-value" id="bene-${escapeHtml(g.npi)}" data-sum="${g.totalBeneficiaries}">…</div>
+            <div class="metric-label" id="benelbl-${escapeHtml(g.npi)}">Unique Beneficiaries</div>
           </div>
           <div class="metric">
             <div class="metric-value">${g.procedures.length}</div>
@@ -2127,7 +2167,7 @@ function renderResults() {
   });
 
   html += `</div>`;
-  html += `<div class="year-note" style="margin:10px 0 0;">† Beneficiary-count sum adds each procedure's distinct-patient count, so a patient treated for several codes is counted once per code — it overstates unique patients and is not a headcount.</div>`;
+  html += `<div class="year-note" id="beneNote" style="margin:10px 0 0;display:none;"></div>`;
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
@@ -2138,6 +2178,44 @@ function renderResults() {
 
   resultsArea.innerHTML = html;
   document.querySelector('.main').scrollTop = 0;
+  patchProviderBenes(pageProviders);
+}
+
+// Replace each visible provider card's "Unique Beneficiaries" placeholder with
+// the true distinct count from the by-Provider summary dataset. Falls back to
+// the (footnoted) per-procedure sum for any provider whose count can't be
+// fetched. Search-generation aware so a newer render isn't clobbered.
+async function patchProviderBenes(pageProviders) {
+  const gen = ++beneGen;
+  const npis = pageProviders.map(g => g.npi).filter(n => n && n !== 'unknown');
+  if (!npis.length) return;
+  let map = {};
+  try { map = await fetchProviderBenes(npis); } catch (e) { /* keep fallbacks */ }
+  if (gen !== beneGen) return; // a newer results render superseded this one
+  let anyFallback = false;
+  pageProviders.forEach(g => {
+    const cell = document.getElementById(`bene-${g.npi}`);
+    const lbl = document.getElementById(`benelbl-${g.npi}`);
+    if (!cell) return;
+    const trueVal = map[g.npi];
+    if (typeof trueVal === 'number' && !isNaN(trueVal)) {
+      cell.textContent = fmtNumber(trueVal);
+    } else {
+      // Fallback: show the per-procedure sum, marked as an overcount.
+      cell.textContent = fmtNumber(parseFloat(cell.dataset.sum) || 0);
+      if (lbl) { lbl.textContent = 'Beneficiary-count sum †'; lbl.title = 'True unique count unavailable — this sums per-procedure counts and overstates unique patients.'; }
+      anyFallback = true;
+    }
+  });
+  const note = document.getElementById('beneNote');
+  if (note) {
+    if (anyFallback) {
+      note.style.display = '';
+      note.innerHTML = '† Unique-beneficiary count unavailable for some providers — showing the per-procedure sum instead, which counts a patient once per code and overstates unique patients.';
+    } else {
+      note.style.display = 'none';
+    }
+  }
 }
 
 function prevPage() {

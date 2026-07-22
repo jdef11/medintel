@@ -101,9 +101,13 @@ GET https://data.cms.gov/data-api/v1/dataset/92396110-2aed-4d63-a6a2-5d6207d46a2
 
 Pre-aggregated national/state totals per HCPCS code — used by the procedure **volume trend** panel (one small request per data year). States are identified by full name (`Rndrng_Prvdr_Geo_Desc`); use the `STATE_NAMES` map to convert abbreviations.
 
+### CMS Medicare Physician & Other Practitioners — by Provider (summary)
+
+One row per NPI per year with a **true distinct-beneficiary count** (`Tot_Benes`) across all of a provider's services. Used to show accurate "Unique Beneficiaries" on provider cards: `fetchProviderBenes()` fetches the summary row for each provider on the current results page (bounded to ~20/page, cached per NPI/year via `benesCache`) and `patchProviderBenes()` replaces the placeholder. Falls back to the per-procedure sum (footnoted) if the dataset is unreachable. Note: the procedure tab still shows a per-procedure *sum* — no public dataset gives a clean distinct-per-code count for a filtered view.
+
 ### Dataset versions / Data Year selector
 
-CMS publishes each calendar year of a dataset as its own version with its own UUID. The app discovers the year→UUID mapping at runtime from the official catalog (`https://data.cms.gov/data.json`) via `extractDatasetVersions()`, caches it in `localStorage` (`medintel_dataset_versions_v1`, 7-day TTL), and routes searches through `getDatasetBase()`. If the catalog is unreachable, searches fall back to the hardcoded latest-year `DATASET_ID`.
+CMS publishes each calendar year of a dataset as its own version with its own UUID. The app discovers the year→UUID mapping at runtime from the official catalog (`https://data.cms.gov/data.json`) via `extractDatasetVersions()` for five dataset families (`provider`, `provSummary`, `geography`, `inpProvider`, `inpGeo`), caches it in `localStorage` (`medintel_dataset_versions_v3`, 7-day TTL, shape-validated by `sanitizeVersions()`), and routes searches through `getDatasetBase()`. If the catalog is unreachable, searches fall back to the hardcoded latest-year `DATASET_ID`.
 
 ### NPPES NPI Registry
 
@@ -240,7 +244,8 @@ No environment variables, no server-side configuration, no database.
 
 - **Medicare Fee-for-Service only** — excludes Medicare Advantage, Medicaid, private insurance
 - **Privacy redaction** — provider+procedure combinations with ≤10 beneficiaries are excluded
-- **Fetch-cap grouping** — `groupByProvider()`/`groupByProcedure()` aggregate over the rows actually fetched (up to 3,000); when the cap is hit the UI shows a partial-totals warning (`resultsCapped`)
+- **Beneficiary counts** — `Tot_Benes` is distinct patients *per row* (provider+HCPCS+POS). Summing rows overstates unique patients, so provider cards show the true per-provider count from the by-Provider *summary* dataset; the procedure tab shows an explicit *sum* (labeled as such) because no dataset yields a clean distinct-per-code count for a filtered view
+- **Fetch-cap grouping** — `groupByProvider()`/`groupByProcedure()` aggregate over the rows actually fetched (up to 3,000); a genuine cap sets a per-fetch `capped` flag (not a row-count guess) and the UI shows a partial-totals warning
 - **Annual data** — CMS claims datasets are per calendar year; the Data Year selector switches dataset versions, and NPPES (NPI tab) is a live snapshot with no history
 - **CMS API max** — returns up to 1,000 rows per request; app fetches 50 at a time
 
