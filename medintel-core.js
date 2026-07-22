@@ -87,6 +87,15 @@ function fmtNumber(val) {
   return new Intl.NumberFormat('en-US').format(n);
 }
 
+// ─── NETWORK BACKOFF ───
+// Exponential backoff delay (ms) for retry attempt N (0-indexed), capped.
+// Pure so the schedule is unit-testable; the caller supplies the actual wait.
+function backoffDelay(attempt, baseMs, capMs) {
+  const base = baseMs || 500;
+  const cap = capMs || 8000;
+  return Math.min(cap, base * Math.pow(2, Math.max(0, attempt)));
+}
+
 // ─── CSV SAFETY ───
 // Escapes one CSV field. Two concerns:
 //  1. Quoting: wrap in double-quotes and double internal quotes when the value
@@ -612,5 +621,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }

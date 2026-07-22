@@ -5,7 +5,7 @@ const {
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
   tokenizeMedical, searchDict, crossSuggest,
-  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow,
+  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -1061,5 +1061,24 @@ describe('safeAvg()', () => {
   });
   it('returns null on zero denominator (no full-numerator leak)', () => {
     expect(safeAvg(1000, 0)).toBeNull();
+  });
+});
+
+// ─── backoffDelay() ──────────────────────────────────────────────────────────
+
+describe('backoffDelay()', () => {
+  it('doubles per attempt from the base', () => {
+    expect(backoffDelay(0, 500, 8000)).toBe(500);
+    expect(backoffDelay(1, 500, 8000)).toBe(1000);
+    expect(backoffDelay(2, 500, 8000)).toBe(2000);
+  });
+  it('caps at the ceiling', () => {
+    expect(backoffDelay(10, 500, 8000)).toBe(8000);
+  });
+  it('uses defaults when unspecified', () => {
+    expect(backoffDelay(0)).toBe(500);
+  });
+  it('treats negative attempts as 0', () => {
+    expect(backoffDelay(-3, 500, 8000)).toBe(500);
   });
 });
