@@ -543,100 +543,7 @@
     margin-bottom: 16px;
   }
 
-  /* ─── CPT BROWSER ─── */
   .sidebar { overflow-y: auto; }
-  .bundle-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 10px;
-  }
-  .bundle-chip {
-    padding: 4px 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-2);
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .bundle-chip:hover { border-color: var(--accent); color: var(--accent); }
-  .bundle-chip.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
-  .code-list {
-    max-height: 220px;
-    overflow-y: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-  }
-  .code-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 8px 12px;
-    cursor: pointer;
-    transition: background 0.1s;
-    border-bottom: 1px solid rgba(42,49,64,0.5);
-  }
-  .code-item:last-child { border-bottom: none; }
-  .code-item:hover { background: var(--surface-2); }
-  .code-item.selected { background: var(--accent-dim); }
-  .code-item-code {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--amber);
-    min-width: 46px;
-    padding-top: 1px;
-  }
-  .code-item-desc {
-    font-size: 11px;
-    color: var(--text-2);
-    line-height: 1.4;
-  }
-  .code-item-check {
-    margin-left: auto;
-    color: var(--accent);
-    font-size: 14px;
-    opacity: 0;
-    flex-shrink: 0;
-  }
-  .code-item.selected .code-item-check { opacity: 1; }
-  .selected-codes-area {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
-  }
-  .selected-code-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 6px;
-  }
-  .selected-code-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    background: var(--accent-dim);
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    padding: 3px 8px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--accent);
-  }
-  .selected-code-tag button {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 13px;
-    padding: 0;
-    line-height: 1;
-    opacity: 0.6;
-  }
-  .selected-code-tag button:hover { opacity: 1; }
 
   /* ─── TIER BADGES ─── */
   .tier-badge {
@@ -2626,35 +2533,23 @@ async function toggleTrend(code) {
 }
 
 async function fetchTrend(code, stateOverride = null) {
-  const versions = await requireVersions('geography');
-
   const stateVal = stateOverride !== null
     ? stateOverride
     : document.getElementById('stateSelectProc').value;
   const cacheKey = `${code.toUpperCase()}|${stateVal}`;
-  if (trendCache[cacheKey]) return trendCache[cacheKey];
-
-  const results = await Promise.all(versions.map(async v => {
-    let url = `${DATA_API_ROOT}/${v.id}/data?size=50`;
-    url += `&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
+  return fetchYearlyTrend('geography', cacheKey, async v => {
+    let url = `${DATA_API_ROOT}/${v.id}/data?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
     if (stateVal) {
       const geoDesc = STATE_NAMES[stateVal] || stateVal;
       url += `&filter[Rndrng_Prvdr_Geo_Lvl]=State&filter[Rndrng_Prvdr_Geo_Desc]=${encodeURIComponent(geoDesc)}`;
     } else {
       url += `&filter[Rndrng_Prvdr_Geo_Lvl]=National`;
     }
-    try {
-      const rows = await corsFetch(url);
-      let services = 0, payment = 0;
-      rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
-      return { year: v.year, services, payment, ok: true };
-    } catch (e) {
-      console.log(`Trend fetch failed for CY ${v.year}:`, e.message);
-      return { year: v.year, services: 0, payment: 0, ok: false };
-    }
-  }));
-
-  return finishTrend(results, cacheKey);
+    const rows = await corsFetch(url);
+    let services = 0, payment = 0;
+    rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
+    return { services, payment };
+  });
 }
 
 // Ensure the year → dataset-version list for a dataset kind is loaded.
@@ -2679,6 +2574,25 @@ function finishTrend(results, cacheKey) {
   // showing "data unavailable" permanently until reload.
   if (trend.every(t => t.ok)) trendCache[cacheKey] = trend;
   return trend;
+}
+
+// Shared multi-year trend fetcher: owns version discovery, cache read, the
+// per-year fan-out with error capture, and finishTrend. `buildYear(version)`
+// returns the year's aggregate ({ services, payment, ...extra }); the helper
+// stamps year/ok. Used by both the procedure and per-provider trend panels.
+async function fetchYearlyTrend(kind, cacheKey, buildYear) {
+  const versions = await requireVersions(kind);
+  if (trendCache[cacheKey]) return trendCache[cacheKey];
+  const results = await Promise.all(versions.map(async v => {
+    try {
+      const agg = await buildYear(v);
+      return { year: v.year, services: 0, payment: 0, ok: true, ...agg };
+    } catch (e) {
+      console.log(`Trend fetch failed for CY ${v.year}:`, e.message);
+      return { year: v.year, services: 0, payment: 0, ok: false };
+    }
+  }));
+  return finishTrend(results, cacheKey);
 }
 
 function renderTrendChart(box, captionHtml, trend) {
@@ -2741,32 +2655,20 @@ async function toggleProviderTrend(npi) {
 }
 
 async function fetchProviderTrend(npi) {
-  const versions = await requireVersions('provider');
-  const cacheKey = `npi:${npi}`;
-  if (trendCache[cacheKey]) return trendCache[cacheKey];
-
-  const results = await Promise.all(versions.map(async v => {
-    try {
-      let services = 0, payment = 0;
-      let offset = 0;
-      // A provider is one row per HCPCS+place-of-service; large organizations
-      // can exceed one page, so paginate a couple of times.
-      for (let i = 0; i < 3; i++) {
-        const url = `${DATA_API_ROOT}/${v.id}/data?size=${FETCH_SIZE}&offset=${offset}` +
-                    `&filter[Rndrng_NPI]=${encodeURIComponent(npi)}`;
-        const rows = await corsFetch(url);
-        rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
-        if (rows.length < FETCH_SIZE) break;
-        offset += FETCH_SIZE;
-      }
-      return { year: v.year, services, payment, ok: true };
-    } catch (e) {
-      console.log(`Provider trend fetch failed for CY ${v.year}:`, e.message);
-      return { year: v.year, services: 0, payment: 0, ok: false };
+  return fetchYearlyTrend('provider', `npi:${npi}`, async v => {
+    let services = 0, payment = 0, offset = 0;
+    // A provider is one row per HCPCS+place-of-service; large organizations
+    // can exceed one page, so paginate a couple of times.
+    for (let i = 0; i < 3; i++) {
+      const url = `${DATA_API_ROOT}/${v.id}/data?size=${FETCH_SIZE}&offset=${offset}` +
+                  `&filter[Rndrng_NPI]=${encodeURIComponent(npi)}`;
+      const rows = await corsFetch(url);
+      rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
+      if (rows.length < FETCH_SIZE) break;
+      offset += FETCH_SIZE;
     }
-  }));
-
-  return finishTrend(results, cacheKey);
+    return { services, payment };
+  });
 }
 
 // ─── MARKET TAM ───
