@@ -1039,26 +1039,6 @@
       <div class="year-note" id="yearNote">Checking available data years on data.cms.gov…</div>
     </div>
 
-    <!-- CPT Code Browser -->
-    <div class="sidebar-section" id="cptBrowserSection">
-      <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="toggleCptBrowser()">
-        <div class="section-label" style="margin-bottom:0;">CPT Code Browser</div>
-        <svg id="cptBrowserArrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--text-3);transition:transform 0.2s;flex-shrink:0;"><path d="m6 9 6 6 6-6"/></svg>
-      </div>
-      <div id="cptBrowserContent" style="display:none;margin-top:12px;">
-        <input type="text" id="cptSearch" placeholder="Search codes or descriptions..." oninput="filterCptCodes()">
-        <div style="margin-top:10px;">
-          <div class="bundle-chips" id="bundleChips"></div>
-          <div class="code-list" id="codeList"></div>
-        </div>
-        <div class="selected-codes-area" id="selectedCodesArea" style="display:none;">
-          <div class="section-label">Selected Codes <span id="selectedCodesCount" style="color:var(--accent);"></span></div>
-          <div class="selected-code-tags" id="selectedCodeTags"></div>
-          <button onclick="clearSelectedCodes()" style="margin-top:8px;font-size:11px;color:var(--text-3);background:none;border:none;cursor:pointer;padding:0;font-family:inherit;">Clear all codes</button>
-        </div>
-      </div>
-    </div>
-
     <div class="sidebar-section">
       <button class="btn" id="searchBtn" onclick="executeSearch()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
@@ -1152,10 +1132,8 @@ const MAX_BULK_CODES = 30;    // cap on codes per bulk search (one parallel fetc
 const DISPLAY_PAGE_SIZE = 20; // providers shown per display page
 const NPI_PAGE_SIZE = 50;     // NPI results per page
 let isLoading = false;
-let selectedCodes = [];        // codes selected in CPT browser
 let minVolumeFilter = 0;       // minimum total services filter
 let currentSortOrder = 'score'; // 'score' | 'payment'
-let activeBundleName = null;   // currently highlighted bundle in CPT browser
 
 // ─── INIT ───
 function init() {
@@ -1176,8 +1154,6 @@ function init() {
       el.appendChild(opt);
     });
   });
-
-  renderCptBrowser(CPT_BUNDLES[0]); // default to first bundle
 
   // Enter key triggers search
   document.querySelectorAll('input[type="text"]').forEach(input => {
@@ -1224,6 +1200,17 @@ async function fetchCatalog() {
   return null;
 }
 
+// Strictly validate a {year, id} version list from any untrusted source
+// (localStorage cache, catalog parse): integer year + UUID id only. Drops
+// anything malformed so a poisoned cache cannot inject markup downstream.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function sanitizeVersions(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map(v => ({ year: parseInt(v && v.year, 10), id: String(v && v.id || '') }))
+    .filter(v => Number.isInteger(v.year) && UUID_RE.test(v.id));
+}
+
 async function loadDatasetVersions() {
   // Serve from cache when fresh
   try {
@@ -1231,13 +1218,13 @@ async function loadDatasetVersions() {
     if (cached && (Date.now() - cached.fetchedAt) < VERSIONS_CACHE_TTL_MS &&
         Array.isArray(cached.provider) && cached.provider.length) {
       datasetVersions = {
-        provider: cached.provider,
-        geography: cached.geography || [],
-        inpProvider: cached.inpProvider || [],
-        inpGeo: cached.inpGeo || []
+        provider: sanitizeVersions(cached.provider),
+        geography: sanitizeVersions(cached.geography),
+        inpProvider: sanitizeVersions(cached.inpProvider),
+        inpGeo: sanitizeVersions(cached.inpGeo)
       };
-      populateYearSelect();
-      return;
+      if (datasetVersions.provider.length) { populateYearSelect(); return; }
+      // sanitization emptied the cache → fall through and refetch
     }
   } catch(e) { /* corrupt cache — refetch */ }
 
@@ -1269,8 +1256,8 @@ function populateYearSelect() {
   const sel = document.getElementById('dataYearSelect');
   const latest = years[0].year;
   const earliest = years[years.length - 1].year;
-  sel.innerHTML = `<option value="">Latest available (CY ${latest})</option>` +
-    years.map(v => `<option value="${v.year}">CY ${v.year}</option>`).join('');
+  sel.innerHTML = `<option value="">Latest available (CY ${escapeHtml(latest)})</option>` +
+    years.map(v => `<option value="${escapeHtml(v.year)}">CY ${escapeHtml(v.year)}</option>`).join('');
   if (selectedYear && years.some(v => String(v.year) === String(selectedYear))) {
     sel.value = String(selectedYear);
   }
@@ -1288,6 +1275,18 @@ function getDatasetBase() {
     if (v) return `${DATA_API_ROOT}/${v.id}/data`;
   }
   return BASE_URL;
+}
+
+// Latest-year provider dataset base, ignoring any selectedYear from another
+// tab. The Market TAM view is inherently latest-year (its Data Year selector is
+// hidden), so its surgeon fetches must not inherit a stale year picked
+// elsewhere. Returns { base, year }.
+function latestProviderBase() {
+  if (datasetVersions.provider.length) {
+    const v = datasetVersions.provider[0];
+    return { base: `${DATA_API_ROOT}/${v.id}/data`, year: v.year };
+  }
+  return { base: BASE_URL, year: null };
 }
 
 // Human-readable label of the data year the current results came from.
@@ -1340,99 +1339,6 @@ function switchTab(tab) {
   clearError();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
-}
-
-// ─── CPT CODE BROWSER ───
-function toggleCptBrowser() {
-  const content = document.getElementById('cptBrowserContent');
-  const arrow = document.getElementById('cptBrowserArrow');
-  const open = content.style.display !== 'none';
-  content.style.display = open ? 'none' : 'block';
-  arrow.style.transform = open ? '' : 'rotate(180deg)';
-}
-
-function renderCptBrowser(bundle) {
-  activeBundleName = bundle ? bundle.name : null;
-
-  // Render bundle chips
-  const chipsEl = document.getElementById('bundleChips');
-  chipsEl.innerHTML = CPT_BUNDLES.map(b => `
-    <button class="bundle-chip ${b.name === activeBundleName ? 'active' : ''}"
-            onclick="renderCptBrowser(CPT_BUNDLES.find(x=>x.name==='${escapeHtml(b.name)}'))">
-      ${escapeHtml(b.name)}
-    </button>
-  `).join('');
-
-  // Render code list for selected bundle
-  const searchTerm = document.getElementById('cptSearch').value.toLowerCase();
-  const codes = bundle ? bundle.codes : CPT_BUNDLES.flatMap(b => b.codes);
-  const filtered = searchTerm
-    ? codes.filter(c => c.code.includes(searchTerm) || c.desc.toLowerCase().includes(searchTerm))
-    : codes;
-
-  const listEl = document.getElementById('codeList');
-  if (!filtered.length) {
-    listEl.innerHTML = `<div style="padding:12px;font-size:12px;color:var(--text-3);text-align:center;">No codes match "${escapeHtml(searchTerm)}"</div>`;
-    return;
-  }
-  listEl.innerHTML = filtered.map(c => `
-    <div class="code-item ${selectedCodes.includes(c.code) ? 'selected' : ''}"
-         onclick="toggleCode('${escapeHtml(c.code)}', '${escapeHtml(c.desc).replace(/'/g, '&#39;')}')">
-      <div class="code-item-code">${escapeHtml(c.code)}</div>
-      <div class="code-item-desc">${escapeHtml(c.desc)}</div>
-      <div class="code-item-check">✓</div>
-    </div>
-  `).join('');
-}
-
-function filterCptCodes() {
-  const searchTerm = document.getElementById('cptSearch').value.toLowerCase();
-  // When searching, show all bundles' codes flattened
-  const bundle = searchTerm ? null : CPT_BUNDLES.find(b => b.name === activeBundleName) || CPT_BUNDLES[0];
-  renderCptBrowser(bundle);
-}
-
-function toggleCode(code, desc) {
-  const idx = selectedCodes.indexOf(code);
-  if (idx === -1) {
-    selectedCodes.push(code);
-  } else {
-    selectedCodes.splice(idx, 1);
-  }
-  updateSelectedCodeTags();
-  // Re-render code list to update checkmarks
-  filterCptCodes();
-}
-
-function clearSelectedCodes() {
-  selectedCodes = [];
-  updateSelectedCodeTags();
-  filterCptCodes();
-}
-
-function updateSelectedCodeTags() {
-  const area = document.getElementById('selectedCodesArea');
-  const tagsEl = document.getElementById('selectedCodeTags');
-  const countEl = document.getElementById('selectedCodesCount');
-
-  if (!selectedCodes.length) {
-    area.style.display = 'none';
-    return;
-  }
-  area.style.display = 'block';
-  countEl.textContent = `(${selectedCodes.length})`;
-
-  // Look up descriptions for display
-  const allCodes = CPT_BUNDLES.flatMap(b => b.codes);
-  tagsEl.innerHTML = selectedCodes.map(code => {
-    const entry = allCodes.find(c => c.code === code);
-    return `
-      <div class="selected-code-tag">
-        ${escapeHtml(code)}
-        <button onclick="toggleCode('${escapeHtml(code)}', '')" title="Remove">×</button>
-      </div>
-    `;
-  }).join('');
 }
 
 // ─── BUILD API URL ───
@@ -1591,14 +1497,18 @@ async function corsFetch(url) {
 }
 
 // ─── FETCH ALL ROWS (paginate through CMS API automatically) ───
+const MAX_FETCHES = 3; // page cap per code / per query (3,000 rows)
 
 // Fetch all pages for a single HCPCS code with an optional state filter.
-async function fetchCodeRows(code, stateVal) {
+// Returns { rows, capped } — capped=true means the page limit was hit with a
+// full final page, i.e. more rows exist than were fetched.
+async function fetchCodeRows(code, stateVal, baseOverride) {
   let allRows = [];
   let offset = 0;
-  const MAX_FETCHES = 3;
+  let capped = false;
+  const base = baseOverride || getDatasetBase();
   for (let i = 0; i < MAX_FETCHES; i++) {
-    let url = `${getDatasetBase()}?size=${FETCH_SIZE}&offset=${offset}`;
+    let url = `${base}?size=${FETCH_SIZE}&offset=${offset}`;
     url += `&filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(code)}`;
     if (stateVal) url += `&filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(stateVal)}`;
     console.log(`Fetching code ${code}:`, url);
@@ -1607,18 +1517,18 @@ async function fetchCodeRows(code, stateVal) {
     allRows = allRows.concat(data);
     if (data.length < FETCH_SIZE) break;
     offset += FETCH_SIZE;
+    if (i === MAX_FETCHES - 1) capped = true; // hit the cap with a full page
   }
-  return allRows;
+  return { rows: allRows, capped };
 }
 
+// Returns { rows, capped }. `capped` is an accurate per-query flag (set only
+// when a fetch genuinely hit the page cap), not a fragile row-count heuristic.
 async function fetchAllRows(searchCodes = []) {
   const btn = document.getElementById('searchBtn');
 
-  // Multi-code mode: fetch each code (typed in bulk and/or selected in the
-  // CPT browser) in parallel then merge. A single typed code stays on the
-  // standard path below so it composes with the keyword filter.
-  const useMultiCode = selectedCodes.length > 0 || searchCodes.length > 1;
-  if (useMultiCode && searchCodes.length > 0) {
+  // Multi-code mode: fetch each code in parallel then merge.
+  if (searchCodes.length > 1) {
     const stateVal = currentTab === 'geography'
       ? document.getElementById('stateSelectGeo').value
       : currentTab === 'procedure'
@@ -1627,13 +1537,13 @@ async function fetchAllRows(searchCodes = []) {
 
     btn.innerHTML = `<div class="spinner"></div> Fetching ${searchCodes.length} code${searchCodes.length > 1 ? 's' : ''}...`;
     const results = await Promise.all(searchCodes.map(code => fetchCodeRows(code, stateVal)));
-    return results.flat();
+    return { rows: results.flatMap(r => r.rows), capped: results.some(r => r.capped) };
   }
 
   // Single-code / standard mode
   let allRows = [];
   let offset = 0;
-  const MAX_FETCHES = 3;
+  let capped = false;
   for (let i = 0; i < MAX_FETCHES; i++) {
     if (i > 0) btn.innerHTML = `<div class="spinner"></div> Loading (${allRows.length.toLocaleString()} rows)...`;
     const url = buildApiUrl(offset);
@@ -1643,8 +1553,9 @@ async function fetchAllRows(searchCodes = []) {
     allRows = allRows.concat(data);
     if (data.length < FETCH_SIZE) break;
     offset += FETCH_SIZE;
+    if (i === MAX_FETCHES - 1) capped = true;
   }
-  return allRows;
+  return { rows: allRows, capped };
 }
 
 // ─── SEARCH ───
@@ -1664,18 +1575,18 @@ async function executeSearch() {
   if (isLoading) return;
 
   const hasInput = validateInput();
-  if (!hasInput && selectedCodes.length === 0) {
-    showError('Please enter at least one search criterion or select CPT codes from the browser.');
+  if (!hasInput) {
+    showError('Please enter at least one search criterion.');
     return;
   }
 
-  // Bulk code list: typed codes + CPT-browser selections, deduped.
+  // Bulk code list from the active tab's code field, deduped.
   const typed = getTypedCodes();
   if (typed.invalid.length) {
     showError(`Unrecognized code(s): ${typed.invalid.slice(0, 10).join(', ')}${typed.invalid.length > 10 ? '…' : ''} — HCPCS/CPT codes are 4–5 letters/digits (e.g. 27447, J1885, 0232T). Separate codes with commas, spaces, or new lines.`);
     return;
   }
-  const searchCodes = [...new Set([...selectedCodes.map(c => c.toUpperCase()), ...typed.codes])];
+  const searchCodes = [...new Set(typed.codes)];
   if (searchCodes.length > MAX_BULK_CODES) {
     showError(`Too many codes (${searchCodes.length}) — the bulk search limit is ${MAX_BULK_CODES} codes per search. Split the list and run it in batches.`);
     return;
@@ -1702,7 +1613,8 @@ async function executeSearch() {
     } else if (currentTab === 'lookup') {
       await executeLookupSearch();
     } else {
-      let allRows = await fetchAllRows(searchCodes);
+      const fetched = await fetchAllRows(searchCodes);
+      let allRows = fetched.rows;
 
       // Safety net: when searching by code(s), verify each row matches one of
       // them (guards against API filter bypass).
@@ -1711,9 +1623,9 @@ async function executeSearch() {
         allRows = allRows.filter(row => codeSet.has((f(row, 'HCPCS_Cd') || '').toUpperCase()));
       }
 
-      // Totals are computed from the rows we could fetch; flag when the fetch
-      // hit its cap so the UI can say the aggregates are partial.
-      resultsCapped = allRows.length >= FETCH_SIZE * 3;
+      // Accurate cap flag from the fetch itself (not a row-count guess) — set
+      // only when a genuine page-limit truncation occurred.
+      resultsCapped = fetched.capped;
 
       if (currentTab === 'procedure') {
         // Procedure tab: group by HCPCS code (one card per procedure)
@@ -1800,6 +1712,9 @@ async function executeNpiSearch(offset = 0) {
 
   currentResults = data.results || [];
   npiPage = Math.floor(skip / NPI_PAGE_SIZE);
+  // NPPES `result_count` is the number of records in THIS response (capped by
+  // `limit`), not the total number of matches — the API exposes no grand total.
+  // Treat it only as this page's size, never as a match count.
   npiTotal = data.result_count || currentResults.length;
 
   renderNpiResults();
@@ -1830,8 +1745,8 @@ function renderNpiResults() {
     <div class="results-header">
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span>
-          Found <strong>${npiTotal.toLocaleString()}</strong> NPI records
-          ${npiPage > 0 ? `(page ${npiPage + 1})` : ''}
+          Showing <strong>${currentResults.length}</strong> record${currentResults.length !== 1 ? 's' : ''}
+          ${npiPage > 0 ? `· page ${npiPage + 1}` : ''}${hasMore ? ' · more available →' : ''}
         </span>
         <span class="year-badge snapshot" title="The NPPES registry is a live directory — results reflect the registry as of today, not a historical year">Live registry snapshot — ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
       </div>
@@ -1931,7 +1846,7 @@ function renderNpiResults() {
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="executeNpiSearch(${(npiPage - 1) * NPI_PAGE_SIZE})" ${npiPage === 0 ? 'disabled' : ''}>← Previous</button>
-      <span class="page-info">Page ${npiPage + 1}${npiTotal > NPI_PAGE_SIZE ? ` of ~${Math.ceil(npiTotal / NPI_PAGE_SIZE)}` : ''}</span>
+      <span class="page-info">Page ${npiPage + 1}${hasMore ? '' : ' · last page'}</span>
       <button class="page-btn" onclick="executeNpiSearch(${(npiPage + 1) * NPI_PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
     </div>
   `;
@@ -1951,23 +1866,16 @@ function exportNpiCSV() {
     const isOrg = r.enumeration_type === 'NPI-2';
     return [
       r.number, isOrg ? 'Organization' : 'Individual',
-      `"${(b.first_name || '').replace(/"/g,'""')}"`, `"${(b.last_name || '').replace(/"/g,'""')}"`,
-      `"${(b.credential || '').replace(/"/g,'""')}"`, `"${(b.organization_name || '').replace(/"/g,'""')}"`,
-      `"${(t.desc || '').replace(/"/g,'""')}"`, t.code || '', `"${(t.license || '').replace(/"/g,'""')}"`,
+      b.first_name || '', b.last_name || '',
+      b.credential || '', b.organization_name || '',
+      t.desc || '', t.code || '', t.license || '',
       b.gender || '', a.telephone_number || '',
-      `"${([a.address_1, a.address_2].filter(Boolean).join(', ')).replace(/"/g,'""')}"`,
+      [a.address_1, a.address_2].filter(Boolean).join(', '),
       a.city || '', a.state || '', (a.postal_code || '').slice(0,5),
       b.status === 'A' ? 'Active' : b.status || ''
     ];
   });
-  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `npi_lookup_export_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  triggerCsvDownload(headers, rows, `npi_lookup_export_${new Date().toISOString().slice(0,10)}.csv`);
 }
 
 function validateInput() {
@@ -2077,11 +1985,9 @@ function renderResults() {
   const resultsArea = document.getElementById('resultsArea');
 
   if (!allGroupedResults.length) {
-    const searchedCode = selectedCodes.length > 0
-      ? selectedCodes.join(', ')
-      : currentTab === 'procedure'
-        ? document.getElementById('hcpcsCode').value.trim()
-        : '';
+    const searchedCode = currentTab === 'procedure'
+      ? document.getElementById('hcpcsCode').value.trim()
+      : '';
     const procedureNote = searchedCode
       ? `<p>No Medicare Part B data found for code(s) <strong>${escapeHtml(searchedCode)}</strong>. This can happen when:</p>
          <ul style="text-align:left;margin:8px 0 0;padding-left:20px;color:var(--text-2);font-size:0.9em;">
@@ -2184,14 +2090,14 @@ function renderResults() {
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
-            <div class="metric-label">Beneficiaries</div>
+            <div class="metric-label" title="Sum of per-procedure beneficiary counts — a patient seen for multiple codes is counted more than once, so this overstates unique patients.">Beneficiary-count sum †</div>
           </div>
           <div class="metric">
             <div class="metric-value">${g.procedures.length}</div>
             <div class="metric-label">Procedure Codes</div>
           </div>
           <div class="metric">
-            <div class="metric-value">${fmtCurrency(g.totalPayment / (g.totalServices || 1))}</div>
+            <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
             <div class="metric-label">Avg Payment / Service</div>
           </div>
         </div>
@@ -2221,6 +2127,7 @@ function renderResults() {
   });
 
   html += `</div>`;
+  html += `<div class="year-note" style="margin:10px 0 0;">† Beneficiary-count sum adds each procedure's distinct-patient count, so a patient treated for several codes is counted once per code — it overstates unique patients and is not a headcount.</div>`;
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
@@ -2255,9 +2162,7 @@ function renderProcedureResults() {
   const resultsArea = document.getElementById('resultsArea');
 
   if (!procedureGroups.length) {
-    const searchedCode = selectedCodes.length > 0
-      ? selectedCodes.join(', ')
-      : document.getElementById('hcpcsCode').value.trim();
+    const searchedCode = document.getElementById('hcpcsCode').value.trim();
     const procedureNote = searchedCode
       ? `<p>No Medicare Part B data found for code(s) <strong>${escapeHtml(searchedCode)}</strong> in ${escapeHtml(dataYearLabel())}. This can happen when:</p>
          <ul style="text-align:left;margin:8px 0 0;padding-left:20px;color:var(--text-2);font-size:0.9em;">
@@ -2348,14 +2253,14 @@ function renderProcedureResults() {
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
-            <div class="metric-label">Beneficiaries</div>
+            <div class="metric-label" title="Sum of each provider's beneficiary count for this code — a patient treated by more than one provider is counted more than once.">Beneficiary-count sum †</div>
           </div>
           <div class="metric">
             <div class="metric-value">${fmtCurrency(g.totalPayment)}</div>
             <div class="metric-label">Total Medicare Payment</div>
           </div>
           <div class="metric">
-            <div class="metric-value">${fmtCurrency(g.totalPayment / (g.totalServices || 1))}</div>
+            <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
             <div class="metric-label">Avg Payment / Service</div>
           </div>
         </div>
@@ -2385,6 +2290,7 @@ function renderProcedureResults() {
   });
 
   html += `</div>`;
+  html += `<div class="year-note" style="margin:10px 0 0;">† Beneficiary-count sum adds each provider's distinct-patient count for the code, so a patient treated by multiple providers is counted more than once — it overstates unique patients.</div>`;
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
@@ -2597,13 +2503,17 @@ async function executeTamSearch(codes) {
   ]);
 
   btn.innerHTML = '<div class="spinner"></div> Finding top surgeons & hospitals...';
-  const [rowArrays, hospitalData] = await Promise.all([
-    Promise.all(codes.map(code => fetchCodeRows(code, '').catch(() => []))),
+  // Force the latest year for surgeon fetches — the TAM tab hides the Data Year
+  // selector, so it must not inherit a stale year picked on another tab.
+  const { base: surgeonBase, year: surgeonYear } = latestProviderBase();
+  const [rowResults, hospitalData] = await Promise.all([
+    Promise.all(codes.map(code => fetchCodeRows(code, '', surgeonBase).catch(() => ({ rows: [], capped: false })))),
     drgs.length ? fetchDrgHospitals(drgs).catch(e => { console.log('Hospital fetch failed:', e.message); return { hospitals: [], capped: false }; })
                 : Promise.resolve({ hospitals: [], capped: false })
   ]);
   const codeSet = new Set(codes);
-  const rows = rowArrays.flat().filter(r => codeSet.has((f(r, 'HCPCS_Cd') || '').toUpperCase()));
+  const rows = rowResults.flatMap(r => r.rows).filter(r => codeSet.has((f(r, 'HCPCS_Cd') || '').toUpperCase()));
+  const surgeonsCapped = rowResults.some(r => r.capped);
 
   const descMap = {};
   rows.forEach(r => {
@@ -2620,7 +2530,7 @@ async function executeTamSearch(codes) {
     return;
   }
 
-  tamResults = { codes, trends, surgeons, descMap, drgs, drgTrends, hospitals: hospitalData.hospitals, hospitalsCapped: hospitalData.capped };
+  tamResults = { codes, trends, surgeons, surgeonsCapped, surgeonYear, descMap, drgs, drgTrends, hospitals: hospitalData.hospitals, hospitalsCapped: hospitalData.capped };
   renderTamResults();
 }
 
@@ -2746,14 +2656,15 @@ function tamAssumptions() {
 
 function renderTamResults() {
   if (!tamResults) return;
-  const { codes, trends, surgeons, descMap, drgs = [], drgTrends = [], hospitals = [], hospitalsCapped = false } = tamResults;
+  const { codes, trends, surgeons, surgeonsCapped = false, surgeonYear = null, descMap, drgs = [], drgTrends = [], hospitals = [], hospitalsCapped = false } = tamResults;
   const { share, portion, asp } = tamAssumptions();
 
   document.getElementById('emptyState').style.display = 'none';
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
 
-  // Per-code latest-year numbers
+  // Per-code latest-year numbers, then the TAM model — computed by the tested
+  // pure helpers in medintel-core.js.
   const perCode = trends.map(t => {
     const latest = latestOkEntry(t.trend);
     return {
@@ -2765,23 +2676,12 @@ function renderTamResults() {
       error: t.error || null,
     };
   });
-  const baseYear = Math.max(...perCode.map(c => c.year || 0), 0);
-  const totalFFS = perCode.reduce((s, c) => s + c.services, 0);
-  const totalProfPay = perCode.reduce((s, c) => s + c.payment, 0);
-  const estTotal = totalFFS / (share / 100);
-  const estAddressable = estTotal * (portion / 100);
-  const estTAM = asp ? estAddressable * asp : null;
+  const model = computeTamModel(perCode, { share, portion, asp });
+  const { totalFFS, estTotal, estAddressable, estTAM, baseYear, mixedYears, minYear } = model;
 
-  // Combined yearly series across codes
-  const byYear = {};
-  trends.forEach(t => (t.trend || []).forEach(e => {
-    if (!e.ok) return;
-    if (!byYear[e.year]) byYear[e.year] = { year: e.year, services: 0, payment: 0, ok: true };
-    byYear[e.year].services += e.services;
-    byYear[e.year].payment += e.payment;
-  }));
-  const combined = Object.values(byYear).sort((a, b) => a.year - b.year);
-
+  // Combined yearly series with per-year completeness (a year missing one or
+  // more codes is flagged, not silently charted as a dip).
+  const combined = combineTrendsByYear(trends);
   const failedCodes = perCode.filter(c => !c.year);
 
   // Hospital (DRG) aggregates — latest year per DRG + combined yearly series
@@ -2817,7 +2717,7 @@ function renderTamResults() {
     <div class="results-header">
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span>Market TAM — <strong>${codes.length}</strong> CPT${drgs.length ? ` + <strong>${drgs.length}</strong> DRG` : ''} code${codes.length + drgs.length !== 1 ? 's' : ''}</span>
-        <span class="year-badge">CY ${(baseYear || drgYear) || '—'} base · national Medicare FFS</span>
+        <span class="year-badge">${mixedYears ? `CY ${minYear}–${baseYear} (mixed)` : `CY ${(baseYear || drgYear) || '—'}`} base · national Medicare FFS</span>
       </div>
       <div style="display:flex;gap:8px;">
         <button class="export-btn" onclick="exportTamCSV()">
@@ -2832,7 +2732,7 @@ function renderTamResults() {
       <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
         <div class="metric">
           <div class="metric-value">${fmtNumber(totalFFS)}</div>
-          <div class="metric-label">Medicare FFS Procedures · CY ${baseYear || '—'}</div>
+          <div class="metric-label">Medicare FFS Procedures · ${mixedYears ? `mixed CY ${minYear}–${baseYear}` : `CY ${baseYear || '—'}`}</div>
         </div>
         <div class="metric">
           <div class="metric-value">${fmtNumber(Math.round(estTotal))}</div>
@@ -2853,6 +2753,7 @@ function renderTamResults() {
       </div>
       <div class="year-note">
         Procedure counts come from Medicare FFS claims (the surgeon's claim is the only public CPT-level counter — the fee itself doesn't matter here). Hospital dollars come from inpatient DRG data below. Device spend is bundled into DRG payments and never itemized, so the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share × ${portion}% addressable portion${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
+        ${mixedYears ? `<br><strong style="color:var(--amber);">Mixed data years:</strong> not all codes have the same latest year — this headline sums each code's most recent available year (CY ${minYear}–${baseYear}). See the per-code table for each code's year.` : ''}
       </div>
     </div>` : ''}
 
@@ -2945,9 +2846,9 @@ function renderTamResults() {
     </div>
 
     <div class="result-card">
-      <div class="provider-name" style="margin-bottom:4px;">Top surgeons by volume · ${escapeHtml(dataYearShort())}</div>
+      <div class="provider-name" style="margin-bottom:4px;">Top surgeons by volume · ${surgeonYear ? `CY ${surgeonYear}` : 'latest year'}</div>
       <div class="year-note" style="margin:0 0 10px;">
-        From provider-level claims: surgeons with ≤10 Medicare beneficiaries per code per year are suppressed by CMS, so this list is the visible top of the market — use it for targeting, not for market math.
+        From provider-level claims: surgeons with ≤10 Medicare beneficiaries per code per year are suppressed by CMS, so this list is the visible top of the market — use it for targeting, not for market math.${surgeonsCapped ? ` <strong style="color:var(--amber);">Partial:</strong> at least one code returned more than ${(FETCH_SIZE * MAX_FETCHES).toLocaleString()} provider rows and was truncated, so high-volume surgeons may be missing from this ranking.` : ''}
       </div>
       ${surgeons.length ? `
       <div class="proc-row proc-row-header">
@@ -2967,9 +2868,10 @@ function renderTamResults() {
 
   resultsArea.innerHTML = html;
   if (codes.length) {
+    const partialYears = combined.filter(y => !y.complete).map(y => y.year);
     renderTrendChart(
       document.getElementById('tam-combined-trend'),
-      `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}`,
+      `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data at all: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}${partialYears.length ? ` <strong style="color:var(--amber);">Years ${partialYears.join(', ')} are partial</strong> — one or more codes had no data that year, so those bars sum fewer codes and should not be read as dips.` : ''}`,
       combined
     );
   }
@@ -3003,7 +2905,7 @@ function exportTamCSV() {
     return [
       'CPT',
       t.code,
-      `"${(descMap[t.code] || '').replace(/"/g,'""')}"`,
+      descMap[t.code] || '',
       latest ? latest.year : '',
       services,
       estTotal,
@@ -3020,7 +2922,7 @@ function exportTamCSV() {
     return [
       'MS-DRG',
       t.code,
-      `"${(t.desc || '').replace(/"/g,'""')}"`,
+      t.desc || '',
       latest ? latest.year : '',
       latest ? Math.round(latest.services) : 0,
       '', '', '', '', '', '',
@@ -3253,7 +3155,7 @@ function exportProcedureCSV() {
   const data = getFilteredSortedProcedures();
   const headers = [
     'Data Year','HCPCS Code','Description',
-    'Total Services','Providers','Total Beneficiaries',
+    'Total Services','Providers','Beneficiary-Count Sum (overstates unique patients)',
     'Total Medicare Payment','Avg Payment Per Service',
     'Top Provider NPIs','Date Exported'
   ];
@@ -3261,13 +3163,13 @@ function exportProcedureCSV() {
   const rows = data.map(g => [
     dataYearValue(),
     g.code,
-    `"${(g.desc || '').replace(/"/g,'""')}"`,
+    g.desc || '',
     g.totalServices,
     g.providerCount,
     g.totalBeneficiaries,
     g.totalPayment.toFixed(2),
-    (g.totalPayment / (g.totalServices || 1)).toFixed(2),
-    `"${g.providers.slice(0, 10).map(p => p.npi).join('; ')}"`,
+    g.totalServices ? (g.totalPayment / g.totalServices).toFixed(2) : '',
+    g.providers.slice(0, 10).map(p => p.npi).join('; '),
     today
   ]);
   triggerCsvDownload(headers, rows, `cms_procedures_${dataYearValue()}_${today}.csv`);
@@ -3281,18 +3183,18 @@ function exportCSV() {
     'Data Year','NPI','Provider Name','Credentials','Specialty','Entity Type',
     'Street','City','State','Zip',
     'Tier','Complexity Score',
-    'Total Procedure Codes','Total Services','Total Beneficiaries','Total Medicare Payment',
+    'Total Procedure Codes','Total Services','Beneficiary-Count Sum (overstates unique patients)','Total Medicare Payment',
     'Avg Payment Per Service','Revision Procedure Types','Date Exported'
   ];
   const today = new Date().toISOString().slice(0, 10);
   const rows = data.map(g => [
     dataYearValue(),
     g.npi,
-    `"${g.name.replace(/"/g,'""')}"`,
-    `"${g.credentials.replace(/"/g,'""')}"`,
-    `"${g.specialty.replace(/"/g,'""')}"`,
+    g.name,
+    g.credentials,
+    g.specialty,
     g.entityType,
-    `"${g.street.replace(/"/g,'""')}"`,
+    g.street,
     g.city, g.state, g.zip,
     `Tier ${g.tier}`,
     g.score,
@@ -3300,15 +3202,17 @@ function exportCSV() {
     g.totalServices,
     g.totalBeneficiaries,
     g.totalPayment.toFixed(2),
-    (g.totalPayment / (g.totalServices || 1)).toFixed(2),
-    `"${g.procedures.slice(0,10).map(p => p.code).join('; ')}"`,
+    g.totalServices ? (g.totalPayment / g.totalServices).toFixed(2) : '',
+    g.procedures.slice(0,10).map(p => p.code).join('; '),
     today
   ]);
   triggerCsvDownload(headers, rows, `cms_medintel_export_${today}.csv`);
 }
 
+// Callers pass RAW (unescaped) header and row values; escaping — quoting AND
+// formula-injection neutralization — happens here via toCsvRow (medintel-core).
 function triggerCsvDownload(headers, rows, filename) {
-  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const csv = [toCsvRow(headers), ...rows.map(toCsvRow)].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -3340,16 +3244,25 @@ const SP_FIELDS = [
 ];
 
 function openSharePointModal() {
-  const saved = JSON.parse(localStorage.getItem('sp_field_map') || '{}');
+  let saved = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem('sp_field_map') || '{}');
+    // Only trust a flat string→string map; ignore anything else.
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) saved = parsed;
+  } catch (e) { /* corrupt — start blank */ }
   const mapEl = document.getElementById('sharepointFieldMap');
   mapEl.innerHTML = SP_FIELDS.map(field => `
     <div class="field-map-row">
-      <label>${field.default}</label>
-      <input type="text" id="spf_${field.key}"
-             placeholder="${field.default}"
-             value="${escapeHtml(saved[field.key] || '')}">
+      <label for="spf_${field.key}">${escapeHtml(field.default)}</label>
+      <input type="text" id="spf_${field.key}" placeholder="${escapeHtml(field.default)}">
     </div>
   `).join('');
+  // Set values via the DOM (not HTML interpolation) so no cached string can
+  // reach an attribute context.
+  SP_FIELDS.forEach(field => {
+    const v = saved[field.key];
+    document.getElementById(`spf_${field.key}`).value = (typeof v === 'string') ? v : '';
+  });
   document.getElementById('sharepointModal').style.display = 'flex';
 }
 
@@ -3380,11 +3293,11 @@ function exportSharePointCSV(mapping) {
     switch (field.key) {
       case 'dataYear':       return dataYearValue();
       case 'npi':            return g.npi;
-      case 'name':           return `"${g.name.replace(/"/g,'""')}"`;
-      case 'credentials':    return `"${g.credentials.replace(/"/g,'""')}"`;
-      case 'specialty':      return `"${g.specialty.replace(/"/g,'""')}"`;
+      case 'name':           return g.name;
+      case 'credentials':    return g.credentials;
+      case 'specialty':      return g.specialty;
       case 'entityType':     return g.entityType;
-      case 'street':         return `"${g.street.replace(/"/g,'""')}"`;
+      case 'street':         return g.street;
       case 'city':           return g.city;
       case 'state':          return g.state;
       case 'zip':            return g.zip;
@@ -3393,7 +3306,7 @@ function exportSharePointCSV(mapping) {
       case 'totalServices':  return g.totalServices;
       case 'totalBeneficiaries': return g.totalBeneficiaries;
       case 'totalPayment':   return g.totalPayment.toFixed(2);
-      case 'procedureCodes': return `"${g.procedures.slice(0,10).map(p => p.code).join('; ')}"`;
+      case 'procedureCodes': return g.procedures.slice(0,10).map(p => p.code).join('; ');
       case 'dateAdded':      return today;
       default: return '';
     }
@@ -3417,7 +3330,6 @@ function clearError() {
 function clearSearch() {
   document.querySelectorAll('#searchFields input[type="text"], #searchFields textarea').forEach(i => i.value = '');
   document.querySelectorAll('#searchFields select').forEach(s => s.value = '');
-  clearSelectedCodes();
   currentResults = [];
   allGroupedResults = [];
   procedureGroups = [];

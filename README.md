@@ -22,23 +22,13 @@ MedIntel connects directly to two free, public CMS government APIs and lets you 
 
 ## Features
 
-### CPT Code Browser
+### Code Discovery
 
-A built-in, searchable code library so you never need to know procedure codes in advance. Pre-loaded orthopedic revision bundles:
+Don't know the codes in advance? The **Code Lookup** tab searches CPT/HCPCS and MS-DRG by keyword or code, shows each code's national Medicare volume, and one-click-adds codes to the Procedure and Market TAM searches. See [Code Lookup Tab](#code-lookup-tab) below.
 
-| Bundle | Codes |
-|--------|-------|
-| Hip Revision | 27134, 27137, 27138, 27132 |
-| Knee Revision | 27486, 27487 |
-| Shoulder Revision | 23473, 23474 |
-| Ankle Revision | 27700, 27702, 27703 |
-| Complex Reconstruction | 27645, 27646, 27097, 23333 |
+### Multi-Code Search
 
-Click a bundle to browse its codes; click individual codes to select or deselect them.
-
-### Multi-Code Bundle Search
-
-Select multiple CPT codes and search all of them simultaneously. The app fetches each code in parallel from the CMS API and aggregates results per surgeon NPI — so you see a surgeon's total revision burden across all selected codes in a single result list.
+Paste multiple CPT/HCPCS codes into the Procedure tab (or a state + code family into Geography) and search them all at once. The app fetches each code in parallel from the CMS API and aggregates results — so you see, e.g., a surgeon's total revision burden across a whole code family in one result list.
 
 ### Revision Complexity Score (0–100)
 
@@ -92,7 +82,7 @@ Because physician fees don't represent the money that buys devices, the TAM tab 
 
 ### Bulk Code Search
 
-Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into the Procedure tab's code box (or the Geography tab's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Combine with the CPT Browser: browser selections and pasted codes are merged and deduped.
+Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into the Procedure tab's code box (or the Geography tab's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from the **Code Lookup** tab's one-click add buttons.
 
 ### Data Year Selector & Yearly Volume Trends
 
@@ -149,11 +139,14 @@ Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Ne
 
 ## Example Searches
 
-**Find all hip revision surgeons in California using the CPT browser:**
-> Open CPT Code Browser → click "Hip Revision" bundle → select codes 27134, 27137, 27138 → Tab: Geography → State: CA → Search
+**Find all hip revision surgeons in California:**
+> Tab: Geography → State: CA → HCPCS Code Filter: `27134, 27137, 27138` → Search
 
 **Find revision knee specialists above 50 procedures/year in Texas:**
-> CPT Browser → "Knee Revision" → Tab: Geography → State: TX → Search → set Min procedures filter to 50
+> Tab: Procedure → HCPCS: `27486, 27487` → State: TX → Search → set Min services filter to 50
+
+**Not sure of the codes?**
+> Tab: Code Lookup → search `knee revision` → click **+ Procedure** on the codes you want → Tab: Procedure → Search
 
 **Look up a specific provider's Medicare billing:**
 > Tab: Provider → NPI: `1234567890` → Search
@@ -183,7 +176,7 @@ Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Ne
 | **27645** | Radical resection of bone tumor, femur |
 | **27646** | Radical resection of bone tumor, tibia and fibula |
 
-All of these are pre-loaded in the CPT Code Browser — no manual entry required.
+Look any of these up (and find related codes and their MS-DRGs) in the **Code Lookup** tab.
 
 ---
 

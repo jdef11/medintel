@@ -5,6 +5,7 @@ const {
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
   tokenizeMedical, searchDict, crossSuggest,
+  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -902,5 +903,163 @@ describe('crossSuggest()', () => {
   it('respects the limit', () => {
     const many = Array.from({ length: 20 }, (_, i) => ({ code: String(i), desc: 'knee replacement' }));
     expect(crossSuggest('knee replacement', many, 5).length).toBe(5);
+  });
+});
+
+// ─── escapeHtml() quote escaping (attribute-injection defense) ───────────────
+
+describe('escapeHtml() quotes', () => {
+  it('escapes double quotes', () => {
+    expect(escapeHtml('a"b')).toBe('a&quot;b');
+  });
+  it('escapes single quotes', () => {
+    expect(escapeHtml("a'b")).toBe('a&#39;b');
+  });
+  it('escapes angle brackets and ampersands', () => {
+    expect(escapeHtml('<x> & </x>')).toBe('&lt;x&gt; &amp; &lt;/x&gt;');
+  });
+  it('neutralizes an onclick attribute break-out payload', () => {
+    const evil = "');alert(1);//";
+    expect(escapeHtml(evil)).not.toContain("'");
+  });
+  it('handles null/undefined as empty string', () => {
+    expect(escapeHtml(null)).toBe('');
+    expect(escapeHtml(undefined)).toBe('');
+  });
+});
+
+// ─── csvField() / toCsvRow() ─────────────────────────────────────────────────
+
+describe('csvField()', () => {
+  it('leaves a plain value untouched', () => {
+    expect(csvField('Smith')).toBe('Smith');
+  });
+  it('quotes values containing commas', () => {
+    expect(csvField('Repair, skull')).toBe('"Repair, skull"');
+  });
+  it('doubles internal quotes', () => {
+    expect(csvField('a "b" c')).toBe('"a ""b"" c"');
+  });
+  it('prefixes formula-injection leads with a single quote', () => {
+    expect(csvField('=SUM(A1)')).toBe("'=SUM(A1)");
+    expect(csvField('+1')).toBe("'+1");
+    expect(csvField('-1')).toBe("'-1");
+    expect(csvField('@x')).toBe("'@x");
+  });
+  it('both escapes formula lead AND quotes when needed', () => {
+    expect(csvField('=1,2')).toBe('"\'=1,2"');
+  });
+  it('renders null/number cleanly', () => {
+    expect(csvField(null)).toBe('');
+    expect(csvField(1234)).toBe('1234');
+  });
+  it('toCsvRow joins escaped fields', () => {
+    expect(toCsvRow(['a', 'b,c', '=x'])).toBe("a,\"b,c\",'=x");
+  });
+});
+
+// ─── latestOkEntry() ─────────────────────────────────────────────────────────
+
+describe('latestOkEntry()', () => {
+  it('returns the latest year with ok data', () => {
+    const t = [{ year: 2021, ok: true, services: 1 }, { year: 2022, ok: true, services: 2 }, { year: 2023, ok: false }];
+    expect(latestOkEntry(t).year).toBe(2022);
+  });
+  it('returns null when nothing is ok', () => {
+    expect(latestOkEntry([{ year: 2022, ok: false }])).toBeNull();
+    expect(latestOkEntry([])).toBeNull();
+    expect(latestOkEntry(null)).toBeNull();
+  });
+});
+
+// ─── combineTrendsByYear() ───────────────────────────────────────────────────
+
+describe('combineTrendsByYear()', () => {
+  const A = { code: 'A', trend: [{ year: 2022, services: 10, payment: 100, ok: true }, { year: 2023, services: 12, payment: 120, ok: true }] };
+  const B = { code: 'B', trend: [{ year: 2022, services: 5, payment: 50, ok: true }, { year: 2023, services: 0, payment: 0, ok: false }] };
+
+  it('sums services/payment across codes per year', () => {
+    const out = combineTrendsByYear([A, B]);
+    const y22 = out.find(y => y.year === 2022);
+    expect(y22.services).toBe(15);
+    expect(y22.payment).toBe(150);
+  });
+  it('marks a year complete only when every code has ok data', () => {
+    const out = combineTrendsByYear([A, B]);
+    expect(out.find(y => y.year === 2022).complete).toBe(true);
+    const y23 = out.find(y => y.year === 2023);
+    expect(y23.complete).toBe(false);
+    expect(y23.missingCodes).toContain('B');
+    expect(y23.services).toBe(12); // only A counted, not a fake full-year total
+  });
+  it('sorts ascending by year', () => {
+    expect(combineTrendsByYear([A]).map(y => y.year)).toEqual([2022, 2023]);
+  });
+});
+
+// ─── computeTamModel() ───────────────────────────────────────────────────────
+
+describe('computeTamModel()', () => {
+  const perCode = [{ code: 'X', services: 800, payment: 80000, year: 2023 }];
+
+  it('applies FFS share, addressable portion, and ASP', () => {
+    const m = computeTamModel(perCode, { share: 40, portion: 100, asp: 10000 });
+    expect(m.totalFFS).toBe(800);
+    expect(m.estTotal).toBe(2000);        // 800 / 0.40
+    expect(m.estAddressable).toBe(2000);  // * 100%
+    expect(m.estTAM).toBe(20000000);      // * $10k
+  });
+  it('applies addressable portion below 100%', () => {
+    const m = computeTamModel(perCode, { share: 40, portion: 50, asp: 10000 });
+    expect(m.estAddressable).toBe(1000);
+    expect(m.estTAM).toBe(10000000);
+  });
+  it('returns null TAM when ASP is absent', () => {
+    expect(computeTamModel(perCode, { share: 40, portion: 100 }).estTAM).toBeNull();
+  });
+  it('clamps invalid share/portion to defaults (40 / 100)', () => {
+    const m = computeTamModel(perCode, { share: 0, portion: 999, asp: 1 });
+    expect(m.share).toBe(40);
+    expect(m.portion).toBe(100);
+  });
+  it('flags mixed data years and ignores codes with no year', () => {
+    const mixed = [{ code: 'A', services: 100, payment: 0, year: 2023 }, { code: 'B', services: 50, payment: 0, year: 2021 }, { code: 'C', services: 0, payment: 0, year: null }];
+    const m = computeTamModel(mixed, { share: 50, portion: 100 });
+    expect(m.mixedYears).toBe(true);
+    expect(m.baseYear).toBe(2023);
+    expect(m.totalFFS).toBe(150); // C (no year) excluded
+  });
+  it('does not flag mixed years when all codes share a year', () => {
+    expect(computeTamModel(perCode, { share: 40 }).mixedYears).toBe(false);
+  });
+});
+
+// ─── aggregateDrgRows() ──────────────────────────────────────────────────────
+
+describe('aggregateDrgRows()', () => {
+  it('derives totals as discharges × per-stay averages', () => {
+    const rows = [
+      { DRG_Cd: '025', DRG_Desc: 'Craniotomy', Tot_Dschrgs: '1000', Avg_Submtd_Cvrd_Chrg: '100000', Avg_Tot_Pymt_Amt: '30000', Avg_Mdcr_Pymt_Amt: '25000' },
+    ];
+    const a = aggregateDrgRows(rows);
+    expect(a.discharges).toBe(1000);
+    expect(a.billed).toBe(100000000);
+    expect(a.paid).toBe(30000000);
+    expect(a.mdcrPaid).toBe(25000000);
+    expect(a.desc).toBe('Craniotomy');
+  });
+  it('returns zeros for empty input', () => {
+    expect(aggregateDrgRows([])).toEqual({ discharges: 0, billed: 0, paid: 0, mdcrPaid: 0, desc: '' });
+  });
+});
+
+// ─── safeAvg() ───────────────────────────────────────────────────────────────
+
+describe('safeAvg()', () => {
+  it('divides normally', () => {
+    expect(safeAvg(1000, 4)).toBe(250);
+  });
+  it('returns null on zero denominator (no full-numerator leak)', () => {
+    expect(safeAvg(1000, 0)).toBeNull();
   });
 });
