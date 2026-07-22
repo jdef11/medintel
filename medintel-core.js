@@ -87,21 +87,38 @@ function fmtNumber(val) {
   return new Intl.NumberFormat('en-US').format(n);
 }
 
+// ─── CSV SAFETY ───
+// Escapes one CSV field. Two concerns:
+//  1. Quoting: wrap in double-quotes and double internal quotes when the value
+//     contains a comma, quote, newline, or carriage return.
+//  2. Formula injection: a value starting with = + - @ (or tab/CR) is executed
+//     as a formula by Excel/Sheets. Prefix such values with a single quote so
+//     they render as text. Applied to every exported field via toCsvRow.
+function csvField(value) {
+  let s = value == null ? '' : String(value);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function toCsvRow(values) {
+  return (values || []).map(csvField).join(',');
+}
+
 // ─── XSS PREVENTION ───
-// DOM-based escaping — safe and spec-compliant.
-// In Node/test environments this is shimmed; in browsers it uses the real DOM.
+// Escapes the five HTML-significant characters. We DO NOT use the
+// textContent->innerHTML DOM trick here: it escapes &<> but leaves both quote
+// characters intact, so a value interpolated into an attribute (title="...",
+// onclick='...') could break out of the attribute. Explicit replacement covers
+// element text AND single/double-quoted attribute contexts, and behaves
+// identically in the browser and in Node/test environments.
 function escapeHtml(str) {
-  if (typeof document !== 'undefined') {
-    const div = document.createElement('div');
-    div.textContent = str || '';
-    return div.innerHTML;
-  }
-  // Minimal shim for Node/test environments
-  return String(str || '')
+  return String(str == null ? '' : str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ─── GROUP BY PROVIDER ───
@@ -196,6 +213,111 @@ function groupByProcedure(rows) {
     const { providerMap, ...rest } = g;
     return { ...rest, providers, providerCount: providers.length };
   }).sort((a, b) => b.totalServices - a.totalServices);
+}
+
+// ─── TREND / TAM PURE HELPERS ───
+// Extracted from the app layer so the market-sizing math is unit-tested rather
+// than trapped in the HTML. A "trend" is an array of yearly entries shaped
+// { year, services, payment, ok } (ok=false means that year's fetch failed).
+
+// Latest year that actually has data. Returns null if none succeeded.
+function latestOkEntry(trend) {
+  if (!Array.isArray(trend)) return null;
+  for (let i = trend.length - 1; i >= 0; i--) {
+    if (trend[i] && trend[i].ok) return trend[i];
+  }
+  return null;
+}
+
+// Combine several per-code trends into one yearly series. Only years where
+// EVERY provided trend has ok data are marked complete; years missing one or
+// more codes are flagged partial (and which codes were missing) so the caller
+// can annotate them instead of charting a fake dip.
+function combineTrendsByYear(trends) {
+  const valid = (trends || []).filter(t => Array.isArray(t && t.trend) || Array.isArray(t));
+  // Accept either [{code, trend:[...]}] or [[...entries]] shapes.
+  const series = (trends || []).map(t => Array.isArray(t) ? { code: null, trend: t } : t)
+    .filter(t => Array.isArray(t.trend));
+  const years = {};
+  series.forEach(s => s.trend.forEach(e => {
+    if (!e) return;
+    if (!years[e.year]) years[e.year] = { year: e.year, services: 0, payment: 0, okCodes: 0, missingCodes: [] };
+    if (e.ok) {
+      years[e.year].services += (e.services || 0);
+      years[e.year].payment += (e.payment || 0);
+      years[e.year].okCodes += 1;
+    } else {
+      years[e.year].missingCodes.push(s.code);
+    }
+  }));
+  const total = series.length;
+  return Object.values(years)
+    .map(y => ({
+      year: y.year,
+      services: y.services,
+      payment: y.payment,
+      ok: y.okCodes > 0,
+      complete: total > 0 && y.okCodes === total,
+      missingCodes: y.missingCodes.filter(Boolean),
+    }))
+    .sort((a, b) => a.year - b.year);
+}
+
+// The TAM model. All money/volume math in one tested place.
+//   estTotal      = FFS volume / (share%)         — all-payer procedures
+//   estAddressable = estTotal * (portion%)         — device-addressable cases
+//   estTAM        = estAddressable * asp           — annual device TAM ($)
+// `perCode` entries: { code, services, payment, year }. Guards div-by-zero and
+// returns whether the headline mixes data years (codes' latest years differ).
+function computeTamModel(perCode, opts) {
+  const share = clampPct(opts && opts.share, 40);
+  const portion = clampPct(opts && opts.portion, 100);
+  const asp = opts && opts.asp > 0 ? opts.asp : null;
+  const withData = (perCode || []).filter(c => c && c.year);
+  const totalFFS = withData.reduce((s, c) => s + (c.services || 0), 0);
+  const totalProfPay = withData.reduce((s, c) => s + (c.payment || 0), 0);
+  const estTotal = totalFFS / (share / 100);
+  const estAddressable = estTotal * (portion / 100);
+  const estTAM = asp ? estAddressable * asp : null;
+  const years = withData.map(c => c.year);
+  const baseYear = years.length ? Math.max(...years) : null;
+  const mixedYears = years.length > 1 && new Set(years).size > 1;
+  return {
+    share, portion, asp,
+    totalFFS, totalProfPay,
+    estTotal, estAddressable, estTAM,
+    baseYear, mixedYears,
+    minYear: years.length ? Math.min(...years) : null,
+    maxYear: baseYear,
+  };
+}
+
+function clampPct(v, dflt) {
+  const n = parseFloat(v);
+  if (isNaN(n) || n <= 0 || n > 100) return dflt;
+  return n;
+}
+
+// Aggregate inpatient (DRG) rows into totals. discharges, plus totals derived
+// as discharges × per-stay averages (billed covered charges, total payment,
+// Medicare payment). One tested place for the hospital-side math.
+function aggregateDrgRows(rows) {
+  let discharges = 0, billed = 0, paid = 0, mdcrPaid = 0, desc = '';
+  (rows || []).forEach(r => {
+    const d = getDischarges(r);
+    discharges += d;
+    billed += d * getAvgCoveredCharge(r);
+    paid += d * getAvgTotalPayment(r);
+    mdcrPaid += d * getAvgMedicarePayment(r);
+    if (!desc) desc = f(r, 'DRG_Desc') || '';
+  });
+  return { discharges, billed, paid, mdcrPaid, desc };
+}
+
+// Safe average — returns null (render as "—") when the denominator is 0,
+// instead of showing the full numerator as if it were an average.
+function safeAvg(total, count) {
+  return count > 0 ? total / count : null;
 }
 
 // ─── BULK CODE PARSING ───
@@ -490,5 +612,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }
