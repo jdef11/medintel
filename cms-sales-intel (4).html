@@ -1054,7 +1054,7 @@
       <div class="section-label">About This Data</div>
       <div class="info-box">
         <strong>Data Source:</strong> CMS Medicare Physician & Other Practitioners dataset via
-        <a href="https://data.cms.gov" target="_blank">data.cms.gov</a> public API (routed through a CORS proxy for local file access).<br><br>
+        <a href="https://data.cms.gov" target="_blank">data.cms.gov</a> public API. Hosted (e.g. GitHub Pages) it calls CMS directly; opened as a local <code>file://</code> it falls back to a public CORS proxy, which means your search terms transit a third-party service — prefer the hosted version for sensitive queries.<br><br>
         <strong>What it contains:</strong> Services, procedures, utilization counts, and Medicare payment amounts per provider, organized by NPI and HCPCS/CPT code.<br><br>
         <strong>Use case:</strong> Identify high-volume surgeons and providers who perform specific procedures — ideal for medical device sales targeting.<br><br>
         <strong>Tip:</strong> For best results, search by a specific HCPCS code (e.g. 27447 for total knee replacement) plus a state to find top-volume surgeons in a territory.<br><br>
@@ -1173,7 +1173,7 @@ function init() {
 
   // Discover which data years CMS has published (non-blocking; searches fall
   // back to the latest year until this resolves).
-  loadDatasetVersions().catch(err => console.log('Dataset version discovery failed:', err.message));
+  loadDatasetVersionsOnce().catch(err => console.log('Dataset version discovery failed:', err.message));
 }
 
 // ─── DATA YEAR DISCOVERY ───
@@ -1210,6 +1210,18 @@ function sanitizeVersions(list) {
   return list
     .map(v => ({ year: parseInt(v && v.year, 10), id: String(v && v.id || '') }))
     .filter(v => Number.isInteger(v.year) && UUID_RE.test(v.id));
+}
+
+// In-flight dedup: concurrent callers (a cold-cache TAM search fans out to
+// many requireVersions() calls at once) share ONE catalog load instead of each
+// downloading the multi-megabyte data.json. The memo is cleared on failure so a
+// later search can retry.
+let versionsPromise = null;
+function loadDatasetVersionsOnce() {
+  if (!versionsPromise) {
+    versionsPromise = loadDatasetVersions().catch(err => { versionsPromise = null; throw err; });
+  }
+  return versionsPromise;
 }
 
 async function loadDatasetVersions() {
@@ -1310,6 +1322,8 @@ function provSummaryBase() {
 // summary row for each NPI. Bounded by the caller to the providers on screen.
 const benesCache = {};
 let beneGen = 0; // generation token so late bene fetches don't patch a newer render
+let searchGen = 0; // generation token so a superseded search never renders into a new context
+let searchFailedCodes = []; // codes that failed in the last multi-code fetch (fail-soft)
 async function fetchProviderBenes(npis) {
   const base = provSummaryBase();
   if (!base) return {}; // dataset unavailable — callers keep the sum fallback
@@ -1353,6 +1367,9 @@ function dataYearValue() {
 // ─── TAB SWITCHING ───
 function switchTab(tab) {
   currentTab = tab;
+  // Invalidate any in-flight search so its results can't paint into this tab.
+  searchGen++;
+  isLoading = false;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
 
@@ -1373,12 +1390,25 @@ function switchTab(tab) {
   allGroupedResults = [];
   procedureGroups = [];
   tamResults = null;
+  searchFailedCodes = [];
   displayPage = 0;
   npiPage = 0;
   npiTotal = 0;
   clearError();
+  resetSearchButton();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
+}
+
+// Restore the search button to its idle state (shared across search paths).
+function resetSearchButton() {
+  const btn = document.getElementById('searchBtn');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    Search CMS Data
+  `;
 }
 
 // ─── BUILD API URL ───
@@ -1451,14 +1481,42 @@ function buildApiUrl(offset = 0) {
 }
 
 // ─── CORS-AWARE FETCH ───
-function fetchWithTimeout(url, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Request timed out')), timeoutMs);
-    fetch(url)
-      .then(resp => { clearTimeout(timer); resolve(resp); })
-      .catch(err => { clearTimeout(timer); reject(err); });
-  });
+
+// Global concurrency gate. Big fan-outs (a TAM search can queue hundreds of
+// requests) are capped so we don't open hundreds of sockets at once — which
+// free CORS proxies rate-limit and browsers queue, causing false failures.
+const MAX_CONCURRENT_FETCHES = 5;
+let activeFetches = 0;
+const fetchQueue = [];
+function acquireFetchSlot() {
+  if (activeFetches < MAX_CONCURRENT_FETCHES) { activeFetches++; return Promise.resolve(); }
+  return new Promise(resolve => fetchQueue.push(resolve));
 }
+function releaseFetchSlot() {
+  activeFetches--;
+  const next = fetchQueue.shift();
+  if (next) { activeFetches++; next(); }
+}
+
+// Fetch with a hard timeout that actually ABORTS the request (so timed-out
+// requests stop consuming a connection slot), routed through the concurrency
+// gate. Returns the Response; throws on network error or timeout.
+async function fetchWithTimeout(url, timeoutMs) {
+  await acquireFetchSlot();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error('Request timed out');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    releaseFetchSlot();
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // Extract a human-readable error from a non-array CMS API response body.
 function describeApiBody(text) {
@@ -1505,26 +1563,37 @@ async function corsFetch(url) {
   for (const idx of proxyOrder) {
     const proxyUrl = CORS_PROXIES[idx](url);
     console.log(`Trying proxy ${idx}: ${proxyUrl.slice(0, 80)}...`);
-    try {
-      const resp = await fetchWithTimeout(proxyUrl, 15000);
-      const text = await resp.text();
-      if (!resp.ok) {
-        attempts.push(`proxy ${idx}: HTTP ${resp.status}`);
-        console.log(`Proxy ${idx} returned ${resp.status}`);
-        continue;
+    // Retry this proxy a couple of times on transient rate-limit / server
+    // errors (429/5xx) with exponential backoff before moving to the next one.
+    let moveOn = false;
+    for (let attempt = 0; attempt <= 2 && !moveOn; attempt++) {
+      try {
+        const resp = await fetchWithTimeout(proxyUrl, 15000);
+        const text = await resp.text();
+        if (!resp.ok) {
+          if ((resp.status === 429 || resp.status >= 500) && attempt < 2) {
+            await sleep(backoffDelay(attempt, 600, 6000));
+            continue; // retry same proxy
+          }
+          attempts.push(`proxy ${idx}: HTTP ${resp.status}`);
+          console.log(`Proxy ${idx} returned ${resp.status}`);
+          moveOn = true;
+          break;
+        }
+        // Validate it's actual JSON (some proxies return HTML error pages)
+        const data = JSON.parse(text);
+        if (Array.isArray(data)) {
+          activeProxyIndex = idx; // remember which proxy worked
+          console.log(`Proxy ${idx} succeeded, got ${data.length} results`);
+          return data;
+        }
+        attempts.push(`proxy ${idx}: HTTP 200 but not a data array — ${describeApiBody(text)}`);
+        moveOn = true;
+      } catch(e) {
+        attempts.push(`proxy ${idx}: ${e.message}`);
+        console.log(`Proxy ${idx} failed:`, e.message);
+        moveOn = true;
       }
-      // Validate it's actual JSON (some proxies return HTML error pages)
-      const data = JSON.parse(text);
-      if (Array.isArray(data)) {
-        activeProxyIndex = idx; // remember which proxy worked
-        console.log(`Proxy ${idx} succeeded, got ${data.length} results`);
-        return data;
-      }
-      attempts.push(`proxy ${idx}: HTTP 200 but not a data array — ${describeApiBody(text)}`);
-    } catch(e) {
-      attempts.push(`proxy ${idx}: ${e.message}`);
-      console.log(`Proxy ${idx} failed:`, e.message);
-      continue;
     }
   }
 
@@ -1576,8 +1645,22 @@ async function fetchAllRows(searchCodes = []) {
         : document.getElementById('stateSelect').value;
 
     btn.innerHTML = `<div class="spinner"></div> Fetching ${searchCodes.length} code${searchCodes.length > 1 ? 's' : ''}...`;
-    const results = await Promise.all(searchCodes.map(code => fetchCodeRows(code, stateVal)));
-    return { rows: results.flatMap(r => r.rows), capped: results.some(r => r.capped) };
+    // Fail-soft: one bad code must not discard the others. Keep the codes that
+    // succeeded and report the ones that failed.
+    const settled = await Promise.allSettled(searchCodes.map(code => fetchCodeRows(code, stateVal)));
+    const rows = [];
+    let capped = false;
+    const failedCodes = [];
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        rows.push(...r.value.rows);
+        if (r.value.capped) capped = true;
+      } else {
+        failedCodes.push(searchCodes[i]);
+        console.log(`Code ${searchCodes[i]} failed:`, r.reason && r.reason.message);
+      }
+    });
+    return { rows, capped, failedCodes };
   }
 
   // Single-code / standard mode
@@ -1639,6 +1722,12 @@ async function executeSearch() {
   allGroupedResults = [];
   procedureGroups = [];
   resultsCapped = false;
+  searchFailedCodes = [];
+  // Generation token: results/renders from a superseded search (user switched
+  // tab or searched again mid-fetch) are discarded instead of painting into the
+  // wrong context. Snapshot the tab too.
+  const gen = ++searchGen;
+  const genTab = currentTab;
   const btn = document.getElementById('searchBtn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Searching CMS...';
@@ -1654,7 +1743,9 @@ async function executeSearch() {
       await executeLookupSearch();
     } else {
       const fetched = await fetchAllRows(searchCodes);
+      if (gen !== searchGen || genTab !== currentTab) return; // superseded — don't render
       let allRows = fetched.rows;
+      searchFailedCodes = fetched.failedCodes || [];
 
       // Safety net: when searching by code(s), verify each row matches one of
       // them (guards against API filter bypass).
@@ -1679,19 +1770,40 @@ async function executeSearch() {
       }
     }
   } catch (err) {
+    if (gen !== searchGen) return; // superseded search — swallow its error
     console.error(err);
     showError(err.message);
   } finally {
-    isLoading = false;
-    btn.disabled = false;
-    btn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-      Search CMS Data
-    `;
+    if (gen === searchGen) {
+      isLoading = false;
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        Search CMS Data
+      `;
+    }
   }
 }
 
 // ─── NPI LOOKUP via NPPES Registry ───
+// Guarded entry point for NPI pagination buttons: respects isLoading, disables
+// the buttons + shows a spinner, and routes errors through showError — mirroring
+// executeSearch's lifecycle (which the raw executeNpiSearch call bypassed).
+async function gotoNpiPage(offset) {
+  if (isLoading) return;
+  isLoading = true;
+  const gen = ++searchGen;
+  document.querySelectorAll('.pagination .page-btn').forEach(b => b.disabled = true);
+  clearError();
+  try {
+    await executeNpiSearch(offset);
+  } catch (err) {
+    if (gen === searchGen) { console.error(err); showError(err.message); }
+  } finally {
+    if (gen === searchGen) isLoading = false;
+  }
+}
+
 async function executeNpiSearch(offset = 0) {
   const firstName = document.getElementById('npiFirstName').value.trim();
   const lastName = document.getElementById('npiLastName').value.trim();
@@ -1882,12 +1994,13 @@ function renderNpiResults() {
 
   html += `</div>`;
 
-  // Pagination
+  // Pagination — routed through gotoNpiPage so it respects the loading guard
+  // and surfaces errors, instead of calling executeNpiSearch raw.
   html += `
     <div class="pagination">
-      <button class="page-btn" onclick="executeNpiSearch(${(npiPage - 1) * NPI_PAGE_SIZE})" ${npiPage === 0 ? 'disabled' : ''}>← Previous</button>
+      <button class="page-btn" onclick="gotoNpiPage(${(npiPage - 1) * NPI_PAGE_SIZE})" ${npiPage === 0 ? 'disabled' : ''}>← Previous</button>
       <span class="page-info">Page ${npiPage + 1}${hasMore ? '' : ' · last page'}</span>
-      <button class="page-btn" onclick="executeNpiSearch(${(npiPage + 1) * NPI_PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
+      <button class="page-btn" onclick="gotoNpiPage(${(npiPage + 1) * NPI_PAGE_SIZE})" ${!hasMore ? 'disabled' : ''}>Next →</button>
     </div>
   `;
 
@@ -2014,6 +2127,14 @@ function cappedNoteHtml() {
     : '';
 }
 
+// Warning shown when some codes in a multi-code search failed to fetch — the
+// results still show everything that succeeded (fail-soft).
+function failedCodesNoteHtml() {
+  return searchFailedCodes.length
+    ? `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ ${searchFailedCodes.length} code${searchFailedCodes.length > 1 ? 's' : ''} could not be fetched (${escapeHtml(searchFailedCodes.slice(0, 10).join(', '))}${searchFailedCodes.length > 10 ? '…' : ''}) — results below cover the codes that succeeded. Try again to retry the rest.</div>`
+    : '';
+}
+
 // ─── TIER LABEL HELPERS ───
 function tierBadgeHtml(tier) {
   const labels = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' };
@@ -2094,7 +2215,7 @@ function renderResults() {
         <span style="color:var(--border);">■</span> Tier 3
       </div>
     </div>
-    ${cappedNoteHtml()}
+    ${failedCodesNoteHtml()}${cappedNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -2301,7 +2422,7 @@ function renderProcedureResults() {
         <option value="providers" ${currentSortOrder === 'providers' ? 'selected' : ''}>Provider Count</option>
       </select>
     </div>
-    ${cappedNoteHtml()}
+    ${failedCodesNoteHtml()}${cappedNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -2441,7 +2562,7 @@ async function fetchTrend(code, stateOverride = null) {
 // Ensure the year → dataset-version list for a dataset kind is loaded.
 async function requireVersions(kind) {
   if (!datasetVersions[kind].length) {
-    await loadDatasetVersions(); // retry catalog discovery on demand
+    await loadDatasetVersionsOnce(); // shared, deduped catalog discovery
   }
   const versions = datasetVersions[kind];
   if (!versions.length) {
@@ -2455,7 +2576,10 @@ function finishTrend(results, cacheKey) {
   if (!trend.some(t => t.ok)) {
     throw new Error('Could not fetch yearly volume from the CMS API — please try again.');
   }
-  trendCache[cacheKey] = trend;
+  // Only cache a fully-successful trend. If any year failed transiently, leave
+  // it uncached so re-opening the panel retries the failed years instead of
+  // showing "data unavailable" permanently until reload.
+  if (trend.every(t => t.ok)) trendCache[cacheKey] = trend;
   return trend;
 }
 
@@ -2650,7 +2774,7 @@ async function fetchDrgTrend(drg) {
     throw new Error('Could not fetch inpatient DRG data from the CMS API — please try again.');
   }
   const out = { trend, desc };
-  trendCache[cacheKey] = out;
+  if (trend.every(t => t.ok)) trendCache[cacheKey] = out; // don't cache partial failures
   return out;
 }
 
@@ -3042,11 +3166,13 @@ async function loadCptDict(progress) {
 
   const versions = await requireVersions('geography');
   const latest = versions[0];
+  const MAX_PAGES = 20;
   const map = {};
   let offset = 0;
-  for (let i = 0; i < 20; i++) {
+  let truncated = false;
+  for (let i = 0; i < MAX_PAGES; i++) {
     if (progress) progress(`Building code dictionary (${Object.keys(map).length.toLocaleString()} codes)...`);
-    const rows = await corsFetch(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    const rows = await fetchPageWithRetry(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
     rows.forEach(r => {
       const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
       if (!code) return;
@@ -3055,11 +3181,30 @@ async function loadCptDict(progress) {
     });
     if (rows.length < FETCH_SIZE) break;
     offset += FETCH_SIZE;
+    if (i === MAX_PAGES - 1) truncated = true; // hit the page cap with a full page
   }
-  cptDict = Object.values(map).sort((a, b) => b.services - a.services);
-  if (!cptDict.length) { cptDict = null; throw new Error('Could not build the CPT/HCPCS dictionary from the CMS API — please try again.'); }
-  writeDictCache(CPT_DICT_CACHE_KEY, cptDict);
+  const built = Object.values(map).sort((a, b) => b.services - a.services);
+  if (!built.length) { throw new Error('Could not build the CPT/HCPCS dictionary from the CMS API — please try again.'); }
+  cptDict = built;
+  // Don't persist a dictionary we know is truncated — a later session would
+  // treat the partial list as complete. Keep it in memory for this session only.
+  if (!truncated) writeDictCache(CPT_DICT_CACHE_KEY, cptDict);
   return cptDict;
+}
+
+// Fetch one dataset page, retrying transient failures a few times with backoff
+// before giving up — so a single flaky page doesn't abort a 20-page build.
+async function fetchPageWithRetry(url, tries = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      return await corsFetch(url);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < tries - 1) await sleep(backoffDelay(attempt, 600, 6000));
+    }
+  }
+  throw lastErr;
 }
 
 async function loadDrgDict(progress) {
@@ -3070,10 +3215,12 @@ async function loadDrgDict(progress) {
   const versions = await requireVersions('inpGeo');
   const latest = versions[0];
   if (progress) progress('Building MS-DRG dictionary...');
+  const MAX_PAGES = 3;
   const map = {};
   let offset = 0;
-  for (let i = 0; i < 3; i++) {
-    const rows = await corsFetch(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+  let truncated = false;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const rows = await fetchPageWithRetry(`${DATA_API_ROOT}/${latest.id}/data?size=${FETCH_SIZE}&offset=${offset}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
     rows.forEach(r => {
       const code = String(f(r, 'DRG_Cd') || '').padStart(3, '0');
       if (!code || code === '000') return;
@@ -3084,13 +3231,15 @@ async function loadDrgDict(progress) {
     });
     if (rows.length < FETCH_SIZE) break;
     offset += FETCH_SIZE;
+    if (i === MAX_PAGES - 1) truncated = true;
   }
-  drgDict = Object.values(map).map(d => ({
+  const built = Object.values(map).map(d => ({
     code: d.code, desc: d.desc, discharges: d.discharges,
     avgPaid: d.discharges ? d.paid / d.discharges : 0
   })).sort((a, b) => b.discharges - a.discharges);
-  if (!drgDict.length) { drgDict = null; throw new Error('Could not build the MS-DRG dictionary from the CMS API — please try again.'); }
-  writeDictCache(DRG_DICT_CACHE_KEY, drgDict);
+  if (!built.length) { throw new Error('Could not build the MS-DRG dictionary from the CMS API — please try again.'); }
+  drgDict = built;
+  if (!truncated) writeDictCache(DRG_DICT_CACHE_KEY, drgDict);
   return drgDict;
 }
 
@@ -3355,7 +3504,13 @@ function saveAndExportSharePoint() {
     const val = document.getElementById(`spf_${field.key}`).value.trim();
     if (val) mapping[field.key] = val;
   });
-  localStorage.setItem('sp_field_map', JSON.stringify(mapping));
+  // Persisting the mapping is best-effort — a storage quota error must not
+  // block the actual export.
+  try {
+    localStorage.setItem('sp_field_map', JSON.stringify(mapping));
+  } catch (e) {
+    console.log('Could not save SharePoint field map:', e.message);
+  }
   document.getElementById('sharepointModal').style.display = 'none';
   exportSharePointCSV(mapping);
 }
