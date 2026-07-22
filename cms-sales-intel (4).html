@@ -15,7 +15,7 @@
     --border-active: #3D6EF7;
     --text: #E8ECF1;
     --text-2: #9AA4B5;
-    --text-3: #6B7585;
+    --text-3: #8B95A7;
     --accent: #3D6EF7;
     --accent-dim: rgba(61,110,247,0.12);
     --accent-glow: rgba(61,110,247,0.25);
@@ -127,8 +127,8 @@
 
   /* ─── TABS ─── */
   .tabs {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
     gap: 2px;
     background: var(--bg);
     border-radius: var(--radius-sm);
@@ -153,9 +153,26 @@
     color: #fff;
   }
 
+  /* ─── ACCESSIBILITY UTILITIES ─── */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+  /* Visible keyboard focus for every interactive control. */
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+  }
+
   /* ─── FORM ELEMENTS ─── */
   .field { margin-bottom: 14px; }
   .field-label {
+    display: block;
     font-size: 12px;
     color: var(--text-2);
     margin-bottom: 6px;
@@ -764,8 +781,8 @@
     border-color: rgba(52,211,153,0.3);
   }
   .year-note {
-    font-size: 11px;
-    color: var(--text-3);
+    font-size: 12px;
+    color: var(--text-2);
     line-height: 1.5;
     margin-top: 6px;
   }
@@ -878,14 +895,14 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-section">
-      <div class="section-label">Search Type</div>
-      <div class="tabs">
-        <button class="tab active" data-tab="provider" onclick="switchTab('provider')">Provider</button>
-        <button class="tab" data-tab="procedure" onclick="switchTab('procedure')">Procedure</button>
-        <button class="tab" data-tab="geography" onclick="switchTab('geography')">Geography</button>
-        <button class="tab" data-tab="tam" onclick="switchTab('tam')">Market TAM</button>
-        <button class="tab" data-tab="lookup" onclick="switchTab('lookup')">Code Lookup</button>
-        <button class="tab" data-tab="npi" onclick="switchTab('npi')">NPI Lookup</button>
+      <div class="section-label" id="searchTypeLabel">Search Type</div>
+      <div class="tabs" role="tablist" aria-labelledby="searchTypeLabel" onkeydown="onTabKeydown(event)">
+        <button class="tab active" role="tab" aria-selected="true" data-tab="provider" onclick="switchTab('provider')">Provider</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="procedure" onclick="switchTab('procedure')">Procedure</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="geography" onclick="switchTab('geography')">Geography</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="tam" onclick="switchTab('tam')">Market TAM</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="lookup" onclick="switchTab('lookup')">Code Lookup</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="npi" onclick="switchTab('npi')">NPI Lookup</button>
       </div>
     </div>
 
@@ -893,19 +910,19 @@
       <!-- Provider search (default) -->
       <div id="providerFields">
         <div class="field">
-          <div class="field-label">Provider Last Name or Organization</div>
+          <label class="field-label" for="providerName">Provider Last Name or Organization</label>
           <input type="text" id="providerName" placeholder="e.g. Smith, Mayo Clinic...">
         </div>
         <div class="field">
-          <div class="field-label">NPI (National Provider Identifier)</div>
+          <label class="field-label" for="npiInput">NPI (National Provider Identifier)</label>
           <input type="text" id="npiInput" placeholder="e.g. 1234567890">
         </div>
         <div class="field">
-          <div class="field-label">Specialty / Provider Type</div>
+          <label class="field-label" for="specialtyInput">Specialty / Provider Type</label>
           <input type="text" id="specialtyInput" placeholder="e.g. Orthopedic Surgery">
         </div>
         <div class="field">
-          <div class="field-label">State</div>
+          <label class="field-label" for="stateSelect">State</label>
           <select id="stateSelect">
             <option value="">All States</option>
           </select>
@@ -915,15 +932,16 @@
       <!-- Procedure search -->
       <div id="procedureFields" style="display:none;">
         <div class="field">
-          <div class="field-label">HCPCS / CPT Code(s)</div>
-          <textarea id="hcpcsCode" rows="2" placeholder="One or many — e.g. 27447, 27130, 22551 (comma, space, or newline separated)"></textarea>
+          <label class="field-label" for="hcpcsCode">HCPCS / CPT Code(s)</label>
+          <textarea id="hcpcsCode" rows="2" aria-describedby="hcpcsCodeHint" placeholder="One or many — e.g. 27447, 27130, 22551 (comma, space, or newline separated)"></textarea>
+          <div id="hcpcsCodeHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line</div>
         </div>
         <div class="field">
-          <div class="field-label">Procedure Description (keyword)</div>
+          <label class="field-label" for="hcpcsKeyword">Procedure Description (keyword)</label>
           <input type="text" id="hcpcsKeyword" placeholder="e.g. knee, hip, spine, cardiac...">
         </div>
         <div class="field">
-          <div class="field-label">State</div>
+          <label class="field-label" for="stateSelectProc">State</label>
           <select id="stateSelectProc">
             <option value="">All States</option>
           </select>
@@ -933,21 +951,21 @@
       <!-- Geography search -->
       <div id="geographyFields" style="display:none;">
         <div class="field">
-          <div class="field-label">State</div>
+          <label class="field-label" for="stateSelectGeo">State</label>
           <select id="stateSelectGeo">
             <option value="">Select a State</option>
           </select>
         </div>
         <div class="field">
-          <div class="field-label">City</div>
+          <label class="field-label" for="cityInput">City</label>
           <input type="text" id="cityInput" placeholder="e.g. Houston, Boston...">
         </div>
         <div class="field">
-          <div class="field-label">Specialty Filter</div>
+          <label class="field-label" for="specialtyGeo">Specialty Filter</label>
           <input type="text" id="specialtyGeo" placeholder="e.g. Orthopedic Surgery">
         </div>
         <div class="field">
-          <div class="field-label">HCPCS Code Filter</div>
+          <label class="field-label" for="hcpcsGeo">HCPCS Code Filter</label>
           <input type="text" id="hcpcsGeo" placeholder="One or many — e.g. 27447, 27130">
         </div>
       </div>
@@ -955,23 +973,24 @@
       <!-- Market TAM -->
       <div id="tamFields" style="display:none;">
         <div class="field">
-          <div class="field-label">HCPCS / CPT Code(s) defining the market</div>
-          <textarea id="tamCodes" rows="3" placeholder="Paste the code family — e.g. 62140, 62141, 62142, 62143, 62145, 62146, 62147"></textarea>
+          <label class="field-label" for="tamCodes">HCPCS / CPT Code(s) defining the market</label>
+          <textarea id="tamCodes" rows="3" aria-describedby="tamCodesHint" placeholder="Paste the code family — e.g. 62140, 62141, 62142, 62143, 62145, 62146, 62147"></textarea>
+          <div id="tamCodesHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line</div>
         </div>
         <div class="field">
-          <div class="field-label">MS-DRG code(s) — hospital billing view</div>
+          <label class="field-label" for="tamDrgs">MS-DRG code(s) — hospital billing view</label>
           <input type="text" id="tamDrgs" placeholder="e.g. 025, 026, 027 (from your coding guide)">
         </div>
         <div class="field">
-          <div class="field-label">Medicare FFS share of all cases (%)</div>
+          <label class="field-label" for="tamFfsShare">Medicare FFS share of all cases (%)</label>
           <input type="text" id="tamFfsShare" placeholder="e.g. 40" value="40">
         </div>
         <div class="field">
-          <div class="field-label">Addressable portion of all cases (%)</div>
+          <label class="field-label" for="tamCasePortion">Addressable portion of all cases (%)</label>
           <input type="text" id="tamCasePortion" placeholder="e.g. 60 — share of cases your device addresses" value="100">
         </div>
         <div class="field">
-          <div class="field-label">Avg device revenue per procedure ($, optional)</div>
+          <label class="field-label" for="tamAsp">Avg device revenue per procedure ($, optional)</label>
           <input type="text" id="tamAsp" placeholder="e.g. 9500 — your implant ASP">
         </div>
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px;">
@@ -984,7 +1003,7 @@
       <!-- Code Lookup -->
       <div id="lookupFields" style="display:none;">
         <div class="field">
-          <div class="field-label">Code or keyword</div>
+          <label class="field-label" for="lookupQuery">Code or keyword</label>
           <input type="text" id="lookupQuery" placeholder="e.g. cranioplasty, 62140, J1885, 025">
         </div>
         <button class="btn btn-secondary" onclick="browseAllDrgs()" style="margin-bottom:4px;">Browse all MS-DRGs</button>
@@ -998,25 +1017,25 @@
       <!-- NPI Lookup -->
       <div id="npiFields" style="display:none;">
         <div class="field">
-          <div class="field-label">First Name</div>
+          <label class="field-label" for="npiFirstName">First Name</label>
           <input type="text" id="npiFirstName" placeholder="e.g. John">
         </div>
         <div class="field">
-          <div class="field-label">Last Name</div>
+          <label class="field-label" for="npiLastName">Last Name</label>
           <input type="text" id="npiLastName" placeholder="e.g. Smith">
         </div>
         <div class="field">
-          <div class="field-label">State</div>
+          <label class="field-label" for="stateSelectNpi">State</label>
           <select id="stateSelectNpi">
             <option value="">All States</option>
           </select>
         </div>
         <div class="field">
-          <div class="field-label">City</div>
+          <label class="field-label" for="npiCity">City</label>
           <input type="text" id="npiCity" placeholder="e.g. Boston">
         </div>
         <div class="field">
-          <div class="field-label">Taxonomy / Specialty</div>
+          <label class="field-label" for="npiTaxonomy">Taxonomy / Specialty</label>
           <input type="text" id="npiTaxonomy" placeholder="e.g. Orthopedic Surgery">
         </div>
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:4px;">
@@ -1031,7 +1050,7 @@
     <div class="sidebar-section" id="dataPeriodSection">
       <div class="section-label">Data Period</div>
       <div class="field" id="dataYearField">
-        <div class="field-label">Medicare Data Year</div>
+        <label class="field-label" for="dataYearSelect">Medicare Data Year</label>
         <select id="dataYearSelect" onchange="onYearChange(this.value)">
           <option value="">Latest available</option>
         </select>
@@ -1047,7 +1066,7 @@
       <button class="btn btn-secondary" onclick="clearSearch()" style="margin-top:8px;">
         Clear
       </button>
-      <div id="errorBox" style="margin-top:12px;"></div>
+      <div id="errorBox" role="alert" aria-live="assertive" style="margin-top:12px;"></div>
     </div>
 
     <div class="sidebar-section" style="flex:1;overflow:auto;">
@@ -1071,8 +1090,10 @@
       <h2>Search CMS Medicare Data</h2>
       <p>Find high-value providers by name, procedure code, specialty, or geography. Results include procedure volumes and Medicare payment amounts.</p>
     </div>
-    <div id="resultsArea" style="display:none;"></div>
+    <div id="resultsArea" role="region" aria-label="Search results" aria-live="polite" style="display:none;"></div>
   </div>
+  <!-- Screen-reader status announcements (loading / result counts) -->
+  <div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
 </div>
 
 <script src="medintel-core.js"></script>
@@ -1141,7 +1162,7 @@ function init() {
   // medintel-core.js provides groupByProvider, escapeHtml, f, etc. If it failed to
   // load (e.g. not deployed alongside this file), fail loudly instead of crashing mid-search.
   if (typeof groupByProvider === 'undefined' || typeof escapeHtml === 'undefined') {
-    showError('medintel-core.js failed to load — searches cannot run. Make sure it is deployed in the same directory as this page.');
+    showError('medintel-core.js failed to load — searches cannot run. Make sure it is deployed in the same directory as this page.', true);
     return;
   }
 
@@ -1370,8 +1391,11 @@ function switchTab(tab) {
   // Invalidate any in-flight search so its results can't paint into this tab.
   searchGen++;
   isLoading = false;
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelector(`.tab[data-tab="${tab}"]`).classList.add('active');
+  document.querySelectorAll('.tab').forEach(t => {
+    const on = t.dataset.tab === tab;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
 
   document.getElementById('providerFields').style.display = tab === 'provider' ? 'block' : 'none';
   document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
@@ -1396,6 +1420,7 @@ function switchTab(tab) {
   npiTotal = 0;
   clearError();
   resetSearchButton();
+  resetEmptyState();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
 }
@@ -1409,6 +1434,59 @@ function resetSearchButton() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
     Search CMS Data
   `;
+}
+
+// Restore the default idle empty-state (the search-prompt card). Needed because
+// showSearchProgress()/renderers overwrite emptyState's content.
+function resetEmptyState() {
+  const empty = document.getElementById('emptyState');
+  empty.innerHTML = `
+    <div class="empty-icon">🔍</div>
+    <h2>Search CMS Medicare Data</h2>
+    <p>Find high-value providers by name, procedure code, specialty, or geography. Results include procedure volumes and Medicare payment amounts.</p>
+  `;
+}
+
+// Show an in-main progress card with a Cancel button during a long search.
+function showSearchProgress(msg) {
+  const empty = document.getElementById('emptyState');
+  empty.innerHTML = `
+    <div class="empty-icon"><div class="spinner" style="width:28px;height:28px;"></div></div>
+    <h2>Searching…</h2>
+    <p>${escapeHtml(msg || 'Fetching from the CMS API — large multi-code searches can take a moment.')}</p>
+    <button class="btn btn-secondary" style="max-width:180px;margin:12px auto 0;" onclick="cancelSearch()">Cancel search</button>
+  `;
+  empty.style.display = 'flex';
+  document.getElementById('resultsArea').style.display = 'none';
+}
+
+// Soft-cancel: invalidate the in-flight search (its renders are gen-guarded so
+// they won't paint) and restore the idle UI. In-flight requests drain through
+// the concurrency gate but their results are discarded.
+function cancelSearch() {
+  searchGen++;
+  isLoading = false;
+  resetSearchButton();
+  setStatus('Search cancelled.');
+  document.getElementById('resultsArea').setAttribute('aria-busy', 'false');
+  const empty = document.getElementById('emptyState');
+  empty.innerHTML = `
+    <div class="empty-icon">🔍</div>
+    <h2>Search cancelled</h2>
+    <p>Adjust your criteria and search again.</p>
+  `;
+  empty.style.display = 'flex';
+}
+
+// Left/Right arrow navigation across the tablist (ARIA tab pattern).
+function onTabKeydown(e) {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const i = tabs.findIndex(t => t.dataset.tab === currentTab);
+  const next = e.key === 'ArrowRight' ? (i + 1) % tabs.length : (i - 1 + tabs.length) % tabs.length;
+  e.preventDefault();
+  switchTab(tabs[next].dataset.tab);
+  tabs[next].focus();
 }
 
 // ─── BUILD API URL ───
@@ -1696,6 +1774,10 @@ function getTypedCodes() {
 
 async function executeSearch() {
   if (isLoading) return;
+  if (fatalError) { // e.g. core failed to load — re-surface, don't fail mutely
+    showError('medintel-core.js failed to load — searches cannot run. Make sure it is deployed in the same directory as this page.', true);
+    return;
+  }
 
   const hasInput = validateInput();
   if (!hasInput) {
@@ -1731,6 +1813,9 @@ async function executeSearch() {
   const btn = document.getElementById('searchBtn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Searching CMS...';
+  document.getElementById('resultsArea').setAttribute('aria-busy', 'true');
+  setStatus('Searching CMS data…');
+  if (currentTab !== 'lookup') showSearchProgress(); // lookup has its own fast path
   clearError();
 
   try {
@@ -1773,6 +1858,7 @@ async function executeSearch() {
     if (gen !== searchGen) return; // superseded search — swallow its error
     console.error(err);
     showError(err.message);
+    setStatus('Search failed: ' + err.message);
   } finally {
     if (gen === searchGen) {
       isLoading = false;
@@ -1781,8 +1867,20 @@ async function executeSearch() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         Search CMS Data
       `;
+      announceResultCount();
+      document.getElementById('resultsArea').setAttribute('aria-busy', 'false');
     }
   }
+}
+
+// Announce the current result count to screen readers after a render.
+function announceResultCount() {
+  if (fatalError) return;
+  if (currentTab === 'npi') setStatus(`${currentResults.length} NPI record${currentResults.length !== 1 ? 's' : ''} shown`);
+  else if (currentTab === 'procedure') setStatus(`${procedureGroups.length} procedure${procedureGroups.length !== 1 ? 's' : ''} found`);
+  else if (currentTab === 'tam') setStatus(tamResults ? 'Market TAM results ready' : 'No market data found');
+  else if (currentTab === 'lookup') setStatus('Code lookup results ready');
+  else setStatus(`${allGroupedResults.length} provider${allGroupedResults.length !== 1 ? 's' : ''} found`);
 }
 
 // ─── NPI LOOKUP via NPPES Registry ───
@@ -2201,11 +2299,11 @@ function renderResults() {
     </div>
 
     <div class="filter-bar">
-      <label>Min procedures/year:</label>
-      <input type="number" min="0" step="5" value="${minVolumeFilter}"
+      <label for="minVolProvider">Min procedures/year:</label>
+      <input type="number" id="minVolProvider" min="0" step="5" value="${minVolumeFilter}"
              onchange="applyVolumeFilter(this.value)" style="width:72px;">
-      <label style="margin-left:8px;">Sort by:</label>
-      <select onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
+      <label for="sortProvider" style="margin-left:8px;">Sort by:</label>
+      <select id="sortProvider" onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
         <option value="score" ${currentSortOrder === 'score' ? 'selected' : ''}>Complexity Score</option>
         <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
       </select>
@@ -2412,11 +2510,11 @@ function renderProcedureResults() {
     </div>
 
     <div class="filter-bar">
-      <label>Min services/year:</label>
-      <input type="number" min="0" step="5" value="${minVolumeFilter}"
+      <label for="minVolProc">Min services/year:</label>
+      <input type="number" id="minVolProc" min="0" step="5" value="${minVolumeFilter}"
              onchange="applyVolumeFilter(this.value)" style="width:72px;">
-      <label style="margin-left:8px;">Sort by:</label>
-      <select onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
+      <label for="sortProc" style="margin-left:8px;">Sort by:</label>
+      <select id="sortProc" onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
         <option value="services" ${currentSortOrder === 'services' ? 'selected' : ''}>Total Services</option>
         <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
         <option value="providers" ${currentSortOrder === 'providers' ? 'selected' : ''}>Provider Count</option>
@@ -3549,15 +3647,27 @@ function exportSharePointCSV(mapping) {
 }
 
 // ─── UTILS ───
-function showError(msg) {
+let fatalError = false; // true when the app can't function (e.g. core failed to load)
+
+function showError(msg, fatal) {
+  if (fatal) fatalError = true;
   // textContent instead of escapeHtml so errors still display even if medintel-core.js failed to load
   const box = document.getElementById('errorBox');
   box.innerHTML = '<div class="error-msg"></div>';
   box.firstElementChild.textContent = msg;
 }
 
+// clearError() no longer silently wipes a fatal message (e.g. the core-load
+// failure), which a tab click used to erase — leaving searches to fail mutely.
 function clearError() {
+  if (fatalError) return;
   document.getElementById('errorBox').innerHTML = '';
+}
+
+// Announce transient status to screen readers via the visually-hidden live region.
+function setStatus(msg) {
+  const el = document.getElementById('srStatus');
+  if (el) el.textContent = msg || '';
 }
 
 function clearSearch() {
@@ -3575,7 +3685,11 @@ function clearSearch() {
   npiTotal = 0;
   minVolumeFilter = 0;
   currentSortOrder = 'score';
+  searchFailedCodes = [];
+  searchGen++;
   clearError();
+  resetSearchButton();
+  resetEmptyState();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
 }
@@ -3585,10 +3699,10 @@ init();
 
 <!-- SharePoint Field Mapping Modal -->
 <div id="sharepointModal" class="modal-overlay" style="display:none;" onclick="closeSharePointModal(event)">
-  <div class="modal" onclick="event.stopPropagation()">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="spModalTitle" onclick="event.stopPropagation()">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;">
-      <h3>SharePoint Export Configuration</h3>
-      <button class="modal-close" onclick="closeSharePointModal()">×</button>
+      <h3 id="spModalTitle">SharePoint Export Configuration</h3>
+      <button class="modal-close" onclick="closeSharePointModal()" aria-label="Close dialog">×</button>
     </div>
     <p style="font-size:13px;color:var(--text-2);margin-bottom:20px;line-height:1.5;">Map MedIntel fields to your SharePoint column names. Leave blank to use the default name. Settings are saved in your browser.</p>
     <div id="sharepointFieldMap"></div>
