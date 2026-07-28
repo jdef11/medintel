@@ -1117,7 +1117,7 @@ async function fetchCatalog() {
   const validate = obj => obj && Array.isArray(obj.dataset);
   // Direct first (works when hosted; the catalog is a large static file)
   try {
-    const resp = await fetchWithTimeout(CATALOG_URL, 25000);
+    const resp = await fetchWithTimeout(CATALOG_URL, CATALOG_TIMEOUT_MS);
     if (resp.ok) {
       const data = await resp.json();
       if (validate(data)) return data;
@@ -1128,7 +1128,7 @@ async function fetchCatalog() {
   const proxyOrder = CORS_PROXIES.map((_, i) => (activeProxyIndex + i) % CORS_PROXIES.length);
   for (const idx of proxyOrder) {
     try {
-      const resp = await fetchWithTimeout(CORS_PROXIES[idx](CATALOG_URL), 45000);
+      const resp = await fetchWithTimeout(CORS_PROXIES[idx](CATALOG_URL), CATALOG_TIMEOUT_MS);
       if (!resp.ok) continue;
       const data = JSON.parse(await resp.text());
       if (validate(data)) { activeProxyIndex = idx; return data; }
@@ -1567,8 +1567,14 @@ function buildApiUrl(offset = 0) {
       filters.push(`filter[Rndrng_NPI]=${encodeURIComponent(npi)}`);
     }
     if (name) {
-      // Use keyword search for name
-      url += `&keyword=${encodeURIComponent(name)}`;
+      // Target the name column instead of the API's `keyword=` full-text scan.
+      // `keyword` scans EVERY column of a ~10M-row dataset, which routinely
+      // exceeds the API's own time budget (it answers 408) — and it also matched
+      // irrelevant rows (a city or procedure description containing the text).
+      // Rndrng_Prvdr_Last_Org_Name holds the surname for individuals and the
+      // organization name for orgs, which is exactly what this field promises.
+      // CMS stores names upper-case, so upper-case the term to match.
+      filters.push(`filter[Rndrng_Prvdr_Last_Org_Name][condition][path]=Rndrng_Prvdr_Last_Org_Name&filter[Rndrng_Prvdr_Last_Org_Name][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Last_Org_Name][condition][value]=${encodeURIComponent(name.toUpperCase())}`);
     }
     if (specialty) {
       filters.push(`filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Type][condition][value]=${encodeURIComponent(specialty)}`);
@@ -1588,7 +1594,9 @@ function buildApiUrl(offset = 0) {
       filters.push(`filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(code)}`);
     }
     if (keyword) {
-      url += `&keyword=${encodeURIComponent(keyword)}`;
+      // Target the description column rather than a whole-dataset keyword scan
+      // (see the provider-name note above — `keyword=` is what times out).
+      filters.push(`filter[HCPCS_Desc][condition][path]=HCPCS_Desc&filter[HCPCS_Desc][condition][operator]=CONTAINS&filter[HCPCS_Desc][condition][value]=${encodeURIComponent(keyword)}`);
     }
     if (state) {
       filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
@@ -1627,6 +1635,13 @@ function buildApiUrl(offset = 0) {
 // requests) are capped so we don't open hundreds of sockets at once — which
 // free CORS proxies rate-limit and browsers queue, causing false failures.
 const MAX_CONCURRENT_FETCHES = 5;
+
+// Request timeouts. These are generous on purpose: text/CONTAINS searches over
+// the multi-million-row CMS datasets legitimately take 10–25s, and the old 8s
+// direct budget was aborting requests the API would have answered.
+const DIRECT_TIMEOUT_MS = 30000;
+const PROXY_TIMEOUT_MS = 30000;
+const CATALOG_TIMEOUT_MS = 45000; // data.json is several MB
 let activeFetches = 0;
 const fetchQueue = [];
 function acquireFetchSlot() {
@@ -1675,7 +1690,7 @@ async function corsFetch(url) {
 
   // First, try the direct request (works if hosted on a server with CORS headers)
   try {
-    const directResp = await fetchWithTimeout(url, 8000);
+    const directResp = await fetchWithTimeout(url, DIRECT_TIMEOUT_MS);
     const text = await directResp.text();
     if (directResp.ok) {
       const data = JSON.parse(text);
@@ -1709,7 +1724,7 @@ async function corsFetch(url) {
     let moveOn = false;
     for (let attempt = 0; attempt <= 2 && !moveOn; attempt++) {
       try {
-        const resp = await fetchWithTimeout(proxyUrl, 15000);
+        const resp = await fetchWithTimeout(proxyUrl, PROXY_TIMEOUT_MS);
         const text = await resp.text();
         if (!resp.ok) {
           if ((resp.status === 429 || resp.status >= 500) && attempt < 2) {
@@ -1736,6 +1751,24 @@ async function corsFetch(url) {
         moveOn = true;
       }
     }
+  }
+
+  // Distinguish "the query was too slow" from "we can't reach CMS at all" —
+  // blaming the proxies when every attempt actually TIMED OUT sends users
+  // chasing the wrong problem. A timeout on every hop (or an HTTP 408/504 from
+  // a proxy) means the request reached CMS and CMS ran out of time answering it,
+  // which is a query-cost problem the user can fix by narrowing the search.
+  const timedOutEverywhere = attempts.length > 0 &&
+    attempts.every(a => /timed out|408|504|522|524/i.test(a));
+
+  if (timedOutEverywhere) {
+    throw new Error(
+      'The CMS API did not answer this search in time (every attempt timed out). ' +
+      'This usually means the query is too broad for the API to compute — text searches over ' +
+      'the full multi-million-row dataset are slow. Narrow it and retry: add a State, ' +
+      'search by NPI or a specific HCPCS code instead of a name/keyword, or pick a single data year. ' +
+      'Attempt details — ' + attempts.join(' | ')
+    );
   }
 
   throw new Error(
@@ -1987,7 +2020,7 @@ async function executeNpiSearch(offset = 0) {
   // NPPES API supports CORS natively — try direct first
   let data;
   try {
-    const resp = await fetchWithTimeout(url, 12000);
+    const resp = await fetchWithTimeout(url, DIRECT_TIMEOUT_MS);
     if (resp.ok) {
       data = await resp.json();
       console.log('NPPES direct fetch succeeded');
@@ -2002,7 +2035,7 @@ async function executeNpiSearch(offset = 0) {
     for (const idx of proxyOrder) {
       try {
         const proxyUrl = CORS_PROXIES[idx](url);
-        const resp = await fetchWithTimeout(proxyUrl, 15000);
+        const resp = await fetchWithTimeout(proxyUrl, PROXY_TIMEOUT_MS);
         if (!resp.ok) continue;
         const text = await resp.text();
         data = JSON.parse(text);
