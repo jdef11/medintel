@@ -60,7 +60,7 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 | Tab | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
 | **Provider** | CMS Medicare | Name, NPI, specialty, state | Payment totals, procedure volumes, beneficiary counts |
-| **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — total services, provider count, payment per code, with a per-provider breakdown and a multi-year volume trend |
+| **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown with an explicit coverage %, and a multi-year volume trend |
 | **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
 | **Market TAM** | CMS Medicare (Physician + Inpatient Hospital datasets) | A CPT code family, MS-DRG codes, payer-mix/ASP assumptions | National FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals |
 | **Code Lookup** | CMS national datasets (client-side dictionaries) | Keyword, CPT/HCPCS code, or MS-DRG code | Both vocabularies side by side with national volumes, cross-vocabulary suggestions, one-click add to Procedure/TAM searches |
@@ -83,6 +83,12 @@ Because physician fees don't represent the money that buys devices, the TAM tab 
 ### Bulk Code Search
 
 Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into the Procedure tab's code box (or the Geography tab's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from the **Code Lookup** tab's one-click add buttons.
+
+### True Volume vs. Named Providers (suppression workaround)
+
+CMS omits any provider who billed a code for ≤10 Medicare beneficiaries, so provider-level rows badly undercount low-volume procedures. MedIntel works around this: each Procedure card's headline is the **true total volume** from CMS's pre-aggregated *Geography & Service* data, which is **not** subject to the per-provider floor — then it states plainly how much of that total the named providers cover (e.g. *"National total: 763 services in CY 2024. Named providers below account for 133 (17%); the remaining 630 were performed by providers CMS suppresses"*).
+
+If a code has **no** named providers at all, the app doesn't dead-end — it queries the aggregate totals and reports the real volume: *"The procedure does have volume: 763 national services in CY 2024. No individual surgeon is listed because each performed it for ≤10 beneficiaries."* Use a national (no-state) search to surface the highest-volume surgeons, since state filters shrink per-provider counts below the floor faster.
 
 ### Data Year Selector & Yearly Volume Trends
 

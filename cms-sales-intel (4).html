@@ -1232,6 +1232,54 @@ function latestProviderBase() {
   return { base: BASE_URL, year: null };
 }
 
+// Base for the "by Geography and Service" dataset at the data year in view.
+// These rows are PRE-AGGREGATED per HCPCS code, so they are not subject to the
+// per-provider ≤10-beneficiary suppression that hides individual surgeons —
+// which makes them the source of a code's TRUE total volume.
+// Returns { base, year } or null if the dataset wasn't discovered.
+function geoBaseForYear() {
+  const versions = datasetVersions.geography;
+  if (!versions || !versions.length) return null;
+  let v = versions[0];
+  if (selectedYear) {
+    const match = versions.find(x => String(x.year) === String(selectedYear));
+    if (match) v = match;
+  }
+  return { base: `${DATA_API_ROOT}/${v.id}/data`, year: v.year };
+}
+
+// True (unsuppressed) totals for a HCPCS code from the Geography & Service
+// dataset — national, or state-level when a state filter is set. Cached per
+// code+state+year. Returns { services, benes, payment, year } or null.
+const geoTotalCache = {};
+async function fetchGeoTotal(code, stateVal) {
+  const g = geoBaseForYear();
+  if (!g) return null;
+  const key = `${code}|${stateVal}|${g.year}`;
+  if (geoTotalCache[key] !== undefined) return geoTotalCache[key];
+
+  let url = `${g.base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
+  if (stateVal) {
+    const geoDesc = STATE_NAMES[stateVal] || stateVal;
+    url += `&filter[Rndrng_Prvdr_Geo_Lvl]=State&filter[Rndrng_Prvdr_Geo_Desc]=${encodeURIComponent(geoDesc)}`;
+  } else {
+    url += `&filter[Rndrng_Prvdr_Geo_Lvl]=National`;
+  }
+  try {
+    const rows = await corsFetch(url);
+    if (!rows || !rows.length) { geoTotalCache[key] = null; return null; }
+    let services = 0, benes = 0, payment = 0;
+    // Multiple rows = places of service (facility/office); sum for the code total.
+    rows.forEach(r => { services += getServices(r); benes += getBenes(r); payment += getPayment(r); });
+    const out = { services, benes, payment, year: g.year };
+    geoTotalCache[key] = out;
+    return out;
+  } catch (e) {
+    console.log(`Geo total fetch failed for ${code}:`, e.message);
+    return null; // don't cache transient failures
+  }
+}
+
 // Base for the "by Provider" SUMMARY dataset (one row per NPI/year with a true
 // distinct-beneficiary count across all of a provider's services). Matched to
 // the data year currently in view so the unique count lines up with the
@@ -2367,21 +2415,21 @@ function renderProcedureResults() {
 
   if (!procedureGroups.length) {
     const searchedCode = document.getElementById('hcpcsCode').value.trim();
-    const procedureNote = searchedCode
-      ? `<p>No Medicare Part B data found for code(s) <strong>${escapeHtml(searchedCode)}</strong> in ${escapeHtml(dataYearLabel())}. This can happen when:</p>
-         <ul style="text-align:left;margin:8px 0 0;padding-left:20px;color:var(--text-2);font-size:0.9em;">
-           <li>The procedure is low-volume and CMS suppresses records with ≤10 beneficiaries per provider</li>
-           <li>The code primarily generates inpatient (Part A) facility claims, not Part B physician claims</li>
-         </ul>
-         <p style="margin-top:8px;">Try a broader state filter, a different data year, or related procedure codes.</p>`
-      : `<p>Try broadening your search criteria or double-check the procedure code or keyword.</p>`;
     emptyState.innerHTML = `
       <div class="empty-icon">📭</div>
-      <h2>No Results Found</h2>
-      ${procedureNote}
+      <h2>No Named Providers Found</h2>
+      ${searchedCode
+        ? `<p>CMS reports no individual providers for <strong>${escapeHtml(searchedCode)}</strong> in ${escapeHtml(dataYearLabel())} — checking whether the procedure still has volume…</p>`
+        : `<p>Try broadening your search criteria or double-check the procedure code or keyword.</p>`}
+      <div id="suppressedProbe" class="year-note" style="max-width:60ch;margin:12px auto 0;"></div>
     `;
     emptyState.style.display = 'flex';
     resultsArea.style.display = 'none';
+    // Even with zero named providers the procedure may have real volume that is
+    // fully hidden by per-provider suppression. Check the unsuppressed
+    // Geography & Service totals and report the actual number instead of
+    // implying the procedure doesn't happen.
+    if (searchedCode) probeSuppressedVolume();
     return;
   }
 
@@ -2446,28 +2494,29 @@ function renderProcedureResults() {
             <div class="provider-location">${stateVal ? escapeHtml(STATE_NAMES[stateVal] || stateVal) : 'All states'} · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="payment-badge">
-            <div class="payment-amount">${fmtNumber(g.totalServices)}</div>
-            <div class="payment-label">Total Services · ${escapeHtml(dataYearShort())}</div>
+            <div class="payment-amount" id="geototal-${key}">…</div>
+            <div class="payment-label" id="geolbl-${key}">True Total Services · ${escapeHtml(dataYearShort())}</div>
           </div>
         </div>
         <div class="card-metrics">
           <div class="metric">
-            <div class="metric-value">${fmtNumber(g.providerCount)}</div>
-            <div class="metric-label">Providers</div>
+            <div class="metric-value" id="geobenes-${key}">…</div>
+            <div class="metric-label">Beneficiaries (all providers)</div>
           </div>
           <div class="metric">
-            <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
-            <div class="metric-label" title="Sum of each provider's beneficiary count for this code — a patient treated by more than one provider is counted more than once.">Beneficiary-count sum †</div>
-          </div>
-          <div class="metric">
-            <div class="metric-value">${fmtCurrency(g.totalPayment)}</div>
+            <div class="metric-value" id="geopay-${key}">…</div>
             <div class="metric-label">Total Medicare Payment</div>
           </div>
           <div class="metric">
-            <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
-            <div class="metric-label">Avg Payment / Service</div>
+            <div class="metric-value">${fmtNumber(g.totalServices)}</div>
+            <div class="metric-label">Services in Named Providers ‡</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.providerCount)}</div>
+            <div class="metric-label">Named Providers ‡</div>
           </div>
         </div>
+        <div class="year-note" id="coverage-${key}" data-visible="${g.totalServices}" style="margin:8px 0 0;">Loading true national volume…</div>
         <button class="procedures-toggle" id="trend-btn-${key}" onclick="toggleTrend('${escapeHtml(g.code)}')">
           <span class="arrow">▼</span> Volume trend by year
         </button>
@@ -2494,7 +2543,7 @@ function renderProcedureResults() {
   });
 
   html += `</div>`;
-  html += `<div class="year-note" style="margin:10px 0 0;">† Beneficiary-count sum adds each provider's distinct-patient count for the code, so a patient treated by multiple providers is counted more than once — it overstates unique patients.</div>`;
+  html += `<div class="year-note" style="margin:10px 0 0;">‡ <strong>Named Providers</strong> counts only surgeons CMS reports individually. CMS omits any provider with ≤10 Medicare beneficiaries for a code, so for low-volume procedures most surgeons are absent — that is why the named-provider services are usually far below the true total. The headline volume above comes from CMS's pre-aggregated Geography &amp; Service data, which is <em>not</em> subject to that per-provider floor, so it counts every case including suppressed providers'.</div>`;
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
@@ -2505,6 +2554,78 @@ function renderProcedureResults() {
 
   resultsArea.innerHTML = html;
   document.querySelector('.main').scrollTop = 0;
+  patchProcedureTotals(pageGroups, stateVal);
+}
+
+// Zero named providers doesn't mean zero procedures. Query the unsuppressed
+// Geography & Service totals for the searched codes and report the real volume,
+// so a fully-suppressed code reads "N services, every provider below the
+// reporting floor" rather than "no data found".
+async function probeSuppressedVolume() {
+  const box = document.getElementById('suppressedProbe');
+  if (!box) return;
+  const { codes } = parseCodes(document.getElementById('hcpcsCode').value);
+  const stateVal = document.getElementById('stateSelectProc').value;
+  if (!codes.length) return;
+  box.textContent = 'Checking CMS aggregate totals…';
+  const results = await Promise.all(
+    codes.slice(0, 10).map(c => fetchGeoTotal(c, stateVal).then(t => ({ code: c, t })).catch(() => ({ code: c, t: null })))
+  );
+  const withVolume = results.filter(r => r.t && r.t.services);
+  const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
+  if (!withVolume.length) {
+    box.innerHTML = 'CMS aggregate data also shows no volume for these codes — likely an inpatient-only code (billed to Part A, not Part B physician claims), or not billed to Medicare at all. Try the <strong>Market TAM</strong> tab with the matching MS-DRG codes to see the hospital side.';
+    return;
+  }
+  box.innerHTML = `
+    <strong style="color:var(--green);">The procedure does have volume.</strong>
+    ${withVolume.map(r => `${escapeHtml(r.code)}: <strong>${fmtNumber(r.t.services)}</strong> ${escapeHtml(scope.toLowerCase())} services in CY ${r.t.year}`).join(' · ')}.
+    No individual surgeon is listed because each performed it for ≤10 Medicare beneficiaries, CMS's reporting floor — the volume is real, the providers are just not nameable from public data.
+    Use <strong>Volume trend by year</strong> on the Market TAM tab for the full history, or widen to a national (no-state) search to surface the highest-volume surgeons.
+  `;
+}
+
+// Fill in each procedure card's TRUE (unsuppressed) totals from the Geography &
+// Service dataset, and report how much of that volume the named-provider rows
+// actually cover. Generation-guarded so a superseded render isn't patched.
+let geoTotalGen = 0;
+async function patchProcedureTotals(pageGroups, stateVal) {
+  const gen = ++geoTotalGen;
+  const results = await Promise.all(
+    pageGroups.map(g => fetchGeoTotal(g.code, stateVal).then(t => ({ g, t })).catch(() => ({ g, t: null })))
+  );
+  if (gen !== geoTotalGen) return;
+
+  const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
+  results.forEach(({ g, t }) => {
+    const key = codeKey(g.code);
+    const totalEl = document.getElementById(`geototal-${key}`);
+    const lblEl = document.getElementById(`geolbl-${key}`);
+    const benesEl = document.getElementById(`geobenes-${key}`);
+    const payEl = document.getElementById(`geopay-${key}`);
+    const covEl = document.getElementById(`coverage-${key}`);
+    if (!totalEl) return;
+
+    if (t && t.services) {
+      totalEl.textContent = fmtNumber(t.services);
+      if (lblEl) lblEl.textContent = `True Total Services · CY ${t.year}`;
+      if (benesEl) benesEl.textContent = fmtNumber(t.benes);
+      if (payEl) payEl.textContent = fmtCurrency(t.payment);
+      if (covEl) {
+        const visible = parseFloat(covEl.dataset.visible) || 0;
+        const pct = Math.round((visible / t.services) * 100);
+        const hidden = Math.max(0, t.services - visible);
+        covEl.innerHTML = `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} services</strong> in CY ${t.year}. Named providers below account for ${fmtNumber(visible)} (${pct}%); the remaining ${fmtNumber(hidden)} were performed by providers CMS suppresses (≤10 beneficiaries each) and cannot be listed individually.`;
+      }
+    } else {
+      // Geography data unavailable — fall back to the provider-sum, labeled honestly.
+      totalEl.textContent = fmtNumber(g.totalServices);
+      if (lblEl) lblEl.textContent = `Services in Named Providers · ${dataYearShort()}`;
+      if (benesEl) benesEl.textContent = fmtNumber(g.totalBeneficiaries);
+      if (payEl) payEl.textContent = fmtCurrency(g.totalPayment);
+      if (covEl) covEl.innerHTML = 'True total volume unavailable for this code — the figures shown are summed from named providers only and undercount suppressed (≤10-beneficiary) providers.';
+    }
+  });
 }
 
 // ─── PROCEDURE VOLUME TREND (total procedures over time) ───
