@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-157%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-189%20passing-brightgreen)
 
 ---
 
@@ -29,6 +29,10 @@ Don't know the codes in advance? The **Code Lookup** tab searches CPT/HCPCS and 
 ### Multi-Code Search
 
 Paste multiple CPT/HCPCS codes into the Procedure tab (or a state + code family into Geography) and search them all at once. The app fetches each code in parallel from the CMS API and aggregates results — so you see, e.g., a surgeon's total revision burden across a whole code family in one result list.
+
+### Separate Last Name and Organization Search
+
+CMS keeps practitioner surnames and organization names in one column, distinguished by an entity-type code. MedIntel exposes them as **two fields** and disambiguates for you: searching `gross` under **Last Name** returns Dr. Grossman but not "Grossmont Hospital", and searching it under **Organization Name** does the reverse. (They can't be combined — a provider is either an individual or an organization — and the app says so rather than returning a confusing empty result.)
 
 ### Revision Complexity Score (0–100)
 
@@ -59,7 +63,7 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 
 | Tab | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
-| **Provider** | CMS Medicare | Name, NPI, specialty, state | Payment totals, procedure volumes, beneficiary counts |
+| **Provider** | CMS Medicare | **Last name** or **organization name** (separate fields), NPI, specialty, state | Payment totals, procedure volumes, unique beneficiary counts |
 | **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown with an explicit coverage %, and a multi-year volume trend |
 | **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
 | **Market TAM** | CMS Medicare (Physician + Inpatient Hospital datasets) | A CPT code family, MS-DRG codes, payer-mix/ASP assumptions | National FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals |
@@ -220,7 +224,7 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 157 unit tests via Vitest (`npm test`)
+- **Test suite:** 189 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile

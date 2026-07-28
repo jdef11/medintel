@@ -80,7 +80,7 @@ The app has six tabs, each with different input fields and API targets:
 
 | Tab | API | Key Inputs | Query Parameter |
 |-----|-----|-----------|----------------|
-| `provider` | CMS Medicare | Name, NPI, specialty, state | `keyword` or `filter[Rndrng_NPI]` |
+| `provider` | CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`. Mutually exclusive — validated up front |
 | `procedure` | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
 | `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
 | `tam` | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side |
@@ -149,7 +149,7 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `getSearchCriteria()` | Declarative `[{path, op, value}]` for the active tab — single source of truth for both the API filter and client-side enforcement |
 | `buildApiUrl(offset)` | Constructs CMS API query URL from `getSearchCriteria()` via `buildFilterParams` |
 | `buildFilterParams(criteria)` | Emits CMS filter params. **2+ conditions get an explicit `group][conjunction]=AND` with `memberOf`** — a bare condition list is combined as OR by the API |
-| `rowMatchesCriteria(row, criteria)` | Client-side AND enforcement (case-insensitive), so displayed rows always satisfy every criterion regardless of API conjunction behavior |
+| `rowMatchesCriteria(row, criteria)` | Client-side AND enforcement (case-insensitive), so displayed rows always satisfy every criterion regardless of API conjunction behavior. Ops: `CONTAINS`, `=`, `!=`. Criterion flags: `clientOnly` (never sent to the API), `lenient` (passes when the column is absent in that dataset year) |
 | `corsFetch(url)` | CORS-aware fetch — tries direct then cycles proxies |
 | `fetchWithTimeout(url, ms)` | Fetch wrapper with configurable timeout |
 | `groupByProvider(rows)` | Aggregates raw rows by NPI, sorts by total payment |

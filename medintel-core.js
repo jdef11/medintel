@@ -97,7 +97,10 @@ function fmtNumber(val) {
 // conjunction=AND and pointing each condition at it via memberOf makes the
 // intent unambiguous.
 function buildFilterParams(criteria, groupName) {
-  const list = (criteria || []).filter(c => c && c.path && String(c.value !== undefined ? c.value : '') !== '');
+  // `clientOnly` criteria are enforced only by rowMatchesCriteria — used where
+  // we don't want to bet on an API operator (e.g. "not an organization").
+  const list = (criteria || []).filter(c =>
+    c && c.path && !c.clientOnly && String(c.value !== undefined ? c.value : '') !== '');
   if (!list.length) return [];
   const cond = (label, c, memberOf) => {
     // Operators come from a fixed internal set ('=' / 'CONTAINS'), so they are
@@ -119,12 +122,19 @@ function buildFilterParams(criteria, groupName) {
 // we display is correct no matter how the API combined the filters. Comparison
 // is case-insensitive, which also means a typed "ortho" matches CMS's
 // "Orthopedic Surgery" regardless of the API's own case handling.
+// Supported ops: 'CONTAINS', '=', '!='. A `lenient` criterion passes when the
+// column is absent from the row (some dataset years omit columns) instead of
+// rejecting every row.
 function rowMatchesCriteria(row, criteria) {
   const list = (criteria || []).filter(c => c && c.path && String(c.value !== undefined ? c.value : '') !== '');
   return list.every(c => {
-    const actual = String(f(row, c.path) === undefined ? '' : f(row, c.path)).toUpperCase();
+    const rawValue = f(row, c.path);
+    if (rawValue === undefined && c.lenient) return true;
+    const actual = String(rawValue === undefined ? '' : rawValue).toUpperCase();
     const want = String(c.value).toUpperCase();
-    return (c.op === 'CONTAINS') ? actual.includes(want) : actual === want;
+    if (c.op === 'CONTAINS') return actual.includes(want);
+    if (c.op === '!=') return actual !== want;
+    return actual === want;
   });
 }
 

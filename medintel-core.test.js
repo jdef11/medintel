@@ -1270,3 +1270,57 @@ describe('rowMatchesCriteria()', () => {
     expect(rowMatchesCriteria(row, [])).toBe(true);
   });
 });
+
+// ─── Individual vs organization split (clientOnly / lenient / != ) ───────────
+
+describe('criteria flags for the Last Name vs Organization split', () => {
+  const individual = { Rndrng_Prvdr_Last_Org_Name: 'GROSSMAN', Rndrng_Prvdr_Ent_Cd: 'I' };
+  const organization = { Rndrng_Prvdr_Last_Org_Name: 'GROSSMONT HOSPITAL', Rndrng_Prvdr_Ent_Cd: 'O' };
+
+  const lastNameCriteria = (v) => ([
+    { path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: v },
+    { path: 'Rndrng_Prvdr_Ent_Cd', op: '!=', value: 'O', clientOnly: true, lenient: true },
+  ]);
+  const orgCriteria = (v) => ([
+    { path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: v },
+    { path: 'Rndrng_Prvdr_Ent_Cd', op: '=', value: 'O', lenient: true },
+  ]);
+
+  it('a last-name search matches the individual and excludes the organization', () => {
+    expect(rowMatchesCriteria(individual, lastNameCriteria('GROSS'))).toBe(true);
+    expect(rowMatchesCriteria(organization, lastNameCriteria('GROSS'))).toBe(false);
+  });
+
+  it('an organization search matches the org and excludes the individual', () => {
+    expect(rowMatchesCriteria(organization, orgCriteria('GROSS'))).toBe(true);
+    expect(rowMatchesCriteria(individual, orgCriteria('GROSS'))).toBe(false);
+  });
+
+  it('clientOnly criteria are not sent to the API', () => {
+    const p = buildFilterParams(lastNameCriteria('GROSS')).join('&');
+    expect(p).toContain('Rndrng_Prvdr_Last_Org_Name');
+    expect(p).not.toContain('Rndrng_Prvdr_Ent_Cd');
+    // only one API-bound condition remains → no group needed
+    expect(p).not.toContain('conjunction');
+  });
+
+  it('non-clientOnly entity criteria ARE sent, inside an AND group', () => {
+    const p = buildFilterParams(orgCriteria('MAYO')).join('&');
+    expect(p).toContain('conjunction]=AND');
+    expect(p).toContain('Rndrng_Prvdr_Ent_Cd');
+  });
+
+  it('lenient criteria pass when the column is absent (dataset year variance)', () => {
+    const noEntCd = { Rndrng_Prvdr_Last_Org_Name: 'GROSSMAN' };
+    expect(rowMatchesCriteria(noEntCd, lastNameCriteria('GROSS'))).toBe(true);
+    expect(rowMatchesCriteria(noEntCd, orgCriteria('GROSS'))).toBe(true);
+  });
+
+  it('non-lenient criteria still reject a row missing the column', () => {
+    expect(rowMatchesCriteria({}, [{ path: 'Rndrng_Prvdr_Type', op: '=', value: 'X' }])).toBe(false);
+  });
+
+  it('!= is case-insensitive like the other operators', () => {
+    expect(rowMatchesCriteria({ Rndrng_Prvdr_Ent_Cd: 'o' }, [{ path: 'Rndrng_Prvdr_Ent_Cd', op: '!=', value: 'O' }])).toBe(false);
+  });
+});

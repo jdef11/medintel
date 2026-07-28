@@ -817,8 +817,14 @@
       <!-- Provider search (default) -->
       <div id="providerFields">
         <div class="field">
-          <label class="field-label" for="providerName">Provider Last Name or Organization</label>
-          <input type="text" id="providerName" placeholder="e.g. Smith, Mayo Clinic...">
+          <label class="field-label" for="providerName">Provider Last Name</label>
+          <input type="text" id="providerName" aria-describedby="providerNameHint" placeholder="e.g. Smith — individuals only">
+          <div id="providerNameHint" class="year-note" style="margin-top:4px;">Matches individual practitioners; organizations are excluded.</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="providerOrg">Organization Name</label>
+          <input type="text" id="providerOrg" aria-describedby="providerOrgHint" placeholder="e.g. Mayo Clinic — organizations only">
+          <div id="providerOrgHint" class="year-note" style="margin-top:4px;">Matches organizations (hospitals, groups); individuals are excluded.</div>
         </div>
         <div class="field">
           <label class="field-label" for="npiInput">NPI (National Provider Identifier)</label>
@@ -1458,7 +1464,7 @@ function onTabKeydown(e) {
 // Which input ids belong to each tab. Used to capture the current search into a
 // URL and to restore it when someone opens a shared link.
 const TAB_FIELDS = {
-  provider:  ['providerName', 'npiInput', 'specialtyInput', 'stateSelect'],
+  provider:  ['providerName', 'providerOrg', 'npiInput', 'specialtyInput', 'stateSelect'],
   procedure: ['hcpcsCode', 'hcpcsKeyword', 'stateSelectProc'],
   geography: ['stateSelectGeo', 'cityInput', 'specialtyGeo', 'hcpcsGeo'],
   tam:       ['tamCodes', 'tamDrgs', 'tamFfsShare', 'tamCasePortion', 'tamAsp'],
@@ -1566,14 +1572,29 @@ function getSearchCriteria() {
   if (currentTab === 'provider') {
     const npi = val('npiInput').trim();
     const name = val('providerName').trim();
+    const org = val('providerOrg').trim();
     const specialty = val('specialtyInput').trim();
     const state = val('stateSelect');
     if (npi) c.push({ path: 'Rndrng_NPI', op: '=', value: npi });
-    // Target the name column rather than the API's `keyword=` full-text scan:
-    // keyword scans every column of a ~10M-row dataset (times out, HTTP 408) and
-    // matched irrelevant rows. Rndrng_Prvdr_Last_Org_Name holds the surname for
-    // individuals and the organization name for orgs — exactly this field's promise.
-    if (name) c.push({ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: name.toUpperCase() });
+    // CMS keeps BOTH the surname (individuals) and the organization name in one
+    // column — Rndrng_Prvdr_Last_Org_Name — distinguished by Rndrng_Prvdr_Ent_Cd
+    // ('O' = organization). So the split Last Name / Organization fields query
+    // the same column and disambiguate on entity type, which is what stops a
+    // "Gross" surname search from returning "GROSSMONT HOSPITAL".
+    // (We target this column rather than the API's `keyword=` full-text scan,
+    // which scans every column of a ~10M-row dataset and times out with a 408.)
+    if (name) {
+      c.push({ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: name.toUpperCase() });
+      // Exclude organizations. Enforced client-side only: 'O' is the value the
+      // codebase already relies on, but we don't bet on the API supporting a
+      // not-equal operator. Lenient so a dataset year lacking the column doesn't
+      // wipe out every row.
+      c.push({ path: 'Rndrng_Prvdr_Ent_Cd', op: '!=', value: 'O', clientOnly: true, lenient: true });
+    }
+    if (org) {
+      c.push({ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: org.toUpperCase() });
+      c.push({ path: 'Rndrng_Prvdr_Ent_Cd', op: '=', value: 'O', lenient: true });
+    }
     if (specialty) c.push({ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: specialty });
     if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
   }
@@ -1856,6 +1877,16 @@ async function executeSearch() {
   const hasInput = validateInput();
   if (!hasInput) {
     showError('Please enter at least one search criterion.');
+    return;
+  }
+
+  // Last Name and Organization target the same CMS column but require opposite
+  // entity types, so together they can never match a row. Say so rather than
+  // returning a confusing empty result.
+  if (currentTab === 'provider' &&
+      document.getElementById('providerName').value.trim() &&
+      document.getElementById('providerOrg').value.trim()) {
+    showError('Last Name and Organization Name can\'t be combined — a provider is either an individual or an organization. Fill in just one (use Specialty or State to narrow further).');
     return;
   }
 
@@ -2223,6 +2254,7 @@ function exportNpiCSV() {
 function validateInput() {
   if (currentTab === 'provider') {
     return document.getElementById('providerName').value.trim() ||
+           document.getElementById('providerOrg').value.trim() ||
            document.getElementById('npiInput').value.trim() ||
            document.getElementById('specialtyInput').value.trim() ||
            document.getElementById('stateSelect').value;
