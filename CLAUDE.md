@@ -244,7 +244,7 @@ No environment variables, no server-side configuration, no database.
 ## Data Limitations (Important for Accurate Feature Work)
 
 - **Medicare Fee-for-Service only** — excludes Medicare Advantage, Medicaid, private insurance
-- **Privacy redaction** — provider+procedure combinations with ≤10 beneficiaries are excluded
+- **Privacy redaction** — provider+procedure combinations with ≤10 beneficiaries are excluded from the *by-Provider* datasets. **Workaround:** the *by-Geography-and-Service* rows are pre-aggregated per code and are NOT subject to that floor, so `fetchGeoTotal()` supplies each procedure card's true headline volume; `patchProcedureTotals()` also reports what share the named providers cover, and `probeSuppressedVolume()` reports real volume when zero providers are nameable
 - **Beneficiary counts** — `Tot_Benes` is distinct patients *per row* (provider+HCPCS+POS). Summing rows overstates unique patients, so provider cards show the true per-provider count from the by-Provider *summary* dataset; the procedure tab shows an explicit *sum* (labeled as such) because no dataset yields a clean distinct-per-code count for a filtered view
 - **Fetch-cap grouping** — `groupByProvider()`/`groupByProcedure()` aggregate over the rows actually fetched (up to 3,000); a genuine cap sets a per-fetch `capped` flag (not a row-count guess) and the UI shows a partial-totals warning
 - **Annual data** — CMS claims datasets are per calendar year; the Data Year selector switches dataset versions, and NPPES (NPI tab) is a live snapshot with no history
