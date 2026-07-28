@@ -87,6 +87,47 @@ function fmtNumber(val) {
   return new Intl.NumberFormat('en-US').format(n);
 }
 
+// ─── SEARCH CRITERIA → API FILTERS (AND semantics) ───
+// A criterion is { path, op, value } where op is '=' or 'CONTAINS'.
+//
+// CMS's data API uses Drupal-style filters. A bare list of
+// `filter[label][condition][...]` groups is combined with OR, which silently
+// widened multi-field searches (name "gross" + specialty "ortho" returned
+// everyone named Gross OR every orthopedist). Declaring an explicit group with
+// conjunction=AND and pointing each condition at it via memberOf makes the
+// intent unambiguous.
+function buildFilterParams(criteria, groupName) {
+  const list = (criteria || []).filter(c => c && c.path && String(c.value !== undefined ? c.value : '') !== '');
+  if (!list.length) return [];
+  const cond = (label, c, memberOf) => {
+    // Operators come from a fixed internal set ('=' / 'CONTAINS'), so they are
+    // emitted raw — matching the syntax CMS is known to accept.
+    let p = `filter[${label}][condition][path]=${c.path}` +
+            `&filter[${label}][condition][operator]=${c.op || '='}` +
+            `&filter[${label}][condition][value]=${encodeURIComponent(c.value)}`;
+    if (memberOf) p += `&filter[${label}][condition][memberOf]=${memberOf}`;
+    return p;
+  };
+  if (list.length === 1) return [cond(list[0].path, list[0])];
+  const group = groupName || 'allof';
+  const parts = [`filter[${group}][group][conjunction]=AND`];
+  list.forEach((c, i) => parts.push(cond(`c${i}`, c, group)));
+  return parts;
+}
+
+// Does a row satisfy EVERY criterion? Used to enforce AND client-side so what
+// we display is correct no matter how the API combined the filters. Comparison
+// is case-insensitive, which also means a typed "ortho" matches CMS's
+// "Orthopedic Surgery" regardless of the API's own case handling.
+function rowMatchesCriteria(row, criteria) {
+  const list = (criteria || []).filter(c => c && c.path && String(c.value !== undefined ? c.value : '') !== '');
+  return list.every(c => {
+    const actual = String(f(row, c.path) === undefined ? '' : f(row, c.path)).toUpperCase();
+    const want = String(c.value).toUpperCase();
+    return (c.op === 'CONTAINS') ? actual.includes(want) : actual === want;
+  });
+}
+
 // ─── SHAREABLE SEARCH STATE ───
 // Serializes a search into a URL fragment so a specific search can be shared
 // by link. Kept pure (no DOM) so the round-trip is unit-tested.
@@ -669,5 +710,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }

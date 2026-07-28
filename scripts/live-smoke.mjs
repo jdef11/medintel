@@ -161,6 +161,33 @@ async function main() {
     } catch (e) { bad(`name filter check: ${e.message}`); }
   }
 
+  console.log('\n11. Do two filter conditions AND or OR? (the app declares an explicit AND group)');
+  if (resolved.provider) {
+    const base = `${DATA_API_ROOT}/${resolved.provider.id}/data?size=1`;
+    const nameCond = (label, memberOf) =>
+      `&filter[${label}][condition][path]=Rndrng_Prvdr_Last_Org_Name` +
+      `&filter[${label}][condition][operator]=CONTAINS` +
+      `&filter[${label}][condition][value]=GROSS` +
+      (memberOf ? `&filter[${label}][condition][memberOf]=${memberOf}` : '');
+    // A deliberately contradictory pair: a name that exists AND a specialty that
+    // cannot co-occur with it in one row would be empty under AND, non-empty under OR.
+    const impossible = (label, memberOf) =>
+      `&filter[${label}][condition][path]=Rndrng_Prvdr_Type` +
+      `&filter[${label}][condition][operator]=CONTAINS` +
+      `&filter[${label}][condition][value]=ZZZZNOSUCHSPECIALTY` +
+      (memberOf ? `&filter[${label}][condition][memberOf]=${memberOf}` : '');
+    try {
+      const bare = await getJson(base + nameCond('a') + impossible('b'));
+      const grouped = await getJson(base + '&filter[g][group][conjunction]=AND' + nameCond('a', 'g') + impossible('b', 'g'));
+      console.log(`  bare conditions → ${bare.length} row(s); explicit AND group → ${grouped.length} row(s)`);
+      if (bare.length > 0) console.log('  ⚠ bare conditions behave as OR (a contradictory pair still matched) — the explicit AND group is required. The app sends it.');
+      else ok('bare conditions already AND');
+      grouped.length === 0
+        ? ok('explicit AND group is honored (contradictory pair returns nothing)')
+        : bad('explicit AND group did NOT filter — the app also enforces AND client-side, but report this');
+    } catch (e) { bad(`conjunction check: ${e.message}`); }
+  }
+
   finish();
 }
 
