@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-157%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-189%20passing-brightgreen)
 
 ---
 
@@ -224,7 +224,7 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 157 unit tests via Vitest (`npm test`)
+- **Test suite:** 189 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile
