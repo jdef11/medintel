@@ -146,7 +146,10 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `switchTab(tab)` | Shows/hides field groups, updates tab styling |
 | `executeSearch(offset)` | Main search orchestrator — validates, fetches, renders |
 | `executeNpiSearch(offset)` | NPI-specific search via NPPES API |
-| `buildApiUrl(offset)` | Constructs CMS API query URL for current tab/inputs |
+| `getSearchCriteria()` | Declarative `[{path, op, value}]` for the active tab — single source of truth for both the API filter and client-side enforcement |
+| `buildApiUrl(offset)` | Constructs CMS API query URL from `getSearchCriteria()` via `buildFilterParams` |
+| `buildFilterParams(criteria)` | Emits CMS filter params. **2+ conditions get an explicit `group][conjunction]=AND` with `memberOf`** — a bare condition list is combined as OR by the API |
+| `rowMatchesCriteria(row, criteria)` | Client-side AND enforcement (case-insensitive), so displayed rows always satisfy every criterion regardless of API conjunction behavior |
 | `corsFetch(url)` | CORS-aware fetch — tries direct then cycles proxies |
 | `fetchWithTimeout(url, ms)` | Fetch wrapper with configurable timeout |
 | `groupByProvider(rows)` | Aggregates raw rows by NPI, sorts by total payment |

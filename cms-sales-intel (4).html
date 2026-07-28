@@ -1308,6 +1308,7 @@ const benesCache = {};
 let beneGen = 0; // generation token so late bene fetches don't patch a newer render
 let searchGen = 0; // generation token so a superseded search never renders into a new context
 let searchFailedCodes = []; // codes that failed in the last multi-code fetch (fail-soft)
+let searchAndMismatch = 0;  // rows the API returned that failed client-side AND enforcement
 async function fetchProviderBenes(npis) {
   const base = provSummaryBase();
   if (!base) return {}; // dataset unavailable — callers keep the sum fallback
@@ -1378,6 +1379,7 @@ function switchTab(tab) {
   procedureGroups = [];
   tamResults = null;
   searchFailedCodes = [];
+  searchAndMismatch = 0;
   displayPage = 0;
   npiPage = 0;
   npiTotal = 0;
@@ -1552,81 +1554,57 @@ async function restoreSharedSearch() {
   return true;
 }
 
-// ─── BUILD API URL ───
-function buildApiUrl(offset = 0) {
-  let url = `${getDatasetBase()}?size=${FETCH_SIZE}&offset=${offset}`;
-  const filters = [];
+// ─── SEARCH CRITERIA ───
+// Every criterion the user supplied on the active tab, declaratively. One source
+// of truth so the API filter (AND-grouped) and the client-side AND enforcement
+// can never disagree about what was asked for.
+// Note: CMS stores names and cities upper-case, so those terms are upper-cased.
+function getSearchCriteria() {
+  const val = id => (document.getElementById(id) || {}).value || '';
+  const c = [];
 
   if (currentTab === 'provider') {
-    const name = document.getElementById('providerName').value.trim();
-    const npi = document.getElementById('npiInput').value.trim();
-    const specialty = document.getElementById('specialtyInput').value.trim();
-    const state = document.getElementById('stateSelect').value;
-
-    if (npi) {
-      filters.push(`filter[Rndrng_NPI]=${encodeURIComponent(npi)}`);
-    }
-    if (name) {
-      // Target the name column instead of the API's `keyword=` full-text scan.
-      // `keyword` scans EVERY column of a ~10M-row dataset, which routinely
-      // exceeds the API's own time budget (it answers 408) — and it also matched
-      // irrelevant rows (a city or procedure description containing the text).
-      // Rndrng_Prvdr_Last_Org_Name holds the surname for individuals and the
-      // organization name for orgs, which is exactly what this field promises.
-      // CMS stores names upper-case, so upper-case the term to match.
-      filters.push(`filter[Rndrng_Prvdr_Last_Org_Name][condition][path]=Rndrng_Prvdr_Last_Org_Name&filter[Rndrng_Prvdr_Last_Org_Name][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Last_Org_Name][condition][value]=${encodeURIComponent(name.toUpperCase())}`);
-    }
-    if (specialty) {
-      filters.push(`filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Type][condition][value]=${encodeURIComponent(specialty)}`);
-    }
-    if (state) {
-      filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
-    }
+    const npi = val('npiInput').trim();
+    const name = val('providerName').trim();
+    const specialty = val('specialtyInput').trim();
+    const state = val('stateSelect');
+    if (npi) c.push({ path: 'Rndrng_NPI', op: '=', value: npi });
+    // Target the name column rather than the API's `keyword=` full-text scan:
+    // keyword scans every column of a ~10M-row dataset (times out, HTTP 408) and
+    // matched irrelevant rows. Rndrng_Prvdr_Last_Org_Name holds the surname for
+    // individuals and the organization name for orgs — exactly this field's promise.
+    if (name) c.push({ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: name.toUpperCase() });
+    if (specialty) c.push({ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: specialty });
+    if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
   }
   else if (currentTab === 'procedure') {
-    // Multi-code searches go through fetchAllRows' per-code path; this URL is
-    // only used when a single code (or none) is entered.
-    const code = parseCodes(document.getElementById('hcpcsCode').value).codes[0] || '';
-    const keyword = document.getElementById('hcpcsKeyword').value.trim();
-    const state = document.getElementById('stateSelectProc').value;
-
-    if (code) {
-      filters.push(`filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(code)}`);
-    }
-    if (keyword) {
-      // Target the description column rather than a whole-dataset keyword scan
-      // (see the provider-name note above — `keyword=` is what times out).
-      filters.push(`filter[HCPCS_Desc][condition][path]=HCPCS_Desc&filter[HCPCS_Desc][condition][operator]=CONTAINS&filter[HCPCS_Desc][condition][value]=${encodeURIComponent(keyword)}`);
-    }
-    if (state) {
-      filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
-    }
+    // Multi-code searches take fetchAllRows' per-code path; this covers a single
+    // code (or none) so it composes with the description filter.
+    const code = parseCodes(val('hcpcsCode')).codes[0] || '';
+    const keyword = val('hcpcsKeyword').trim();
+    const state = val('stateSelectProc');
+    if (code) c.push({ path: 'HCPCS_Cd', op: '=', value: code });
+    if (keyword) c.push({ path: 'HCPCS_Desc', op: 'CONTAINS', value: keyword });
+    if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
   }
   else if (currentTab === 'geography') {
-    const state = document.getElementById('stateSelectGeo').value;
-    const city = document.getElementById('cityInput').value.trim();
-    const specialty = document.getElementById('specialtyGeo').value.trim();
-    const hcpcs = parseCodes(document.getElementById('hcpcsGeo').value).codes[0] || '';
-
-    if (state) {
-      filters.push(`filter[Rndrng_Prvdr_State_Abrvtn]=${encodeURIComponent(state)}`);
-    }
-    if (city) {
-      filters.push(`filter[Rndrng_Prvdr_City][condition][path]=Rndrng_Prvdr_City&filter[Rndrng_Prvdr_City][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_City][condition][value]=${encodeURIComponent(city.toUpperCase())}`);
-    }
-    if (specialty) {
-      filters.push(`filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=CONTAINS&filter[Rndrng_Prvdr_Type][condition][value]=${encodeURIComponent(specialty)}`);
-    }
-    if (hcpcs) {
-      filters.push(`filter[HCPCS_Cd][condition][path]=HCPCS_Cd&filter[HCPCS_Cd][condition][operator]==&filter[HCPCS_Cd][condition][value]=${encodeURIComponent(hcpcs)}`);
-    }
+    const state = val('stateSelectGeo');
+    const city = val('cityInput').trim();
+    const specialty = val('specialtyGeo').trim();
+    const hcpcs = parseCodes(val('hcpcsGeo')).codes[0] || '';
+    if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
+    if (city) c.push({ path: 'Rndrng_Prvdr_City', op: 'CONTAINS', value: city.toUpperCase() });
+    if (specialty) c.push({ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: specialty });
+    if (hcpcs) c.push({ path: 'HCPCS_Cd', op: '=', value: hcpcs });
   }
+  return c;
+}
 
-  if (filters.length) {
-    url += '&' + filters.join('&');
-  }
-
-  return url;
+// ─── BUILD API URL ───
+function buildApiUrl(offset = 0) {
+  const url = `${getDatasetBase()}?size=${FETCH_SIZE}&offset=${offset}`;
+  const params = buildFilterParams(getSearchCriteria());
+  return params.length ? `${url}&${params.join('&')}` : url;
 }
 
 // ─── CORS-AWARE FETCH ───
@@ -1901,6 +1879,7 @@ async function executeSearch() {
   procedureGroups = [];
   resultsCapped = false;
   searchFailedCodes = [];
+  searchAndMismatch = 0;
   // Generation token: results/renders from a superseded search (user switched
   // tab or searched again mid-fetch) are discarded instead of painting into the
   // wrong context. Snapshot the tab too.
@@ -1933,6 +1912,21 @@ async function executeSearch() {
       if (searchCodes.length > 0) {
         const codeSet = new Set(searchCodes);
         allRows = allRows.filter(row => codeSet.has((f(row, 'HCPCS_Cd') || '').toUpperCase()));
+      }
+
+      // Enforce AND client-side. The API's filter conjunction can't be fully
+      // trusted (a bare condition list combines as OR), so every displayed row
+      // must satisfy EVERY criterion the user entered. Case-insensitive, so a
+      // typed "ortho" still matches "Orthopedic Surgery".
+      const criteria = getSearchCriteria();
+      searchAndMismatch = 0;
+      if (criteria.length > 1 && searchCodes.length === 0) {
+        const before = allRows.length;
+        allRows = allRows.filter(row => rowMatchesCriteria(row, criteria));
+        searchAndMismatch = before - allRows.length;
+        if (searchAndMismatch > 0) {
+          console.log(`AND enforcement dropped ${searchAndMismatch} of ${before} rows the API returned.`);
+        }
       }
 
       // Accurate cap flag from the fetch itself (not a row-count guess) — set
@@ -2330,6 +2324,14 @@ function failedCodesNoteHtml() {
     : '';
 }
 
+// Shown when the API returned rows that failed the all-criteria check AND the
+// fetch was capped: the discarded rows consumed the row budget, so genuine
+// matches may lie beyond it.
+function andEnforcementNoteHtml() {
+  if (!searchAndMismatch || !resultsCapped) return '';
+  return `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ The API returned ${fmtNumber(searchAndMismatch)} row${searchAndMismatch !== 1 ? 's' : ''} that didn't match all of your criteria; those were discarded. Because the row limit was also reached, some genuine matches may be missing — narrow the search (add a State, or drop one filter) for a complete list.</div>`;
+}
+
 // ─── TIER LABEL HELPERS ───
 function tierBadgeHtml(tier) {
   const labels = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' };
@@ -2411,7 +2413,7 @@ function renderResults() {
         <span style="color:var(--border);">■</span> Tier 3
       </div>
     </div>
-    ${failedCodesNoteHtml()}${cappedNoteHtml()}
+    ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -2619,7 +2621,7 @@ function renderProcedureResults() {
         <option value="providers" ${currentSortOrder === 'providers' ? 'selected' : ''}>Provider Count</option>
       </select>
     </div>
-    ${failedCodesNoteHtml()}${cappedNoteHtml()}
+    ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -3857,6 +3859,7 @@ function clearSearch() {
   minVolumeFilter = 0;
   currentSortOrder = 'score';
   searchFailedCodes = [];
+  searchAndMismatch = 0;
   searchGen++;
   clearError();
   resetSearchButton();

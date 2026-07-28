@@ -5,7 +5,7 @@ const {
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
   tokenizeMedical, searchDict, crossSuggest,
-  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState,
+  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -1156,5 +1156,117 @@ describe('share-link state round-trip', () => {
   it('preserves values containing & and = safely', () => {
     const state = { tab: 'lookup', fields: { lookupQuery: 'a&b=c' } };
     expect(decodeSearchState(encodeSearchState(state)).fields.lookupQuery).toBe('a&b=c');
+  });
+});
+
+// ─── buildFilterParams() — AND semantics ─────────────────────────────────────
+
+describe('buildFilterParams()', () => {
+  it('returns no params for empty criteria', () => {
+    expect(buildFilterParams([])).toEqual([]);
+    expect(buildFilterParams(null)).toEqual([]);
+  });
+
+  it('emits a single condition without a group', () => {
+    const p = buildFilterParams([{ path: 'Rndrng_NPI', op: '=', value: '123' }]);
+    expect(p.length).toBe(1);
+    expect(p[0]).toContain('filter[Rndrng_NPI][condition][path]=Rndrng_NPI');
+    expect(p[0]).toContain('filter[Rndrng_NPI][condition][operator]==');
+    expect(p[0]).toContain('filter[Rndrng_NPI][condition][value]=123');
+    expect(p.join('&')).not.toContain('conjunction');
+  });
+
+  it('declares an explicit AND group for multiple conditions', () => {
+    const p = buildFilterParams([
+      { path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: 'GROSS' },
+      { path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'Orthopedic' },
+    ]).join('&');
+    expect(p).toContain('filter[allof][group][conjunction]=AND');
+    expect(p).toContain('filter[c0][condition][memberOf]=allof');
+    expect(p).toContain('filter[c1][condition][memberOf]=allof');
+    expect(p).toContain('filter[c0][condition][value]=GROSS');
+    expect(p).toContain('filter[c1][condition][value]=Orthopedic');
+  });
+
+  it('every condition in a multi-criteria set joins the group (no orphans)', () => {
+    const crit = [
+      { path: 'A', op: '=', value: '1' },
+      { path: 'B', op: 'CONTAINS', value: '2' },
+      { path: 'C', op: '=', value: '3' },
+    ];
+    const p = buildFilterParams(crit).join('&');
+    [0, 1, 2].forEach(i => expect(p).toContain(`filter[c${i}][condition][memberOf]=allof`));
+  });
+
+  it('skips criteria with empty values', () => {
+    const p = buildFilterParams([
+      { path: 'A', op: '=', value: 'x' },
+      { path: 'B', op: '=', value: '' },
+      { path: 'C', op: '=', value: undefined },
+    ]);
+    // only one usable criterion → single-condition form
+    expect(p.length).toBe(1);
+    expect(p[0]).toContain('filter[A]');
+  });
+
+  it('url-encodes values', () => {
+    const p = buildFilterParams([{ path: 'A', op: 'CONTAINS', value: 'a b&c' }]);
+    expect(p[0]).toContain('[value]=a%20b%26c');
+  });
+
+  it('honors a custom group name', () => {
+    const p = buildFilterParams([{ path: 'A', op: '=', value: '1' }, { path: 'B', op: '=', value: '2' }], 'grp').join('&');
+    expect(p).toContain('filter[grp][group][conjunction]=AND');
+    expect(p).toContain('[memberOf]=grp');
+  });
+});
+
+// ─── rowMatchesCriteria() — client-side AND guarantee ────────────────────────
+
+describe('rowMatchesCriteria()', () => {
+  const row = {
+    Rndrng_Prvdr_Last_Org_Name: 'GROSSMAN',
+    Rndrng_Prvdr_Type: 'Orthopedic Surgery',
+    Rndrng_Prvdr_State_Abrvtn: 'TX',
+  };
+
+  it('requires ALL criteria to match (this is the OR-regression guard)', () => {
+    expect(rowMatchesCriteria(row, [
+      { path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: 'GROSS' },
+      { path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'Orthopedic' },
+    ])).toBe(true);
+    // name matches but specialty does not → must be rejected, not accepted
+    expect(rowMatchesCriteria(row, [
+      { path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: 'GROSS' },
+      { path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'Cardiology' },
+    ])).toBe(false);
+    // specialty matches but name does not
+    expect(rowMatchesCriteria(row, [
+      { path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: 'SMITH' },
+      { path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'Orthopedic' },
+    ])).toBe(false);
+  });
+
+  it('is case-insensitive, so "ortho" matches "Orthopedic Surgery"', () => {
+    expect(rowMatchesCriteria(row, [{ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'ortho' }])).toBe(true);
+    expect(rowMatchesCriteria(row, [{ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: 'gross' }])).toBe(true);
+  });
+
+  it('applies exact matching for the = operator', () => {
+    expect(rowMatchesCriteria(row, [{ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: 'TX' }])).toBe(true);
+    expect(rowMatchesCriteria(row, [{ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: 'T' }])).toBe(false);
+  });
+
+  it('rejects a row missing the field entirely', () => {
+    expect(rowMatchesCriteria({}, [{ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'ortho' }])).toBe(false);
+  });
+
+  it('handles space-keyed CMS field variants', () => {
+    expect(rowMatchesCriteria({ 'Rndrng Prvdr Type': 'Orthopedic Surgery' },
+      [{ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: 'ortho' }])).toBe(true);
+  });
+
+  it('accepts any row when there are no criteria', () => {
+    expect(rowMatchesCriteria(row, [])).toBe(true);
   });
 });
