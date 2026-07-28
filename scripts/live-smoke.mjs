@@ -128,6 +128,39 @@ async function main() {
     } catch (e) { bad(`DRG format check: ${e.message}`); }
   }
 
+  console.log('\n9. Is the CONTAINS filter case-sensitive? (decides whether typing "ortho" matches "Orthopedic Surgery")');
+  if (resolved.provider) {
+    const containsCount = async (field, value) => {
+      const url = `${DATA_API_ROOT}/${resolved.provider.id}/data?size=1` +
+        `&filter[${field}][condition][path]=${field}` +
+        `&filter[${field}][condition][operator]=CONTAINS` +
+        `&filter[${field}][condition][value]=${encodeURIComponent(value)}`;
+      try { return (await getJson(url)).length; } catch (e) { return -1; }
+    };
+    const lower = await containsCount('Rndrng_Prvdr_Type', 'ortho');
+    const proper = await containsCount('Rndrng_Prvdr_Type', 'Ortho');
+    console.log(`  CONTAINS "ortho" → ${lower} row(s); CONTAINS "Ortho" → ${proper} row(s)`);
+    if (lower > 0 && proper > 0) ok('case-INSENSITIVE — any casing works in the Specialty field');
+    else if (proper > 0 && lower === 0) {
+      console.log('  ⚠ case-SENSITIVE — the Specialty field must match CMS capitalization (e.g. "Orthopedic Surgery", not "ortho").');
+      console.log('    Report this and the app can normalize specialty input automatically.');
+    } else if (lower === -1 || proper === -1) bad('case check request failed');
+    else console.log('  ⚠ inconclusive (no rows either way) — try a different sample term');
+  }
+
+  console.log('\n10. Provider-name CONTAINS filter (the app upper-cases names to match CMS storage)');
+  if (resolved.provider) {
+    try {
+      const url = `${DATA_API_ROOT}/${resolved.provider.id}/data?size=1` +
+        `&filter[Rndrng_Prvdr_Last_Org_Name][condition][path]=Rndrng_Prvdr_Last_Org_Name` +
+        `&filter[Rndrng_Prvdr_Last_Org_Name][condition][operator]=CONTAINS` +
+        `&filter[Rndrng_Prvdr_Last_Org_Name][condition][value]=GROSS`;
+      const rows = await getJson(url);
+      rows.length ? ok(`name filter works (sample: ${rows[0].Rndrng_Prvdr_Last_Org_Name})`)
+                  : bad('name CONTAINS filter returned no rows for "GROSS" — the app\'s provider-name search may need a different field/casing');
+    } catch (e) { bad(`name filter check: ${e.message}`); }
+  }
+
   finish();
 }
 
