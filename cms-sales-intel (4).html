@@ -1102,6 +1102,14 @@ function init() {
   // Discover which data years CMS has published (non-blocking; searches fall
   // back to the latest year until this resolves).
   loadDatasetVersionsOnce().catch(err => console.log('Dataset version discovery failed:', err.message));
+
+  // If the page was opened from a shared link, restore that search and run it.
+  restoreSharedSearch().catch(err => console.log('Could not restore shared search:', err.message));
+
+  // Back/forward between shared searches (or a pasted hash) re-runs the search.
+  window.addEventListener('hashchange', () => {
+    restoreSharedSearch().catch(err => console.log('Could not restore shared search:', err.message));
+  });
 }
 
 // ─── DATA YEAR DISCOVERY ───
@@ -1442,6 +1450,106 @@ function onTabKeydown(e) {
   e.preventDefault();
   switchTab(tabs[next].dataset.tab);
   tabs[next].focus();
+}
+
+// ─── SHAREABLE SEARCH LINKS ───
+// Which input ids belong to each tab. Used to capture the current search into a
+// URL and to restore it when someone opens a shared link.
+const TAB_FIELDS = {
+  provider:  ['providerName', 'npiInput', 'specialtyInput', 'stateSelect'],
+  procedure: ['hcpcsCode', 'hcpcsKeyword', 'stateSelectProc'],
+  geography: ['stateSelectGeo', 'cityInput', 'specialtyGeo', 'hcpcsGeo'],
+  tam:       ['tamCodes', 'tamDrgs', 'tamFfsShare', 'tamCasePortion', 'tamAsp'],
+  lookup:    ['lookupQuery'],
+  npi:       ['npiFirstName', 'npiLastName', 'stateSelectNpi', 'npiCity', 'npiTaxonomy'],
+};
+
+function captureSearchState() {
+  const ids = TAB_FIELDS[currentTab] || [];
+  const fields = {};
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && String(el.value).trim() !== '') fields[id] = el.value;
+  });
+  // The data year only applies to the single-year CMS claims tabs.
+  const year = (currentTab === 'npi' || currentTab === 'tam' || currentTab === 'lookup') ? '' : selectedYear;
+  return { tab: currentTab, year, fields };
+}
+
+function buildShareUrl() {
+  const encoded = encodeSearchState(captureSearchState());
+  const base = location.href.split('#')[0];
+  return encoded ? `${base}#${encoded}` : base;
+}
+
+async function copyShareLink(btn) {
+  const url = buildShareUrl();
+  // Keep the address bar in sync so a manual copy works too, and browser
+  // back/forward moves between searches.
+  try { history.replaceState(null, '', url); } catch (e) { /* file:// — ignore */ }
+
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+      copied = true;
+    }
+  } catch (e) { /* denied or unavailable — fall through */ }
+  if (!copied) {
+    // Fallback for non-secure contexts (e.g. opened as a local file).
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e) { copied = false; }
+  }
+
+  if (btn) {
+    const original = btn.innerHTML;
+    btn.innerHTML = copied ? '✓ Link copied' : '⚠ Copy failed — link is in the address bar';
+    btn.classList.toggle('added', copied);
+    setTimeout(() => { btn.innerHTML = original; btn.classList.remove('added'); }, 2200);
+  }
+  setStatus(copied ? 'Share link copied to clipboard.' : 'Could not copy automatically — the link is in the address bar.');
+}
+
+// Share button for results headers.
+function shareBtnHtml() {
+  return `<button class="export-btn" onclick="copyShareLink(this)" title="Copy a link that reopens this exact search">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+    Share
+  </button>`;
+}
+
+// Restore a search from the URL fragment on page load and run it.
+async function restoreSharedSearch() {
+  const state = decodeSearchState(location.hash);
+  if (!state) return false;
+
+  switchTab(state.tab); // whitelisted by decodeSearchState
+  Object.keys(state.fields).forEach(id => {
+    if (!(TAB_FIELDS[state.tab] || []).includes(id)) return; // ignore foreign ids
+    const el = document.getElementById(id);
+    if (el) el.value = state.fields[id]; // .value assignment — never HTML
+  });
+
+  if (state.year) {
+    selectedYear = state.year;
+    // The year → dataset UUID map must be loaded before searching, or the
+    // search would silently fall back to the latest year.
+    try { await loadDatasetVersionsOnce(); } catch (e) { /* falls back to latest */ }
+    const sel = document.getElementById('dataYearSelect');
+    if (sel) sel.value = state.year;
+  }
+
+  if (validateInput()) executeSearch();
+  return true;
 }
 
 // ─── BUILD API URL ───
@@ -1956,6 +2064,7 @@ function renderNpiResults() {
         <span class="year-badge snapshot" title="The NPPES registry is a live directory — results reflect the registry as of today, not a historical year">Live registry snapshot — ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
       </div>
       <div style="display:flex;gap:8px;">
+        ${shareBtnHtml()}
         <button class="export-btn" onclick="exportNpiCSV()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Export CSV
@@ -2242,6 +2351,7 @@ function renderResults() {
         ${yearBadgeHtml()}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${shareBtnHtml()}
         <button class="export-btn" onclick="exportCSV()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Export CSV
@@ -2457,6 +2567,7 @@ function renderProcedureResults() {
         ${yearBadgeHtml()}
       </div>
       <div style="display:flex;gap:8px;">
+        ${shareBtnHtml()}
         <button class="export-btn" onclick="exportProcedureCSV()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Export CSV
@@ -3043,6 +3154,7 @@ function renderTamResults() {
         <span class="year-badge">${mixedYears ? `CY ${minYear}–${baseYear} (mixed)` : `CY ${(baseYear || drgYear) || '—'}`} base · national Medicare FFS</span>
       </div>
       <div style="display:flex;gap:8px;">
+        ${shareBtnHtml()}
         <button class="export-btn" onclick="exportTamCSV()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Export CSV
@@ -3469,6 +3581,9 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span>${titleOverride ? escapeHtml(titleOverride) : `Code Lookup — “<strong>${escapeHtml(query)}</strong>”`}</span>
         <span class="year-badge">Volumes: ${escapeHtml(cptYear)} · Medicare FFS</span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        ${shareBtnHtml()}
       </div>
     </div>
     ${crossNote ? `<div class="year-note" style="margin:0 0 12px;">≈ ${escapeHtml(crossNote)} There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — treat cross-matches as leads to verify against a coding guide.</div>` : ''}
