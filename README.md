@@ -84,6 +84,10 @@ Because physician fees don't represent the money that buys devices, the TAM tab 
 
 Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into the Procedure tab's code box (or the Geography tab's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from the **Code Lookup** tab's one-click add buttons.
 
+### Share a Search by Link
+
+Every results view has a **Share** button that copies a URL encoding the exact search — tab, all input fields, and the selected data year. Send it to a teammate and the page opens on the same tab with the same inputs and runs the search automatically. The address bar stays in sync as you share, so browser back/forward moves between searches too. Nothing is stored server-side; the whole search lives in the link's `#fragment`.
+
 ### True Volume vs. Named Providers (suppression workaround)
 
 CMS omits any provider who billed a code for ≤10 Medicare beneficiaries, so provider-level rows badly undercount low-volume procedures. MedIntel works around this: each Procedure card's headline is the **true total volume** from CMS's pre-aggregated *Geography & Service* data, which is **not** subject to the per-provider floor — then it states plainly how much of that total the named providers cover (e.g. *"National total: 763 services in CY 2024. Named providers below account for 133 (17%); the remaining 630 were performed by providers CMS suppresses"*).

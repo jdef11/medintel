@@ -87,6 +87,54 @@ function fmtNumber(val) {
   return new Intl.NumberFormat('en-US').format(n);
 }
 
+// ─── SHAREABLE SEARCH STATE ───
+// Serializes a search into a URL fragment so a specific search can be shared
+// by link. Kept pure (no DOM) so the round-trip is unit-tested.
+//
+// Shape: { tab: 'procedure', year: '2023', fields: { hcpcsCode: '62140', ... } }
+// Encoded as: tab=procedure&year=2023&hcpcsCode=62140
+
+const SHAREABLE_TABS = ['provider', 'procedure', 'geography', 'tam', 'lookup', 'npi'];
+const MAX_SHARE_VALUE_LEN = 300; // keep links sane and bound untrusted input
+
+function encodeSearchState(state) {
+  if (!state || !SHAREABLE_TABS.includes(state.tab)) return '';
+  const parts = [`tab=${encodeURIComponent(state.tab)}`];
+  if (state.year) parts.push(`year=${encodeURIComponent(String(state.year))}`);
+  const fields = state.fields || {};
+  Object.keys(fields).sort().forEach(k => {
+    const v = fields[k];
+    if (v === undefined || v === null || String(v).trim() === '') return;
+    parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v).slice(0, MAX_SHARE_VALUE_LEN))}`);
+  });
+  return parts.join('&');
+}
+
+// Parses an encoded state. Returns null when there's no usable tab — values are
+// treated as untrusted: only known-shape keys survive, values are length-capped,
+// and the tab must be in the whitelist (it drives a DOM query downstream).
+function decodeSearchState(str) {
+  const raw = String(str || '').replace(/^[#?]+/, '');
+  if (!raw) return null;
+  const out = { tab: null, year: '', fields: {} };
+  raw.split('&').forEach(pair => {
+    if (!pair) return;
+    const i = pair.indexOf('=');
+    if (i < 0) return;
+    let key, val;
+    try {
+      key = decodeURIComponent(pair.slice(0, i));
+      val = decodeURIComponent(pair.slice(i + 1));
+    } catch (e) { return; } // malformed percent-encoding
+    val = String(val).slice(0, MAX_SHARE_VALUE_LEN);
+    if (key === 'tab') { if (SHAREABLE_TABS.includes(val)) out.tab = val; return; }
+    if (key === 'year') { if (/^\d{4}$/.test(val)) out.year = val; return; }
+    // Field ids are alphanumeric in this app — reject anything else outright.
+    if (/^[A-Za-z][A-Za-z0-9]*$/.test(key)) out.fields[key] = val;
+  });
+  return out.tab ? out : null;
+}
+
 // ─── NETWORK BACKOFF ───
 // Exponential backoff delay (ms) for retry attempt N (0-indexed), capped.
 // Pure so the schedule is unit-testable; the caller supplies the actual wait.
@@ -621,5 +669,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }

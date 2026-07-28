@@ -5,7 +5,7 @@ const {
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
   tokenizeMedical, searchDict, crossSuggest,
-  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay,
+  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -1080,5 +1080,81 @@ describe('backoffDelay()', () => {
   });
   it('treats negative attempts as 0', () => {
     expect(backoffDelay(-3, 500, 8000)).toBe(500);
+  });
+});
+
+// ─── encodeSearchState() / decodeSearchState() ───────────────────────────────
+
+describe('share-link state round-trip', () => {
+  it('encodes tab, year, and non-empty fields', () => {
+    const enc = encodeSearchState({ tab: 'procedure', year: '2023', fields: { hcpcsCode: '62140, 62141', stateSelectProc: 'TX' } });
+    expect(enc).toContain('tab=procedure');
+    expect(enc).toContain('year=2023');
+    expect(enc).toContain('hcpcsCode=62140%2C%2062141');
+    expect(enc).toContain('stateSelectProc=TX');
+  });
+
+  it('round-trips faithfully', () => {
+    const state = { tab: 'tam', year: '', fields: { tamCodes: '62140 62141', tamDrgs: '025', tamAsp: '9500' } };
+    const back = decodeSearchState(encodeSearchState(state));
+    expect(back.tab).toBe('tam');
+    expect(back.fields).toEqual(state.fields);
+  });
+
+  it('omits empty/whitespace-only fields', () => {
+    const enc = encodeSearchState({ tab: 'provider', fields: { providerName: 'Smith', npiInput: '', specialtyInput: '   ' } });
+    expect(enc).toContain('providerName=Smith');
+    expect(enc).not.toContain('npiInput');
+    expect(enc).not.toContain('specialtyInput');
+  });
+
+  it('returns empty string for an unknown tab', () => {
+    expect(encodeSearchState({ tab: 'evil', fields: {} })).toBe('');
+    expect(encodeSearchState(null)).toBe('');
+  });
+
+  it('decodes with or without a leading # or ?', () => {
+    expect(decodeSearchState('#tab=npi&npiLastName=Smith').fields.npiLastName).toBe('Smith');
+    expect(decodeSearchState('?tab=npi').tab).toBe('npi');
+    expect(decodeSearchState('tab=npi').tab).toBe('npi');
+  });
+
+  it('rejects a non-whitelisted tab (returns null)', () => {
+    expect(decodeSearchState('tab=../../etc&x=1')).toBeNull();
+    expect(decodeSearchState('tab=<script>')).toBeNull();
+  });
+
+  it('returns null for empty or field-only input', () => {
+    expect(decodeSearchState('')).toBeNull();
+    expect(decodeSearchState(null)).toBeNull();
+    expect(decodeSearchState('hcpcsCode=62140')).toBeNull(); // no tab
+  });
+
+  it('ignores malformed field keys but keeps valid ones', () => {
+    const d = decodeSearchState('tab=procedure&hcpcsCode=62140&bad-key=x&__proto__=y&"evil"=z');
+    expect(d.fields.hcpcsCode).toBe('62140');
+    expect(Object.keys(d.fields)).toEqual(['hcpcsCode']);
+  });
+
+  it('only accepts a 4-digit year', () => {
+    expect(decodeSearchState('tab=procedure&year=2019').year).toBe('2019');
+    expect(decodeSearchState('tab=procedure&year=notayear').year).toBe('');
+    expect(decodeSearchState('tab=procedure&year=99').year).toBe('');
+  });
+
+  it('caps absurdly long values', () => {
+    const long = 'A'.repeat(5000);
+    const d = decodeSearchState(`tab=procedure&hcpcsCode=${long}`);
+    expect(d.fields.hcpcsCode.length).toBe(300);
+  });
+
+  it('survives malformed percent-encoding without throwing', () => {
+    expect(() => decodeSearchState('tab=procedure&hcpcsCode=%E0%A4%A')).not.toThrow();
+    expect(decodeSearchState('tab=procedure&hcpcsCode=%E0%A4%A').tab).toBe('procedure');
+  });
+
+  it('preserves values containing & and = safely', () => {
+    const state = { tab: 'lookup', fields: { lookupQuery: 'a&b=c' } };
+    expect(decodeSearchState(encodeSearchState(state)).fields.lookupQuery).toBe('a&b=c');
   });
 });

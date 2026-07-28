@@ -171,6 +171,9 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `getPayment(row)` | Extracts payment (falls back to avg × services) |
 | `getProviderName(row)` | Handles individual vs. organization name fields |
 | `escapeHtml(str)` | XSS prevention — always use when inserting user-derived data into DOM |
+| `encodeSearchState` / `decodeSearchState` | Share-link serialization (pure, in medintel-core.js). Decode treats the URL as untrusted: tab must be in `SHAREABLE_TABS`, year must be 4 digits, field keys must be alphanumeric, values capped at 300 chars |
+| `captureSearchState()` / `buildShareUrl()` / `copyShareLink(btn)` | Capture the current tab's fields (`TAB_FIELDS`) into a `#fragment` URL and copy it (clipboard API with an execCommand fallback for `file://`) |
+| `restoreSharedSearch()` | On load and on `hashchange`: restores tab/fields/year from the fragment (via `.value`, never HTML) and auto-runs the search |
 
 ---
 
