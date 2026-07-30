@@ -568,6 +568,113 @@ function crossSuggest(sourceDesc, targetItems, limit = 10) {
     .map(s => ({ ...s.item, matchScore: s.score }));
 }
 
+// ─── GEOGRAPHY-LEVEL SCOPING ───
+// The "by Geography and Service" files carry one row per geography per code, and
+// the National row is the one we want. The column name differs per dataset
+// family: the physician and inpatient files key it off the RENDERING provider
+// (Rndrng_Prvdr_Geo_Lvl), while the DMEPOS file keys it off the REFERRING
+// provider (Rfrg_Prvdr_Geo_Lvl). A server-side filter on the wrong name returns
+// nothing, which reads as "this code has no data" — so scope client-side and
+// tolerate every documented spelling.
+const GEO_LEVEL_FIELDS = ['Rfrg_Prvdr_Geo_Lvl', 'Rndrng_Prvdr_Geo_Lvl', 'Suplr_Prvdr_Geo_Lvl', 'Geo_Lvl'];
+
+function getGeoLevel(row) {
+  for (const name of GEO_LEVEL_FIELDS) {
+    const v = f(row, name);
+    if (v !== undefined && v !== null && String(v) !== '') return String(v);
+  }
+  return '';
+}
+
+// Reduce a mixed National+state row set to the rows that should be summed.
+//   'national'  — real National rows found; sum those
+//   'state-sum' — a geo column exists but no National row; summing the states
+//                 approximates the national total (label it as an approximation)
+//   'unscoped'  — no geo column at all; the rows are already the whole answer
+function pickNationalRows(rows) {
+  const list = rows || [];
+  if (!list.length) return { rows: [], scope: 'none' };
+  const national = list.filter(r => getGeoLevel(r).toUpperCase() === 'NATIONAL');
+  if (national.length) return { rows: national, scope: 'national' };
+  const anyGeo = list.some(r => getGeoLevel(r) !== '');
+  return { rows: list, scope: anyGeo ? 'state-sum' : 'unscoped' };
+}
+
+// ─── HCPCS LEVEL II FAMILIES ───
+// Level II is not one homogeneous set. The leading letter says who bills the
+// code, and therefore which CMS dataset (if any) reports it. Lumping them all
+// under "supplier-billed DMEPOS" makes an L-code miss look like a C-code miss,
+// when the two have completely different explanations.
+const HCPCS_LEVEL_II_FAMILIES = {
+  A: { label: 'Transport, medical & surgical supplies', inDmepos: true },
+  B: { label: 'Enteral & parenteral therapy', inDmepos: true },
+  C: {
+    label: 'Hospital outpatient (OPPS) device pass-through',
+    inDmepos: false,
+    billedBy: 'hospital outpatient departments, on facility claims under OPPS',
+    note: "CMS's public Outpatient Hospitals files are aggregated to Ambulatory Payment Classification (APC), not individual HCPCS codes, so no public dataset reports per-code volume or payment for a C-code. C-codes are also not payable on physician or supplier claims.",
+  },
+  E: { label: 'Durable medical equipment', inDmepos: true },
+  G: {
+    label: 'Professional procedures & services (temporary)',
+    inDmepos: false,
+    billedBy: 'practitioners, on Part B professional claims',
+    note: 'G-codes appear in the Physician & Other Practitioners data alongside CPT, so the CPT/HCPCS panel above is the right place to look — not the supplier data.',
+  },
+  H: {
+    label: 'Behavioral health & substance abuse',
+    inDmepos: false,
+    billedBy: 'state Medicaid programs',
+    note: 'H-codes are Medicaid codes. Medicare does not pay them, so no Medicare dataset reports them.',
+  },
+  J: { label: 'Drugs administered other than oral', inDmepos: true },
+  K: { label: 'Durable medical equipment (temporary)', inDmepos: true },
+  L: { label: 'Orthotics & prosthetics', inDmepos: true },
+  M: {
+    label: 'Medical services & screening',
+    inDmepos: false,
+    billedBy: 'practitioners, on Part B professional claims',
+    note: 'M-codes appear in the Physician & Other Practitioners data, not the supplier data.',
+  },
+  P: {
+    label: 'Pathology & laboratory',
+    inDmepos: false,
+    billedBy: 'labs and practitioners, on Part B claims',
+    note: 'Lab codes are reported in the physician/lab Part B data, not the supplier data.',
+  },
+  Q: { label: 'Temporary codes (drugs, supplies, services)', inDmepos: true },
+  R: {
+    label: 'Diagnostic radiology services',
+    inDmepos: false,
+    billedBy: 'practitioners and facilities, on Part B claims',
+    note: 'R-codes are reported in the physician Part B data, not the supplier data.',
+  },
+  S: {
+    label: 'Commercial-payer codes',
+    inDmepos: false,
+    billedBy: 'private payers and some Medicaid programs',
+    note: 'S-codes are not valid for Medicare, so no Medicare dataset reports them.',
+  },
+  T: {
+    label: 'State Medicaid codes',
+    inDmepos: false,
+    billedBy: 'state Medicaid programs',
+    note: 'T-codes are not valid for Medicare, so no Medicare dataset reports them.',
+  },
+  V: { label: 'Vision & hearing services', inDmepos: true },
+};
+
+// Returns the family record for a Level II code, or null if the code isn't
+// Level II-shaped (letter + 4 digits).
+function hcpcsLevelIIFamily(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!/^[A-VX]\d{4}$/.test(c)) return null;
+  const letter = c[0];
+  const fam = HCPCS_LEVEL_II_FAMILIES[letter];
+  if (!fam) return { letter, label: 'HCPCS Level II', inDmepos: true };
+  return { letter, ...fam };
+}
+
 // ─── DMEPOS (DME, Devices & Supplies) ACCESSORS ───
 // HCPCS Level II items — orthotics, prosthetics, DME, supplies — are billed by
 // SUPPLIERS, not practitioners, so they live in CMS's separate DME datasets with
@@ -805,5 +912,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }
