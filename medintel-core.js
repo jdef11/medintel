@@ -568,6 +568,91 @@ function crossSuggest(sourceDesc, targetItems, limit = 10) {
     .map(s => ({ ...s.item, matchScore: s.score }));
 }
 
+// ─── DMEPOS (DME, Devices & Supplies) ACCESSORS ───
+// HCPCS Level II items — orthotics, prosthetics, DME, supplies — are billed by
+// SUPPLIERS, not practitioners, so they live in CMS's separate DME datasets with
+// their own column names. Field spellings vary across dataset years, so try the
+// documented variants (same tolerance pattern as the other accessors).
+function getSupplierServices(row) {
+  for (const name of ['Tot_Suplr_Srvcs', 'Tot_Suplr_Srvcs_Cnt', 'Tot_Srvcs']) {
+    const v = parseFloat(f(row, name));
+    if (!isNaN(v)) return v;
+  }
+  return 0;
+}
+
+function getSupplierBenes(row) {
+  for (const name of ['Tot_Suplr_Benes', 'Tot_Benes', 'Tot_Bene_Cnt']) {
+    const v = parseFloat(f(row, name));
+    if (!isNaN(v)) return v;
+  }
+  return 0;
+}
+
+// Total Medicare payment for a DMEPOS row: prefer an explicit total, else derive
+// it from the per-service average × services.
+function getSupplierPayment(row) {
+  for (const name of ['Tot_Suplr_Mdcr_Pymt_Amt', 'Tot_Mdcr_Pymt_Amt']) {
+    const tot = parseFloat(f(row, name));
+    if (!isNaN(tot) && tot !== 0) return tot;
+  }
+  for (const name of ['Avg_Suplr_Mdcr_Pymt_Amt', 'Avg_Mdcr_Pymt_Amt']) {
+    const avg = parseFloat(f(row, name));
+    if (!isNaN(avg)) return avg * getSupplierServices(row);
+  }
+  return 0;
+}
+
+function getSupplierCount(row) {
+  for (const name of ['Tot_Suplrs', 'Tot_Suplr_Cnt']) {
+    const v = parseFloat(f(row, name));
+    if (!isNaN(v)) return v;
+  }
+  return 0;
+}
+
+// Referring provider name from a DMEPOS by-Referring-Provider row. These use
+// Rfrg_* prefixes rather than Rndrng_*.
+function getReferringName(row) {
+  if (f(row, 'Rfrg_Prvdr_Ent_Cd') === 'O') {
+    return f(row, 'Rfrg_Prvdr_Last_Name_Org') || 'Organization';
+  }
+  const last = f(row, 'Rfrg_Prvdr_Last_Name_Org') || '';
+  const first = f(row, 'Rfrg_Prvdr_First_Name') || '';
+  const cred = f(row, 'Rfrg_Prvdr_Crdntls') || '';
+  let name = last;
+  if (first) name = `${first} ${last}`;
+  if (cred) name += `, ${cred}`;
+  return name || 'Unknown Provider';
+}
+
+// Aggregate DMEPOS referring-provider rows by NPI — "which physicians drive
+// orders for this device code", which is a different (often better) targeting
+// signal than who performs a procedure.
+function groupByReferrer(rows) {
+  const map = {};
+  (rows || []).forEach(row => {
+    const npi = f(row, 'Rfrg_NPI') || f(row, 'Rndrng_NPI') || 'unknown';
+    if (!map[npi]) {
+      map[npi] = {
+        npi,
+        name: getReferringName(row),
+        specialty: f(row, 'Rfrg_Prvdr_Type') || f(row, 'Rfrg_Prvdr_Spclty_Desc') || '',
+        state: f(row, 'Rfrg_Prvdr_State_Abrvtn') || '',
+        city: f(row, 'Rfrg_Prvdr_City') || '',
+        services: 0,
+        payment: 0,
+        benes: 0,
+      };
+    }
+    const g = map[npi];
+    g.services += getSupplierServices(row);
+    g.payment += getSupplierPayment(row);
+    g.benes += getSupplierBenes(row);
+  });
+  return Object.values(map).sort((a, b) => b.services - a.services);
+}
+
 // ─── DATASET VERSION DISCOVERY ───
 // data.cms.gov publishes each data year of a dataset as its own version with its
 // own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
@@ -720,5 +805,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
 }

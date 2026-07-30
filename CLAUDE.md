@@ -84,7 +84,7 @@ The app has six tabs, each with different input fields and API targets:
 | `procedure` | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
 | `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
 | `tam` | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side |
-| `lookup` | CMS national datasets (cached dictionaries) | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; rows push codes into other tabs via `addToField` |
+| `lookup` | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other tabs via `addToField` |
 | `npi` | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
 
 ---
@@ -114,7 +114,7 @@ One row per NPI per year with a **true distinct-beneficiary count** (`Tot_Benes`
 
 ### Dataset versions / Data Year selector
 
-CMS publishes each calendar year of a dataset as its own version with its own UUID. The app discovers the year→UUID mapping at runtime from the official catalog (`https://data.cms.gov/data.json`) via `extractDatasetVersions()` for five dataset families (`provider`, `provSummary`, `geography`, `inpProvider`, `inpGeo`), caches it in `localStorage` (`medintel_dataset_versions_v3`, 7-day TTL, shape-validated by `sanitizeVersions()`), and routes searches through `getDatasetBase()`. If the catalog is unreachable, searches fall back to the hardcoded latest-year `DATASET_ID`.
+CMS publishes each calendar year of a dataset as its own version with its own UUID. The app discovers the year→UUID mapping at runtime from the official catalog (`https://data.cms.gov/data.json`) via `extractDatasetVersions()` for seven dataset families (`provider`, `provSummary`, `geography`, `inpProvider`, `inpGeo`, `dmeGeo`, `dmeReferring`), caches it in `localStorage` (`medintel_dataset_versions_v4`, 7-day TTL, shape-validated by `sanitizeVersions()`), and routes searches through `getDatasetBase()`. If the catalog is unreachable, searches fall back to the hardcoded latest-year `DATASET_ID`.
 
 ### NPPES NPI Registry
 
@@ -167,6 +167,8 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `loadCptDict()` / `loadDrgDict()` / `executeLookupSearch()` | Code Lookup tab — dictionaries from national dataset rows, localStorage-cached (`medintel_cpt_dict_v1`/`medintel_drg_dict_v1`). Page-capped builds set `cptDictTruncated`/`drgDictTruncated` |
 | `lookupCptCodeDirect` / `lookupDrgCodeDirect` / `lookupCptKeywordDirect` | **Truncation workaround** — the dictionaries are a capped local index, so a miss triggers a targeted direct-API query for that code/keyword. Each verifies the returned rows actually match (filter-bypass safety net) before trusting them |
 | `hcpcsLevelBadge(code)` | Labels a code CPT (Level I) / CPT III / Level II from its shape |
+| `lookupDmeCode` / `lookupDmeKeyword` / `lookupDmeReferrers` / `dmePanelHtml` | **DMEPOS lookup** — Level II codes are supplier-billed and absent from physician data, so Code Lookup also queries the DME Geography & Service dataset (volume/payments/benes/supplier count) and the DME Referring Provider dataset (`groupByReferrer` → ranked ordering physicians), rendered in its own panel |
+| `getSupplierServices` / `getSupplierBenes` / `getSupplierPayment` / `getSupplierCount` / `getReferringName` / `groupByReferrer` | DMEPOS field accessors + referrer aggregation (pure, in medintel-core.js). DMEPOS uses `Tot_Suplr_*` / `Rfrg_Prvdr_*` column prefixes, not `Rndrng_*` |
 | `renderResults()` | Renders Medicare provider cards to DOM |
 | `renderNpiResults()` | Renders NPPES lookup cards to DOM |
 | `toggleProcedures(npi)` | Expands/collapses procedure detail table for a card |
@@ -225,7 +227,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 157 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 200 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
 - Manual UI validation: open in a browser (or `npx serve .`), exercise all six tabs with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
