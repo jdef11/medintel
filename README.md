@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-189%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-200%20passing-brightgreen)
 
 ---
 
@@ -80,7 +80,9 @@ One search box, both vocabularies. Keywords (e.g. "cranioplasty") match CPT/HCPC
 
 **CPT vs HCPCS:** CPT *is* HCPCS **Level I** (5-digit physician/professional services, AMA-maintained). **Level II** is the CMS-maintained alphanumeric set (letter + 4 digits) for supplies, drugs, DME, and orthotics/prosthetics. CMS stores both in one `HCPCS_Cd` column, so results are labeled `CPT` / `CPT III` / `Level II` by code shape. Note the descriptions shown are CMS's plain-language text, not AMA official descriptors — wording won't match a manufacturer coding guide verbatim.
 
-**If a code isn't found:** the index is built from the Physician & Other Practitioners data only, and its pagination is capped. So a miss triggers a **direct API query for that specific code or keyword** — the index alone is never allowed to produce a false "not found". When that rescue succeeds you'll see a note saying so. Level II supplier-billed codes (e.g. `L8699`) live in CMS's separate DME/Supplies datasets and are explained inline rather than reported as unbilled.
+**If a code isn't found:** the index is built from the Physician & Other Practitioners data only, and its pagination is capped. So a miss triggers a **direct API query for that specific code or keyword** — the index alone is never allowed to produce a false "not found". When that rescue succeeds you'll see a note saying so.
+
+**Supplier-billed Level II codes (DMEPOS):** L-codes and other Level II device codes are billed by *suppliers*, not physicians, so they never appear in the physician datasets at all. MedIntel also searches CMS's **Durable Medical Equipment, Devices & Supplies** datasets and shows a separate **"HCPCS Level II — supplier-billed (DMEPOS)"** panel with national supplier volume, Medicare payments, beneficiaries, and supplier count — plus a ranked list of the **ordering physicians who drive those device orders** (from the *by Referring Provider and Service* dataset). So `L8699` (prosthetic implant, NOS) resolves with real numbers instead of a dead end.
 
 **Why suggestions, not a crosswalk:** there is no official CPT↔DRG mapping — hospitals assign DRGs from ICD-10-PCS procedure codes plus diagnoses via CMS's GROUPER, so cross-vocabulary matches are heuristic leads to verify against a coding guide.
 
@@ -207,6 +209,8 @@ Look any of these up (and find related codes and their MS-DRGs) in the **Code Lo
 | **Physician & Other Practitioners — by Geography and Service** | same, different `{id}` | National/state volume trends, code dictionary | No |
 | **Medicare Inpatient Hospitals — by Geography and Service** | same, different `{id}` | Per-DRG hospital billing/payments, DRG dictionary | No |
 | **Medicare Inpatient Hospitals — by Provider and Service** | same, different `{id}` | Top hospitals by DRG | No |
+| **DME, Devices & Supplies — by Geography and Service** | same, different `{id}` | Supplier-billed Level II (DMEPOS) code volume and payments | No |
+| **DME, Devices & Supplies — by Referring Provider and Service** | same, different `{id}` | Physicians who order those devices, ranked | No |
 | **NPPES NPI Registry** | `npiregistry.cms.hhs.gov/api/?version=2.1` | NPI Lookup tab | No |
 
 All are free, public, and maintained by the Centers for Medicare & Medicaid Services (CMS). Each CMS dataset has one versioned `{id}` per calendar year, discovered at runtime from the [catalog](https://data.cms.gov/data.json).
@@ -228,7 +232,7 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 189 unit tests via Vitest (`npm test`)
+- **Test suite:** 200 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile

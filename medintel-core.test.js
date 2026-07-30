@@ -5,7 +5,7 @@ const {
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
   tokenizeMedical, searchDict, crossSuggest,
-  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria,
+  latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -1322,5 +1322,75 @@ describe('criteria flags for the Last Name vs Organization split', () => {
 
   it('!= is case-insensitive like the other operators', () => {
     expect(rowMatchesCriteria({ Rndrng_Prvdr_Ent_Cd: 'o' }, [{ path: 'Rndrng_Prvdr_Ent_Cd', op: '!=', value: 'O' }])).toBe(false);
+  });
+});
+
+// ─── DMEPOS accessors + groupByReferrer ──────────────────────────────────────
+
+describe('DMEPOS (supplier) accessors', () => {
+  const row = {
+    HCPCS_Cd: 'L8699', HCPCS_Desc: 'Prosthetic implant, NOS',
+    Tot_Suplr_Srvcs: '4210', Tot_Suplr_Benes: '3900',
+    Avg_Suplr_Mdcr_Pymt_Amt: '812.50', Tot_Suplrs: '640',
+  };
+
+  it('reads supplier services/benes/suppliers', () => {
+    expect(getSupplierServices(row)).toBe(4210);
+    expect(getSupplierBenes(row)).toBe(3900);
+    expect(getSupplierCount(row)).toBe(640);
+  });
+
+  it('derives total payment from avg × services when no total is present', () => {
+    expect(getSupplierPayment(row)).toBeCloseTo(4210 * 812.5, 2);
+  });
+
+  it('prefers an explicit total payment when present', () => {
+    expect(getSupplierPayment({ ...row, Tot_Suplr_Mdcr_Pymt_Amt: '1000' })).toBe(1000);
+  });
+
+  it('falls back to physician-style field names', () => {
+    expect(getSupplierServices({ Tot_Srvcs: '12' })).toBe(12);
+    expect(getSupplierBenes({ Tot_Benes: '7' })).toBe(7);
+  });
+
+  it('handles space-keyed variants', () => {
+    expect(getSupplierServices({ 'Tot Suplr Srvcs': '55' })).toBe(55);
+  });
+
+  it('returns 0 for missing fields', () => {
+    expect(getSupplierServices({})).toBe(0);
+    expect(getSupplierPayment({})).toBe(0);
+    expect(getSupplierCount({})).toBe(0);
+  });
+});
+
+describe('getReferringName() / groupByReferrer()', () => {
+  const mk = (npi, last, first, srvcs) => ({
+    Rfrg_NPI: npi, Rfrg_Prvdr_Last_Name_Org: last, Rfrg_Prvdr_First_Name: first,
+    Rfrg_Prvdr_Type: 'Orthopedic Surgery', Rfrg_Prvdr_State_Abrvtn: 'TX', Rfrg_Prvdr_City: 'AUSTIN',
+    Tot_Suplr_Srvcs: String(srvcs), Avg_Suplr_Mdcr_Pymt_Amt: '100', Tot_Suplr_Benes: '5',
+  });
+
+  it('builds an individual referring name', () => {
+    expect(getReferringName(mk('1', 'SMITH', 'JANE', 1))).toBe('JANE SMITH');
+  });
+
+  it('uses the org name for entity code O', () => {
+    expect(getReferringName({ Rfrg_Prvdr_Ent_Cd: 'O', Rfrg_Prvdr_Last_Name_Org: 'CITY CLINIC' })).toBe('CITY CLINIC');
+  });
+
+  it('appends credentials', () => {
+    expect(getReferringName({ Rfrg_Prvdr_Last_Name_Org: 'SMITH', Rfrg_Prvdr_First_Name: 'J', Rfrg_Prvdr_Crdntls: 'MD' })).toBe('J SMITH, MD');
+  });
+
+  it('aggregates rows per referring NPI and sorts by volume', () => {
+    const out = groupByReferrer([mk('1', 'SMALL', 'A', 5), mk('2', 'BIG', 'B', 50), mk('1', 'SMALL', 'A', 5)]);
+    expect(out.map(r => r.npi)).toEqual(['2', '1']);
+    expect(out[1].services).toBe(10);   // two rows merged
+    expect(out[1].payment).toBe(1000);  // 10 × $100
+  });
+
+  it('returns empty for empty input', () => {
+    expect(groupByReferrer([])).toEqual([]);
   });
 });

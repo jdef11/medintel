@@ -25,6 +25,8 @@ const TITLES = {
   geography:   'Medicare Physician & Other Practitioners - by Geography and Service',
   inpProvider: 'Medicare Inpatient Hospitals - by Provider and Service',
   inpGeo:      'Medicare Inpatient Hospitals - by Geography and Service',
+  dmeGeo:      'Medicare Durable Medical Equipment, Devices & Supplies - by Geography and Service',
+  dmeReferring:'Medicare Durable Medical Equipment, Devices & Supplies - by Referring Provider and Service',
 };
 
 let failures = 0;
@@ -186,6 +188,25 @@ async function main() {
         ? ok('explicit AND group is honored (contradictory pair returns nothing)')
         : bad('explicit AND group did NOT filter — the app also enforces AND client-side, but report this');
     } catch (e) { bad(`conjunction check: ${e.message}`); }
+  }
+
+  console.log('\n12. DMEPOS (HCPCS Level II) — supplier volume + referring-provider fields');
+  if (resolved.dmeGeo) await fieldCheck('dmeGeo', `${DATA_API_ROOT}/${resolved.dmeGeo.id}/data?size=1&filter[Rndrng_Prvdr_Geo_Lvl]=National`,
+    [['HCPCS_Cd'], ['HCPCS_Desc'], ['Tot_Suplr_Srvcs', 'Tot_Suplr_Srvcs_Cnt', 'Tot_Srvcs'], ['Tot_Suplr_Benes', 'Tot_Benes'], ['Avg_Suplr_Mdcr_Pymt_Amt', 'Tot_Suplr_Mdcr_Pymt_Amt', 'Avg_Mdcr_Pymt_Amt']]);
+  if (resolved.dmeReferring) await fieldCheck('dmeReferring', `${DATA_API_ROOT}/${resolved.dmeReferring.id}/data?size=1`,
+    [['HCPCS_Cd'], ['Rfrg_NPI'], ['Rfrg_Prvdr_Last_Name_Org'], ['Tot_Suplr_Srvcs', 'Tot_Srvcs']]);
+
+  console.log('\n13. Does a real Level II code (L8699) resolve in DMEPOS but not in the physician data?');
+  if (resolved.dmeGeo && resolved.provider) {
+    const count = async (id, extra) => {
+      try { return (await getJson(`${DATA_API_ROOT}/${id}/data?size=1&filter[HCPCS_Cd]=L8699${extra || ''}`)).length; }
+      catch (e) { return -1; }
+    };
+    const inDme = await count(resolved.dmeGeo.id, '&filter[Rndrng_Prvdr_Geo_Lvl]=National');
+    const inPhys = await count(resolved.geography ? resolved.geography.id : resolved.provider.id, '&filter[Rndrng_Prvdr_Geo_Lvl]=National');
+    console.log(`  L8699 → DMEPOS: ${inDme} row(s); physician data: ${inPhys} row(s)`);
+    if (inDme > 0) ok('Level II code found in DMEPOS (this is what the new panel queries)');
+    else console.log('  ⚠ L8699 not found in DMEPOS national rows — try another Level II code (e.g. L1832, E0143) to confirm the dataset works');
   }
 
   finish();

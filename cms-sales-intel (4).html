@@ -1035,7 +1035,12 @@ const PROV_SUMMARY_DATASET_TITLE = 'Medicare Physician & Other Practitioners - b
 const GEO_DATASET_TITLE = 'Medicare Physician & Other Practitioners - by Geography and Service';
 const INP_PROVIDER_DATASET_TITLE = 'Medicare Inpatient Hospitals - by Provider and Service';
 const INP_GEO_DATASET_TITLE = 'Medicare Inpatient Hospitals - by Geography and Service';
-const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v3';
+// DMEPOS: HCPCS Level II items (orthotics, prosthetics, DME, supplies) billed by
+// SUPPLIERS. Absent from the physician datasets entirely, which is why a Level II
+// code like L8699 could not be found before.
+const DME_GEO_DATASET_TITLE = 'Medicare Durable Medical Equipment, Devices & Supplies - by Geography and Service';
+const DME_REFERRING_DATASET_TITLE = 'Medicare Durable Medical Equipment, Devices & Supplies - by Referring Provider and Service';
+const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v4';
 const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog weekly
 
 // CORS proxies — we try multiple in order since free proxies can go down
@@ -1062,7 +1067,7 @@ const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
 let cptDictTruncated = false;
 let drgDictTruncated = false;
 let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
-let datasetVersions = { provider: [], provSummary: [], geography: [], inpProvider: [], inpGeo: [] }; // { year, id } newest-first
+let datasetVersions = { provider: [], provSummary: [], geography: [], inpProvider: [], inpGeo: [], dmeGeo: [], dmeReferring: [] }; // { year, id } newest-first
 let selectedYear = '';        // '' = latest available year
 const trendCache = {};        // yearly trend results, keyed by `${code}|${state}`
 let displayPage = 0;          // current display page (CMS tabs)
@@ -1183,7 +1188,9 @@ async function loadDatasetVersions() {
         provSummary: sanitizeVersions(cached.provSummary),
         geography: sanitizeVersions(cached.geography),
         inpProvider: sanitizeVersions(cached.inpProvider),
-        inpGeo: sanitizeVersions(cached.inpGeo)
+        inpGeo: sanitizeVersions(cached.inpGeo),
+        dmeGeo: sanitizeVersions(cached.dmeGeo),
+        dmeReferring: sanitizeVersions(cached.dmeReferring)
       };
       if (datasetVersions.provider.length) { populateYearSelect(); return; }
       // sanitization emptied the cache → fall through and refetch
@@ -1201,7 +1208,9 @@ async function loadDatasetVersions() {
     provSummary: extractDatasetVersions(catalog, PROV_SUMMARY_DATASET_TITLE),
     geography: extractDatasetVersions(catalog, GEO_DATASET_TITLE),
     inpProvider: extractDatasetVersions(catalog, INP_PROVIDER_DATASET_TITLE),
-    inpGeo: extractDatasetVersions(catalog, INP_GEO_DATASET_TITLE)
+    inpGeo: extractDatasetVersions(catalog, INP_GEO_DATASET_TITLE),
+    dmeGeo: extractDatasetVersions(catalog, DME_GEO_DATASET_TITLE),
+    dmeReferring: extractDatasetVersions(catalog, DME_REFERRING_DATASET_TITLE)
   };
   try {
     localStorage.setItem(VERSIONS_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), ...datasetVersions }));
@@ -3641,6 +3650,91 @@ async function lookupCptKeywordDirect(keyword) {
   }
 }
 
+// ─── DMEPOS LOOKUP (HCPCS Level II device codes) ───
+// Level II items are billed by suppliers, so they only exist in the DME
+// datasets. Queried on demand (no bulk index) — Level II is a small share of
+// lookups and a targeted request is cheap.
+
+function dmeGeoBaseForYear() {
+  const versions = datasetVersions.dmeGeo;
+  if (!versions || !versions.length) return null;
+  return { base: `${DATA_API_ROOT}/${versions[0].id}/data`, year: versions[0].year };
+}
+
+function dmeReferringBase() {
+  const versions = datasetVersions.dmeReferring;
+  if (!versions || !versions.length) return null;
+  return { base: `${DATA_API_ROOT}/${versions[0].id}/data`, year: versions[0].year };
+}
+
+// National supplier volume/payment for a Level II code.
+async function lookupDmeCode(code) {
+  const g = dmeGeoBaseForYear();
+  if (!g) return null;
+  try {
+    const raw = await corsFetch(`${g.base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    // Same filter-bypass safety net used everywhere else.
+    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    if (!rows.length) return null;
+    let services = 0, payment = 0, benes = 0, suppliers = 0, desc = '';
+    rows.forEach(r => {
+      services += getSupplierServices(r);
+      payment += getSupplierPayment(r);
+      benes += getSupplierBenes(r);
+      suppliers += getSupplierCount(r);
+      if (!desc) desc = f(r, 'HCPCS_Desc') || '';
+    });
+    return { code, desc, services, payment, benes, suppliers, year: g.year };
+  } catch (e) {
+    console.log(`DME lookup failed for ${code}:`, e.message);
+    return null;
+  }
+}
+
+// Keyword search across Level II descriptions.
+async function lookupDmeKeyword(keyword) {
+  const g = dmeGeoBaseForYear();
+  if (!g) return [];
+  try {
+    const params = buildFilterParams([
+      { path: 'HCPCS_Desc', op: 'CONTAINS', value: keyword },
+      { path: 'Rndrng_Prvdr_Geo_Lvl', op: '=', value: 'National' },
+    ]);
+    const raw = await corsFetch(`${g.base}?size=200&${params.join('&')}`);
+    const want = String(keyword).toUpperCase();
+    const rows = (raw || []).filter(r => String(f(r, 'HCPCS_Desc') || '').toUpperCase().includes(want));
+    const map = {};
+    rows.forEach(r => {
+      const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
+      if (!code) return;
+      if (!map[code]) map[code] = { code, desc: (f(r, 'HCPCS_Desc') || '').slice(0, 160), services: 0, payment: 0, benes: 0, suppliers: 0, year: g.year };
+      map[code].services += getSupplierServices(r);
+      map[code].payment += getSupplierPayment(r);
+      map[code].benes += getSupplierBenes(r);
+      map[code].suppliers += getSupplierCount(r);
+    });
+    return Object.values(map).sort((a, b) => b.services - a.services);
+  } catch (e) {
+    console.log('DME keyword lookup failed:', e.message);
+    return [];
+  }
+}
+
+// Which physicians ORDER this device — often a better sales target than who
+// performs a procedure, since the referring provider drives the order.
+async function lookupDmeReferrers(code) {
+  const g = dmeReferringBase();
+  if (!g) return { referrers: [], year: null };
+  try {
+    const raw = await corsFetch(`${g.base}?size=${FETCH_SIZE}&filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
+    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    return { referrers: groupByReferrer(rows), year: g.year };
+  } catch (e) {
+    console.log(`DME referrer lookup failed for ${code}:`, e.message);
+    return { referrers: [], year: null };
+  }
+}
+
 async function executeLookupSearch() {
   const q = document.getElementById('lookupQuery').value.trim();
   if (!q) { showError('Enter a code or keyword to look up.'); return; }
@@ -3648,11 +3742,23 @@ async function executeLookupSearch() {
   const btn = document.getElementById('searchBtn');
   const progress = msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; };
   progress('Loading code dictionaries...');
-  const [cpt, drg] = await Promise.all([loadCptDict(progress), loadDrgDict(progress)]);
+  // Fail-soft: one vocabulary failing must not take down the whole lookup. A
+  // transient DRG-dataset error shouldn't stop a CPT or Level II search.
+  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress)]);
+  const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
+  const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
+  const dictErrors = [];
+  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
+  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
+  if (dictErrors.length === 2) {
+    throw new Error('Could not build either code index from the CMS API — please try again.');
+  }
 
   let cptMatches, drgMatches;
   let crossNote = '';
   let usedDirect = false;
+  let dmeMatches = [];      // HCPCS Level II (supplier-billed) results
+  let dmeReferrers = null;  // { referrers, year } for an exact Level II code
 
   if (/^\d{1,3}$/.test(q)) {
     // Looks like an MS-DRG code
@@ -3680,6 +3786,17 @@ async function executeLookupSearch() {
     cptMatches = exact.length ? exact : searchDict(cpt, q);
     drgMatches = exact.length ? crossSuggest(exact[0].desc, drg) : searchDict(drg, q);
     if (exact.length) crossNote = `MS-DRG panel shows description-matched suggestions for ${code}.`;
+    // A Level II code (letter + 4 digits) is supplier-billed, so check the
+    // DMEPOS datasets — this is where L/E/K codes actually live.
+    if (/^[A-VX]\d{4}$/.test(code)) {
+      progress(`Checking supplier (DMEPOS) data for ${code}…`);
+      const hit = await lookupDmeCode(code);
+      if (hit) {
+        dmeMatches = [hit];
+        progress(`Finding physicians who order ${code}…`);
+        dmeReferrers = await lookupDmeReferrers(code);
+      }
+    }
   } else {
     cptMatches = searchDict(cpt, q);
     drgMatches = searchDict(drg, q);
@@ -3690,9 +3807,13 @@ async function executeLookupSearch() {
       const direct = await lookupCptKeywordDirect(q);
       if (direct.length) { cptMatches = direct; usedDirect = true; }
     }
+    // Keywords also search the supplier (Level II) vocabulary — "prosthetic",
+    // "knee brace" etc. live there, not in the physician data.
+    progress('Searching supplier (DMEPOS) codes…');
+    dmeMatches = await lookupDmeKeyword(q);
   }
 
-  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect);
+  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dmeMatches, dmeReferrers, dictErrors);
 }
 
 async function browseAllDrgs() {
@@ -3782,7 +3903,48 @@ function noCptMatchHtml(query) {
   return `<div class="year-note" style="margin:0;">${bits.join(' ')}</div>`;
 }
 
-function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect) {
+// HCPCS Level II (DMEPOS) results panel — supplier-billed device codes.
+function dmePanelHtml(dmeMatches, dmeReferrers, query) {
+  const available = (datasetVersions.dmeGeo || []).length > 0;
+  const year = dmeMatches.length && dmeMatches[0].year ? `CY ${dmeMatches[0].year}` : 'latest year';
+  if (!available) {
+    return `<div class="result-card" id="lookupDmePanel" style="margin-top:16px;">
+      <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — supplier-billed (DMEPOS)</div>
+      <div class="year-note" style="margin:0;">The CMS DME, Devices &amp; Supplies datasets could not be resolved from the catalog, so Level II codes can't be checked right now. Reload to retry.</div>
+    </div>`;
+  }
+  const rows = dmeMatches.map(m => `
+    <div class="lookup-row">
+      <div class="proc-code">${escapeHtml(m.code)}<span class="match-score" title="HCPCS Level II: supplies, drugs, DME, orthotics/prosthetics (CMS-maintained)">Level II</span></div>
+      <div class="proc-desc" title="${escapeHtml(m.desc)}">${escapeHtml(m.desc || '—')}</div>
+      <div class="lookup-metric">${fmtNumber(Math.round(m.services))} svcs/yr · ${fmtCurrency(m.payment)}${m.suppliers ? ` · ${fmtNumber(Math.round(m.suppliers))} suppliers` : ''}</div>
+      <div style="display:flex;gap:4px;">
+        <button class="mini-btn" onclick="addToField('tamCodes','${escapeHtml(m.code)}',this)">+ TAM</button>
+      </div>
+    </div>`).join('');
+
+  const refs = (dmeReferrers && dmeReferrers.referrers && dmeReferrers.referrers.length)
+    ? `<div class="provider-name" style="margin:16px 0 4px;">Physicians ordering this device · ${dmeReferrers.year ? 'CY ' + dmeReferrers.year : 'latest year'}</div>
+       <div class="year-note" style="margin:0 0 8px;">Referring providers — who <em>writes the order</em>, which is often a better sales target than who performs a procedure. Same ≤10-beneficiary suppression applies.</div>
+       <div class="proc-row proc-row-header"><div>#</div><div>Referring provider</div><div>Location</div><div>Services</div><div>Medicare Paid</div></div>
+       ${dmeReferrers.referrers.slice(0, 15).map((r, i) => `
+         <div class="proc-row">
+           <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
+           <div class="proc-desc" title="NPI ${escapeHtml(r.npi)}">${escapeHtml(r.name)}${r.specialty ? ` <span style="color:var(--text-3);">· ${escapeHtml(r.specialty)}</span>` : ''}</div>
+           <div class="proc-desc">${escapeHtml([r.city, r.state].filter(Boolean).join(', '))}</div>
+           <div class="proc-num">${fmtNumber(Math.round(r.services))}</div>
+           <div class="proc-num">${fmtCurrency(r.payment)}</div>
+         </div>`).join('')}`
+    : '';
+
+  return `<div class="result-card" id="lookupDmePanel" style="margin-top:16px;">
+    <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — supplier-billed (DMEPOS) <span style="color:var(--text-3);font-size:12px;">· ${dmeMatches.length} match${dmeMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(year)}</span></div>
+    ${dmeMatches.length ? rows : `<div class="year-note" style="margin:0;">No Level II (supplier-billed) matches for “${escapeHtml(query)}”. This covers orthotics, prosthetics, DME and supplies. Note implants placed during inpatient surgery are bundled into the hospital's DRG payment and are not itemized in any dataset — use the Market TAM tab's DRG view for those.</div>`}
+    ${refs}
+  </div>`;
+}
+
+function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect, dmeMatches, dmeReferrers, dictErrors) {
   document.getElementById('emptyState').style.display = 'none';
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
@@ -3800,6 +3962,7 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
         ${shareBtnHtml()}
       </div>
     </div>
+    ${(dictErrors && dictErrors.length) ? `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ ${escapeHtml(dictErrors.join('; '))} — results below come from the vocabularies that did load. Retry to rebuild.</div>` : ''}
     ${usedDirect ? `<div class="year-note" style="margin:0 0 12px;color:var(--green);">✓ Found by querying CMS directly — this code/term was missing from the local index (which is capped), so the index alone would have reported "not found".</div>` : ''}
     ${crossNote ? `<div class="year-note" style="margin:0 0 12px;">≈ ${escapeHtml(crossNote)} There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — treat cross-matches as leads to verify against a coding guide.</div>` : ''}
   `;
@@ -3822,6 +3985,12 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
         : `<div class="year-note" style="margin:0;">No DRG matches for this query.${drgDictTruncated ? ' ⚠ The DRG index was truncated this session; a direct API check was attempted for exact DRG codes.' : ''}</div>`}
     </div>
   `;
+
+  // Level II / DMEPOS panel — shown for code and keyword searches (not for the
+  // "browse all DRGs" listing, which passes a titleOverride).
+  if (!titleOverride && dmeMatches !== undefined) {
+    html += dmePanelHtml(dmeMatches || [], dmeReferrers, query);
+  }
 
   resultsArea.innerHTML = html;
   document.querySelector('.main').scrollTop = 0;
