@@ -1055,6 +1055,12 @@ let cptDict = null;           // Code Lookup: [{code, desc, services}] sorted by
 let drgDict = null;           // Code Lookup: [{code, desc, discharges, avgPaid}] sorted by volume
 const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v1';
 const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
+// The dictionaries are a local index built by paginating the national rows, and
+// that pagination is capped. When the cap is hit the index is INCOMPLETE, so a
+// "no matches" result can't be trusted — these flags trigger a targeted
+// direct-API lookup instead of reporting a false negative.
+let cptDictTruncated = false;
+let drgDictTruncated = false;
 let resultsCapped = false;    // true when the fetch hit its row cap (totals are partial)
 let datasetVersions = { provider: [], provSummary: [], geography: [], inpProvider: [], inpGeo: [] }; // { year, id } newest-first
 let selectedYear = '';        // '' = latest available year
@@ -3486,6 +3492,7 @@ async function loadCptDict(progress) {
   const built = Object.values(map).sort((a, b) => b.services - a.services);
   if (!built.length) { throw new Error('Could not build the CPT/HCPCS dictionary from the CMS API — please try again.'); }
   cptDict = built;
+  cptDictTruncated = truncated; // drives the direct-API fallback + honest messaging
   // Don't persist a dictionary we know is truncated — a later session would
   // treat the partial list as complete. Keep it in memory for this session only.
   if (!truncated) writeDictCache(CPT_DICT_CACHE_KEY, cptDict);
@@ -3539,8 +3546,99 @@ async function loadDrgDict(progress) {
   })).sort((a, b) => b.discharges - a.discharges);
   if (!built.length) { throw new Error('Could not build the MS-DRG dictionary from the CMS API — please try again.'); }
   drgDict = built;
+  drgDictTruncated = truncated;
   if (!truncated) writeDictCache(DRG_DICT_CACHE_KEY, drgDict);
   return drgDict;
+}
+
+// ─── DIRECT API LOOKUP (truncation workaround) ───
+// The dictionaries are a paginated local index and the pagination is capped, so
+// a code past the cap would look like "doesn't exist". These functions ask the
+// API about a specific code/keyword directly — one small request, no dependence
+// on the index being complete — so a miss in the index is never a false negative.
+
+function inpGeoBaseForYear() {
+  const versions = datasetVersions.inpGeo;
+  if (!versions || !versions.length) return null;
+  return { base: `${DATA_API_ROOT}/${versions[0].id}/data`, year: versions[0].year };
+}
+
+// Exact-code lookup against the physician Geography & Service dataset.
+async function lookupCptCodeDirect(code) {
+  const g = geoBaseForYear();
+  if (!g) return null;
+  try {
+    const raw = await corsFetch(`${g.base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    // Safety net: never trust that the API honored the filter. Without this, an
+    // ignored filter would pair the requested code with another code's
+    // description and volume — a fabricated row.
+    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    if (!rows.length) return null;
+    let services = 0, desc = '';
+    rows.forEach(r => { services += getServices(r); if (!desc) desc = f(r, 'HCPCS_Desc') || ''; });
+    return { code, desc, services, viaDirect: true };
+  } catch (e) {
+    console.log(`Direct CPT lookup failed for ${code}:`, e.message);
+    return null;
+  }
+}
+
+// Exact-DRG lookup against the inpatient Geography & Service dataset.
+async function lookupDrgCodeDirect(code) {
+  const g = inpGeoBaseForYear();
+  if (!g) return null;
+  const tryOne = async (value) => {
+    const raw = await corsFetch(`${g.base}?size=50&filter[DRG_Cd]=${encodeURIComponent(value)}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    // Same filter-bypass safety net as the CPT path — compare zero-padded.
+    const rows = (raw || []).filter(r =>
+      String(f(r, 'DRG_Cd') || '').padStart(3, '0') === String(value).padStart(3, '0'));
+    return rows.length ? rows : null;
+  };
+  try {
+    let rows = await tryOne(code);
+    if (!rows && code !== String(parseInt(code, 10))) rows = await tryOne(String(parseInt(code, 10)));
+    if (!rows) return null;
+    let discharges = 0, paid = 0, desc = '';
+    rows.forEach(r => {
+      const d = getDischarges(r);
+      discharges += d;
+      paid += d * getAvgTotalPayment(r);
+      if (!desc) desc = f(r, 'DRG_Desc') || '';
+    });
+    return { code, desc, discharges, avgPaid: discharges ? paid / discharges : 0, viaDirect: true };
+  } catch (e) {
+    console.log(`Direct DRG lookup failed for ${code}:`, e.message);
+    return null;
+  }
+}
+
+// Keyword lookup straight against the API's description column, for when the
+// local index is truncated and its keyword search can't be trusted either.
+async function lookupCptKeywordDirect(keyword) {
+  const g = geoBaseForYear();
+  if (!g) return [];
+  try {
+    const params = buildFilterParams([
+      { path: 'HCPCS_Desc', op: 'CONTAINS', value: keyword },
+      { path: 'Rndrng_Prvdr_Geo_Lvl', op: '=', value: 'National' },
+    ]);
+    const raw = await corsFetch(`${g.base}?size=200&${params.join('&')}`);
+    // Safety net: enforce the description match client-side (case-insensitively)
+    // so an ignored filter can't return unrelated codes.
+    const want = String(keyword).toUpperCase();
+    const rows = (raw || []).filter(r => String(f(r, 'HCPCS_Desc') || '').toUpperCase().includes(want));
+    const map = {};
+    rows.forEach(r => {
+      const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
+      if (!code) return;
+      if (!map[code]) map[code] = { code, desc: (f(r, 'HCPCS_Desc') || '').slice(0, 160), services: 0, viaDirect: true };
+      map[code].services += getServices(r);
+    });
+    return Object.values(map).sort((a, b) => b.services - a.services);
+  } catch (e) {
+    console.log('Direct keyword lookup failed:', e.message);
+    return [];
+  }
 }
 
 async function executeLookupSearch() {
@@ -3554,27 +3652,47 @@ async function executeLookupSearch() {
 
   let cptMatches, drgMatches;
   let crossNote = '';
+  let usedDirect = false;
 
   if (/^\d{1,3}$/.test(q)) {
     // Looks like an MS-DRG code
     const code = q.padStart(3, '0');
-    const exact = drg.filter(d => d.code === code);
+    let exact = drg.filter(d => d.code === code);
+    if (!exact.length) {
+      // Not in the local index — ask the API directly rather than concluding
+      // the DRG doesn't exist (the index may be truncated).
+      progress(`Checking CMS directly for DRG ${code}…`);
+      const direct = await lookupDrgCodeDirect(code);
+      if (direct) { exact = [direct]; usedDirect = true; }
+    }
     drgMatches = exact.length ? exact : searchDict(drg, q);
     cptMatches = exact.length ? crossSuggest(exact[0].desc, cpt) : searchDict(cpt, q);
     if (exact.length) crossNote = `CPT/HCPCS panel shows description-matched suggestions for DRG ${code}.`;
   } else if (/^[A-Za-z0-9]{4,5}$/.test(q) && /\d/.test(q)) {
     // Looks like a CPT/HCPCS code
     const code = q.toUpperCase();
-    const exact = cpt.filter(c => c.code === code);
+    let exact = cpt.filter(c => c.code === code);
+    if (!exact.length) {
+      progress(`Checking CMS directly for ${code}…`);
+      const direct = await lookupCptCodeDirect(code);
+      if (direct) { exact = [direct]; usedDirect = true; }
+    }
     cptMatches = exact.length ? exact : searchDict(cpt, q);
     drgMatches = exact.length ? crossSuggest(exact[0].desc, drg) : searchDict(drg, q);
     if (exact.length) crossNote = `MS-DRG panel shows description-matched suggestions for ${code}.`;
   } else {
     cptMatches = searchDict(cpt, q);
     drgMatches = searchDict(drg, q);
+    // A keyword that finds nothing locally is only trustworthy if the index is
+    // complete; when it isn't, re-ask the API against the description column.
+    if (!cptMatches.length && cptDictTruncated) {
+      progress('Index incomplete — searching CMS directly…');
+      const direct = await lookupCptKeywordDirect(q);
+      if (direct.length) { cptMatches = direct; usedDirect = true; }
+    }
   }
 
-  renderLookupResults(q, cptMatches, drgMatches, crossNote);
+  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect);
 }
 
 async function browseAllDrgs() {
@@ -3621,6 +3739,7 @@ function lookupRowHtml(item, kind) {
     ? `${fmtNumber(Math.round(item.discharges))} dschrgs · ${fmtCurrency(item.avgPaid)}/stay`
     : `${fmtNumber(item.services)} svcs/yr`;
   const score = item.matchScore ? `<span class="match-score" title="Description-match strength — verify against a coding guide">≈${item.matchScore}</span>` : '';
+  const level = isDrg ? '' : hcpcsLevelBadge(item.code);
   const actions = isDrg
     ? `<button class="mini-btn" onclick="addToField('tamDrgs','${escapeHtml(item.code)}',this)">+ TAM DRG</button>`
     : `<button class="mini-btn" onclick="addToField('hcpcsCode','${escapeHtml(item.code)}',this)">+ Procedure</button>
@@ -3628,14 +3747,42 @@ function lookupRowHtml(item, kind) {
   return `
     <div class="lookup-row">
       <div class="proc-code">${escapeHtml(item.code)}${score}</div>
-      <div class="proc-desc" title="${escapeHtml(item.desc)}">${escapeHtml(item.desc || '—')}</div>
+      <div class="proc-desc" title="${escapeHtml(item.desc)}">${escapeHtml(item.desc || '—')}${level}</div>
       <div class="lookup-metric">${metric}</div>
       <div style="display:flex;gap:4px;">${actions}</div>
     </div>
   `;
 }
 
-function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride) {
+// CPT is HCPCS *Level I*; Level II is the CMS-maintained alphanumeric set for
+// supplies, drugs, DME and orthotics/prosthetics. The level is derivable from
+// the code's shape, so label it — the two are routinely conflated.
+function hcpcsLevelBadge(code) {
+  const c = String(code || '').toUpperCase();
+  if (/^\d{4}[TFU]$/.test(c)) return ' <span class="match-score" title="CPT Category II/III — performance measures or emerging technology (AMA)">CPT III</span>';
+  if (/^\d{5}$/.test(c)) return ' <span class="match-score" title="HCPCS Level I = CPT: physician/professional services (AMA)">CPT</span>';
+  if (/^[A-VX]\d{4}$/.test(c)) return ' <span class="match-score" title="HCPCS Level II: supplies, drugs, DME, orthotics/prosthetics (CMS-maintained)">Level II</span>';
+  return '';
+}
+
+// Honest "nothing found" copy: name the dataset that was searched, disclose an
+// incomplete index, and explain Level II (DMEPOS) codes rather than implying the
+// code is unbilled.
+function noCptMatchHtml(query) {
+  const looksLevelII = /^[A-VX]\d{4}$/i.test(String(query || '').trim());
+  const bits = [];
+  bits.push('No matches in the <strong>Physician &amp; Other Practitioners</strong> data (Part B professional claims) — the only dataset this index is built from.');
+  if (looksLevelII) {
+    bits.push(`<strong style="color:var(--amber);">${escapeHtml(query.toUpperCase())} looks like a HCPCS Level II code</strong> (supplies, drugs, orthotics/prosthetics, DME). Those are billed by <em>suppliers</em>, not practitioners, and live in CMS's separate Durable Medical Equipment, Devices &amp; Supplies datasets — so its absence here does <em>not</em> mean Medicare doesn't pay for it.`);
+  }
+  if (cptDictTruncated) {
+    bits.push('⚠ The local index was truncated at its page limit this session, so it is incomplete — a direct API check was attempted for exact codes and keywords.');
+  }
+  bits.push('Codes with no Medicare FFS payments at all (brand-new or never billed) legitimately will not appear.');
+  return `<div class="year-note" style="margin:0;">${bits.join(' ')}</div>`;
+}
+
+function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect) {
   document.getElementById('emptyState').style.display = 'none';
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
@@ -3653,16 +3800,17 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
         ${shareBtnHtml()}
       </div>
     </div>
+    ${usedDirect ? `<div class="year-note" style="margin:0 0 12px;color:var(--green);">✓ Found by querying CMS directly — this code/term was missing from the local index (which is capped), so the index alone would have reported "not found".</div>` : ''}
     ${crossNote ? `<div class="year-note" style="margin:0 0 12px;">≈ ${escapeHtml(crossNote)} There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — treat cross-matches as leads to verify against a coding guide.</div>` : ''}
   `;
 
   if (cptMatches !== null) {
     html += `
     <div class="result-card" id="lookupCptPanel" style="margin-bottom:16px;">
-      <div class="provider-name" style="margin-bottom:8px;">CPT / HCPCS <span style="color:var(--text-3);font-size:12px;">· ${cptMatches.length} match${cptMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(cptYear)}</span></div>
+      <div class="provider-name" style="margin-bottom:8px;">CPT / HCPCS Level I <span style="color:var(--text-3);font-size:12px;">· ${cptMatches.length} match${cptMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(cptYear)}</span></div>
       ${cptMatches.length
         ? cptMatches.map(m => lookupRowHtml(m, 'cpt')).join('')
-        : '<div class="year-note" style="margin:0;">No matches. Note: only codes with Medicare FFS payments appear here — very new or rarely billed codes won\'t be found.</div>'}
+        : noCptMatchHtml(query)}
     </div>`;
   }
 
@@ -3671,7 +3819,7 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
       <div class="provider-name" style="margin-bottom:8px;">MS-DRG (inpatient) <span style="color:var(--text-3);font-size:12px;">· ${drgMatches.length} match${drgMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(drgYear)}</span></div>
       ${drgMatches.length
         ? drgMatches.map(m => lookupRowHtml(m, 'drg')).join('')
-        : '<div class="year-note" style="margin:0;">No DRG matches for this query.</div>'}
+        : `<div class="year-note" style="margin:0;">No DRG matches for this query.${drgDictTruncated ? ' ⚠ The DRG index was truncated this session; a direct API check was attempted for exact DRG codes.' : ''}</div>`}
     </div>
   `;
 

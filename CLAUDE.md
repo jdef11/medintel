@@ -164,7 +164,9 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab — national volume, modeled TAM, top surgeons; assumptions re-render live |
 | `parseDrgs(input)` / `fetchDrgTrend(drg)` / `fetchDrgHospitals(drgs)` | MS-DRG parsing + inpatient hospital billing/payment totals and top hospitals (Inpatient Hospitals datasets) |
 | `tokenizeMedical` / `searchDict` / `crossSuggest` | Code Lookup search core (pure, in medintel-core.js) — keyword AND-match with prefix-stem fallback; heuristic cross-vocabulary suggestions |
-| `loadCptDict()` / `loadDrgDict()` / `executeLookupSearch()` | Code Lookup tab — dictionaries from national dataset rows, localStorage-cached (`medintel_cpt_dict_v1`/`medintel_drg_dict_v1`) |
+| `loadCptDict()` / `loadDrgDict()` / `executeLookupSearch()` | Code Lookup tab — dictionaries from national dataset rows, localStorage-cached (`medintel_cpt_dict_v1`/`medintel_drg_dict_v1`). Page-capped builds set `cptDictTruncated`/`drgDictTruncated` |
+| `lookupCptCodeDirect` / `lookupDrgCodeDirect` / `lookupCptKeywordDirect` | **Truncation workaround** — the dictionaries are a capped local index, so a miss triggers a targeted direct-API query for that code/keyword. Each verifies the returned rows actually match (filter-bypass safety net) before trusting them |
+| `hcpcsLevelBadge(code)` | Labels a code CPT (Level I) / CPT III / Level II from its shape |
 | `renderResults()` | Renders Medicare provider cards to DOM |
 | `renderNpiResults()` | Renders NPPES lookup cards to DOM |
 | `toggleProcedures(npi)` | Expands/collapses procedure detail table for a card |

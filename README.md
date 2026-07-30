@@ -78,6 +78,10 @@ Size a device market from its procedure codes. Paste the code family, set three 
 
 One search box, both vocabularies. Keywords (e.g. "cranioplasty") match CPT/HCPCS and MS-DRG descriptions side by side — each hit shows its national Medicare volume so you can tell real-world codes from noise. Enter a code and you get its record plus description-matched suggestions in the other system (with a match-strength chip). Every row has one-click buttons to push the code into the Procedure or Market TAM searches, and a "Browse all MS-DRGs" button lists the full DRG table. Dictionaries are built from the latest CMS national datasets and cached in your browser for a week.
 
+**CPT vs HCPCS:** CPT *is* HCPCS **Level I** (5-digit physician/professional services, AMA-maintained). **Level II** is the CMS-maintained alphanumeric set (letter + 4 digits) for supplies, drugs, DME, and orthotics/prosthetics. CMS stores both in one `HCPCS_Cd` column, so results are labeled `CPT` / `CPT III` / `Level II` by code shape. Note the descriptions shown are CMS's plain-language text, not AMA official descriptors — wording won't match a manufacturer coding guide verbatim.
+
+**If a code isn't found:** the index is built from the Physician & Other Practitioners data only, and its pagination is capped. So a miss triggers a **direct API query for that specific code or keyword** — the index alone is never allowed to produce a false "not found". When that rescue succeeds you'll see a note saying so. Level II supplier-billed codes (e.g. `L8699`) live in CMS's separate DME/Supplies datasets and are explained inline rather than reported as unbilled.
+
 **Why suggestions, not a crosswalk:** there is no official CPT↔DRG mapping — hospitals assign DRGs from ICD-10-PCS procedure codes plus diagnoses via CMS's GROUPER, so cross-vocabulary matches are heuristic leads to verify against a coding guide.
 
 ### Hospital Billing View (MS-DRG)
