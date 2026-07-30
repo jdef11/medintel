@@ -3667,15 +3667,42 @@ function dmeReferringBase() {
   return { base: `${DATA_API_ROOT}/${versions[0].id}/data`, year: versions[0].year };
 }
 
+// Fetch DMEPOS geography rows and scope them to National.
+//
+// The geo-level column in the DMEPOS file is Rfrg_Prvdr_Geo_Lvl (the geography
+// is the REFERRING provider's), not the Rndrng_Prvdr_Geo_Lvl used by the
+// physician and inpatient files. Filtering on a column the dataset doesn't have
+// returns an empty set, which is indistinguishable from "this code has no
+// data" — so never let a server-side geo filter be the thing that decides.
+// So: ask the API to scope it using the documented column (keeps the response
+// small), but treat an empty result as inconclusive and retry unfiltered,
+// scoping client-side via pickNationalRows() — which tolerates every documented
+// spelling. A renamed column can then cost an extra request, never a wrong
+// answer.
+async function fetchDmeGeoRows(base, filterParam, size) {
+  const sz = size || 400;
+  try {
+    const scoped = await corsFetch(`${base}?size=${sz}&${filterParam}&filter[Rfrg_Prvdr_Geo_Lvl]=National`);
+    const picked = pickNationalRows(scoped || []);
+    if (picked.rows.length) return picked;
+  } catch (e) {
+    // Column may not exist in this dataset year — fall through to the retry.
+  }
+  const raw = await corsFetch(`${base}?size=${sz}&${filterParam}`);
+  return pickNationalRows(raw || []);
+}
+
 // National supplier volume/payment for a Level II code.
+// Returns { status, match?, scope?, reason? } — 'unavailable' is reported to the
+// user rather than being rendered as an empty result.
 async function lookupDmeCode(code) {
   const g = dmeGeoBaseForYear();
-  if (!g) return null;
+  if (!g) return { status: 'unavailable', reason: 'The CMS DME, Devices & Supplies dataset could not be resolved from the catalog.' };
   try {
-    const raw = await corsFetch(`${g.base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}&filter[Rndrng_Prvdr_Geo_Lvl]=National`);
+    const got = await fetchDmeGeoRows(g.base, `filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
     // Same filter-bypass safety net used everywhere else.
-    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
-    if (!rows.length) return null;
+    const rows = got.rows.filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    if (!rows.length) return { status: 'none' };
     let services = 0, payment = 0, benes = 0, suppliers = 0, desc = '';
     rows.forEach(r => {
       services += getSupplierServices(r);
@@ -3684,25 +3711,25 @@ async function lookupDmeCode(code) {
       suppliers += getSupplierCount(r);
       if (!desc) desc = f(r, 'HCPCS_Desc') || '';
     });
-    return { code, desc, services, payment, benes, suppliers, year: g.year };
+    return {
+      status: 'ok',
+      scope: got.scope,
+      match: { code, desc, services, payment, benes, suppliers, year: g.year },
+    };
   } catch (e) {
-    console.log(`DME lookup failed for ${code}:`, e.message);
-    return null;
+    return { status: 'unavailable', reason: `The supplier (DMEPOS) request failed: ${e.message}` };
   }
 }
 
 // Keyword search across Level II descriptions.
 async function lookupDmeKeyword(keyword) {
   const g = dmeGeoBaseForYear();
-  if (!g) return [];
+  if (!g) return { status: 'unavailable', matches: [], reason: 'The CMS DME, Devices & Supplies dataset could not be resolved from the catalog.' };
   try {
-    const params = buildFilterParams([
-      { path: 'HCPCS_Desc', op: 'CONTAINS', value: keyword },
-      { path: 'Rndrng_Prvdr_Geo_Lvl', op: '=', value: 'National' },
-    ]);
-    const raw = await corsFetch(`${g.base}?size=200&${params.join('&')}`);
+    const params = buildFilterParams([{ path: 'HCPCS_Desc', op: 'CONTAINS', value: keyword }]);
+    const got = await fetchDmeGeoRows(g.base, params.join('&'), 800);
     const want = String(keyword).toUpperCase();
-    const rows = (raw || []).filter(r => String(f(r, 'HCPCS_Desc') || '').toUpperCase().includes(want));
+    const rows = got.rows.filter(r => String(f(r, 'HCPCS_Desc') || '').toUpperCase().includes(want));
     const map = {};
     rows.forEach(r => {
       const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
@@ -3713,10 +3740,10 @@ async function lookupDmeKeyword(keyword) {
       map[code].benes += getSupplierBenes(r);
       map[code].suppliers += getSupplierCount(r);
     });
-    return Object.values(map).sort((a, b) => b.services - a.services);
+    const matches = Object.values(map).sort((a, b) => b.services - a.services);
+    return { status: matches.length ? 'ok' : 'none', scope: got.scope, matches };
   } catch (e) {
-    console.log('DME keyword lookup failed:', e.message);
-    return [];
+    return { status: 'unavailable', matches: [], reason: `The supplier (DMEPOS) request failed: ${e.message}` };
   }
 }
 
@@ -3757,7 +3784,7 @@ async function executeLookupSearch() {
   let cptMatches, drgMatches;
   let crossNote = '';
   let usedDirect = false;
-  let dmeMatches = [];      // HCPCS Level II (supplier-billed) results
+  let dme = null;           // { status, matches, scope?, reason?, family? } — Level II panel
   let dmeReferrers = null;  // { referrers, year } for an exact Level II code
 
   if (/^\d{1,3}$/.test(q)) {
@@ -3786,13 +3813,25 @@ async function executeLookupSearch() {
     cptMatches = exact.length ? exact : searchDict(cpt, q);
     drgMatches = exact.length ? crossSuggest(exact[0].desc, drg) : searchDict(drg, q);
     if (exact.length) crossNote = `MS-DRG panel shows description-matched suggestions for ${code}.`;
-    // A Level II code (letter + 4 digits) is supplier-billed, so check the
-    // DMEPOS datasets — this is where L/E/K codes actually live.
-    if (/^[A-VX]\d{4}$/.test(code)) {
+    // Level II codes are not one set — the leading letter says who bills them.
+    // L/E/K/A/B are supplier-billed and live in DMEPOS; C-codes are hospital
+    // outpatient (OPPS) pass-through; G/M/P/R are practitioner-billed; S/T/H
+    // aren't Medicare at all. Only query DMEPOS for the families that are
+    // actually in it, and explain the rest instead of showing an empty panel.
+    const family = hcpcsLevelIIFamily(code);
+    if (family && family.inDmepos === false) {
+      dme = { status: 'not-applicable', matches: [], family };
+    } else if (family) {
       progress(`Checking supplier (DMEPOS) data for ${code}…`);
       const hit = await lookupDmeCode(code);
-      if (hit) {
-        dmeMatches = [hit];
+      dme = {
+        status: hit.status,
+        matches: hit.status === 'ok' ? [hit.match] : [],
+        scope: hit.scope,
+        reason: hit.reason,
+        family,
+      };
+      if (hit.status === 'ok') {
         progress(`Finding physicians who order ${code}…`);
         dmeReferrers = await lookupDmeReferrers(code);
       }
@@ -3810,10 +3849,10 @@ async function executeLookupSearch() {
     // Keywords also search the supplier (Level II) vocabulary — "prosthetic",
     // "knee brace" etc. live there, not in the physician data.
     progress('Searching supplier (DMEPOS) codes…');
-    dmeMatches = await lookupDmeKeyword(q);
+    dme = await lookupDmeKeyword(q);
   }
 
-  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dmeMatches, dmeReferrers, dictErrors);
+  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors);
 }
 
 async function browseAllDrgs() {
@@ -3882,7 +3921,13 @@ function hcpcsLevelBadge(code) {
   const c = String(code || '').toUpperCase();
   if (/^\d{4}[TFU]$/.test(c)) return ' <span class="match-score" title="CPT Category II/III — performance measures or emerging technology (AMA)">CPT III</span>';
   if (/^\d{5}$/.test(c)) return ' <span class="match-score" title="HCPCS Level I = CPT: physician/professional services (AMA)">CPT</span>';
-  if (/^[A-VX]\d{4}$/.test(c)) return ' <span class="match-score" title="HCPCS Level II: supplies, drugs, DME, orthotics/prosthetics (CMS-maintained)">Level II</span>';
+  const fam = hcpcsLevelIIFamily(c);
+  if (fam) {
+    const who = fam.inDmepos === false
+      ? (fam.billedBy ? `billed by ${fam.billedBy}` : 'not supplier-billed')
+      : 'supplier-billed (DMEPOS)';
+    return ` <span class="match-score" title="HCPCS Level II ${escapeHtml(fam.letter)}-code — ${escapeHtml(fam.label)}; ${escapeHtml(who)}">Level II</span>`;
+  }
   return '';
 }
 
@@ -3890,11 +3935,14 @@ function hcpcsLevelBadge(code) {
 // incomplete index, and explain Level II (DMEPOS) codes rather than implying the
 // code is unbilled.
 function noCptMatchHtml(query) {
-  const looksLevelII = /^[A-VX]\d{4}$/i.test(String(query || '').trim());
+  const family = hcpcsLevelIIFamily(String(query || '').trim());
   const bits = [];
   bits.push('No matches in the <strong>Physician &amp; Other Practitioners</strong> data (Part B professional claims) — the only dataset this index is built from.');
-  if (looksLevelII) {
-    bits.push(`<strong style="color:var(--amber);">${escapeHtml(query.toUpperCase())} looks like a HCPCS Level II code</strong> (supplies, drugs, orthotics/prosthetics, DME). Those are billed by <em>suppliers</em>, not practitioners, and live in CMS's separate Durable Medical Equipment, Devices &amp; Supplies datasets — so its absence here does <em>not</em> mean Medicare doesn't pay for it.`);
+  if (family) {
+    const label = `<strong style="color:var(--amber);">${escapeHtml(String(query).toUpperCase())} is a HCPCS Level II ${escapeHtml(family.letter)}-code</strong> — ${escapeHtml(family.label)}.`;
+    bits.push(family.inDmepos === false
+      ? `${label} ${family.billedBy ? `These are billed by ${escapeHtml(family.billedBy)}, not by practitioners on Part B claims.` : ''} See the panel below for where the money actually shows up.`
+      : `${label} These are billed by <em>suppliers</em>, not practitioners, and live in CMS's separate Durable Medical Equipment, Devices &amp; Supplies datasets — so its absence here does <em>not</em> mean Medicare doesn't pay for it. See the supplier panel below.`);
   }
   if (cptDictTruncated) {
     bits.push('⚠ The local index was truncated at its page limit this session, so it is incomplete — a direct API check was attempted for exact codes and keywords.');
@@ -3903,16 +3951,43 @@ function noCptMatchHtml(query) {
   return `<div class="year-note" style="margin:0;">${bits.join(' ')}</div>`;
 }
 
+// A Level II code whose family isn't in DMEPOS at all. Saying "no supplier
+// matches" would be technically true and completely misleading, so name the
+// dataset that would hold it and why we can't show per-code numbers.
+function dmeFamilyPanelHtml(family, query) {
+  const code = escapeHtml(String(query).toUpperCase());
+  return `<div class="result-card" id="lookupDmePanel" style="margin-top:16px;">
+    <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — ${escapeHtml(family.label)}
+      <span style="color:var(--text-3);font-size:12px;">· ${escapeHtml(family.letter)}-code</span></div>
+    <div class="year-note" style="margin:0;">
+      <strong style="color:var(--amber);">${code} is not a supplier-billed (DMEPOS) code</strong>, so the supplier data was not searched.
+      ${family.billedBy ? `${escapeHtml(family.letter)}-codes are billed by ${escapeHtml(family.billedBy)}.` : ''}
+      ${family.note ? escapeHtml(family.note) : ''}
+      ${family.letter === 'C' ? ` For device-heavy outpatient or inpatient procedures, size the market from the procedure side instead: use the <strong>Market TAM</strong> tab with the CPT codes for the operation (and its MS-DRGs for inpatient facility dollars), then apply your device ASP. That is the same reason implants placed during inpatient surgery aren't itemized anywhere — they're bundled into the DRG payment.` : ''}
+    </div>
+  </div>`;
+}
+
 // HCPCS Level II (DMEPOS) results panel — supplier-billed device codes.
-function dmePanelHtml(dmeMatches, dmeReferrers, query) {
+function dmePanelHtml(dme, dmeReferrers, query) {
+  const status = (dme && dme.status) || 'none';
+  const dmeMatches = (dme && dme.matches) || [];
+  if (dme && dme.family && status === 'not-applicable') {
+    return dmeFamilyPanelHtml(dme.family, query);
+  }
   const available = (datasetVersions.dmeGeo || []).length > 0;
   const year = dmeMatches.length && dmeMatches[0].year ? `CY ${dmeMatches[0].year}` : 'latest year';
-  if (!available) {
+  // "Couldn't check" must never render as "nothing found" — a silent failure
+  // here is exactly what made L8699 look like an unbilled code.
+  if (!available || status === 'unavailable') {
     return `<div class="result-card" id="lookupDmePanel" style="margin-top:16px;">
       <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — supplier-billed (DMEPOS)</div>
-      <div class="year-note" style="margin:0;">The CMS DME, Devices &amp; Supplies datasets could not be resolved from the catalog, so Level II codes can't be checked right now. Reload to retry.</div>
+      <div class="year-note" style="margin:0;color:var(--amber);">⚠ Could not check the supplier data — this is <em>not</em> a "no results" answer. ${escapeHtml((dme && dme.reason) || 'The CMS DME, Devices & Supplies datasets could not be resolved from the catalog.')} Reload to retry.</div>
     </div>`;
   }
+  const scopeNote = dme && dme.scope === 'state-sum'
+    ? ' <span style="color:var(--amber);">· state rows summed (no National row in this dataset year) — treat as approximate</span>'
+    : '';
   const rows = dmeMatches.map(m => `
     <div class="lookup-row">
       <div class="proc-code">${escapeHtml(m.code)}<span class="match-score" title="HCPCS Level II: supplies, drugs, DME, orthotics/prosthetics (CMS-maintained)">Level II</span></div>
@@ -3938,13 +4013,13 @@ function dmePanelHtml(dmeMatches, dmeReferrers, query) {
     : '';
 
   return `<div class="result-card" id="lookupDmePanel" style="margin-top:16px;">
-    <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — supplier-billed (DMEPOS) <span style="color:var(--text-3);font-size:12px;">· ${dmeMatches.length} match${dmeMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(year)}</span></div>
+    <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — supplier-billed (DMEPOS) <span style="color:var(--text-3);font-size:12px;">· ${dmeMatches.length} match${dmeMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(year)}${scopeNote}</span></div>
     ${dmeMatches.length ? rows : `<div class="year-note" style="margin:0;">No Level II (supplier-billed) matches for “${escapeHtml(query)}”. This covers orthotics, prosthetics, DME and supplies. Note implants placed during inpatient surgery are bundled into the hospital's DRG payment and are not itemized in any dataset — use the Market TAM tab's DRG view for those.</div>`}
     ${refs}
   </div>`;
 }
 
-function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect, dmeMatches, dmeReferrers, dictErrors) {
+function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect, dme, dmeReferrers, dictErrors) {
   document.getElementById('emptyState').style.display = 'none';
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
@@ -3988,8 +4063,8 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
 
   // Level II / DMEPOS panel — shown for code and keyword searches (not for the
   // "browse all DRGs" listing, which passes a titleOverride).
-  if (!titleOverride && dmeMatches !== undefined) {
-    html += dmePanelHtml(dmeMatches || [], dmeReferrers, query);
+  if (!titleOverride && dme) {
+    html += dmePanelHtml(dme, dmeReferrers, query);
   }
 
   resultsArea.innerHTML = html;

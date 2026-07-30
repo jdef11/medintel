@@ -191,22 +191,56 @@ async function main() {
   }
 
   console.log('\n12. DMEPOS (HCPCS Level II) — supplier volume + referring-provider fields');
-  if (resolved.dmeGeo) await fieldCheck('dmeGeo', `${DATA_API_ROOT}/${resolved.dmeGeo.id}/data?size=1&filter[Rndrng_Prvdr_Geo_Lvl]=National`,
+  if (resolved.dmeGeo) await fieldCheck('dmeGeo', `${DATA_API_ROOT}/${resolved.dmeGeo.id}/data?size=1`,
     [['HCPCS_Cd'], ['HCPCS_Desc'], ['Tot_Suplr_Srvcs', 'Tot_Suplr_Srvcs_Cnt', 'Tot_Srvcs'], ['Tot_Suplr_Benes', 'Tot_Benes'], ['Avg_Suplr_Mdcr_Pymt_Amt', 'Tot_Suplr_Mdcr_Pymt_Amt', 'Avg_Mdcr_Pymt_Amt']]);
   if (resolved.dmeReferring) await fieldCheck('dmeReferring', `${DATA_API_ROOT}/${resolved.dmeReferring.id}/data?size=1`,
     [['HCPCS_Cd'], ['Rfrg_NPI'], ['Rfrg_Prvdr_Last_Name_Org'], ['Tot_Suplr_Srvcs', 'Tot_Srvcs']]);
 
+  // Which column carries the geography level in the DMEPOS file? The physician
+  // and inpatient files use Rndrng_Prvdr_Geo_Lvl; DMEPOS geography is the
+  // REFERRING provider's, so it should be Rfrg_Prvdr_Geo_Lvl. Filtering on the
+  // wrong name returns an empty set that looks exactly like "no data" — the app
+  // now scopes client-side instead, but report which name is real.
+  console.log('\n12b. DMEPOS geography-level column name');
+  if (resolved.dmeGeo) {
+    try {
+      const rows = await getJson(`${DATA_API_ROOT}/${resolved.dmeGeo.id}/data?size=1`);
+      const keys = rows.length ? Object.keys(rows[0]) : [];
+      const geoKeys = keys.filter(k => /geo[_ ]?lvl/i.test(k));
+      const nationalRows = await getJson(`${DATA_API_ROOT}/${resolved.dmeGeo.id}/data?size=1&filter[Rfrg_Prvdr_Geo_Lvl]=National`);
+      console.log(`  geo-level column(s): ${geoKeys.join(', ') || '(none found)'}`);
+      if (geoKeys.some(k => /^Rfrg/i.test(k))) ok('DMEPOS uses Rfrg_Prvdr_Geo_Lvl (as the app assumes)');
+      else if (geoKeys.length) bad(`DMEPOS geo-level column is "${geoKeys[0]}" — app scopes client-side so this still works, but note the drift`);
+      else bad('no geography-level column found in the DMEPOS geography file');
+      console.log(`  filter[Rfrg_Prvdr_Geo_Lvl]=National → ${nationalRows.length} row(s)`);
+    } catch (e) { bad(`DMEPOS geo-level check: ${e.message}`); }
+  }
+
   console.log('\n13. Does a real Level II code (L8699) resolve in DMEPOS but not in the physician data?');
   if (resolved.dmeGeo && resolved.provider) {
     const count = async (id, extra) => {
-      try { return (await getJson(`${DATA_API_ROOT}/${id}/data?size=1&filter[HCPCS_Cd]=L8699${extra || ''}`)).length; }
+      try { return (await getJson(`${DATA_API_ROOT}/${id}/data?size=5&filter[HCPCS_Cd]=L8699${extra || ''}`)).length; }
       catch (e) { return -1; }
     };
-    const inDme = await count(resolved.dmeGeo.id, '&filter[Rndrng_Prvdr_Geo_Lvl]=National');
+    // Unfiltered by geography — that is exactly what the app now requests.
+    const inDme = await count(resolved.dmeGeo.id);
     const inPhys = await count(resolved.geography ? resolved.geography.id : resolved.provider.id, '&filter[Rndrng_Prvdr_Geo_Lvl]=National');
     console.log(`  L8699 → DMEPOS: ${inDme} row(s); physician data: ${inPhys} row(s)`);
-    if (inDme > 0) ok('Level II code found in DMEPOS (this is what the new panel queries)');
-    else console.log('  ⚠ L8699 not found in DMEPOS national rows — try another Level II code (e.g. L1832, E0143) to confirm the dataset works');
+    if (inDme > 0) ok('Level II code found in DMEPOS (this is what the panel queries)');
+    else bad('L8699 returned no DMEPOS rows even unfiltered — the panel will show "could not check"; verify the dataset title resolved');
+  }
+
+  console.log('\n14. A C-code (C1889) should be absent everywhere — the app must explain, not show "0 matches"');
+  if (resolved.dmeGeo && resolved.geography) {
+    const seen = async (id) => {
+      try { return (await getJson(`${DATA_API_ROOT}/${id}/data?size=5&filter[HCPCS_Cd]=C1889`)).length; }
+      catch (e) { return -1; }
+    };
+    const dmeHits = await seen(resolved.dmeGeo.id);
+    const physHits = await seen(resolved.geography.id);
+    console.log(`  C1889 → DMEPOS: ${dmeHits} row(s); physician data: ${physHits} row(s)`);
+    if (dmeHits === 0 && physHits === 0) ok('C-code absent from both, as expected — app shows the OPPS pass-through explanation');
+    else console.log('  ⚠ C1889 unexpectedly present — the app skips the DMEPOS query for C-codes, so revisit that assumption');
   }
 
   finish();

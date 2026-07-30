@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-200%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)
 
 ---
 
@@ -82,7 +82,18 @@ One search box, both vocabularies. Keywords (e.g. "cranioplasty") match CPT/HCPC
 
 **If a code isn't found:** the index is built from the Physician & Other Practitioners data only, and its pagination is capped. So a miss triggers a **direct API query for that specific code or keyword** — the index alone is never allowed to produce a false "not found". When that rescue succeeds you'll see a note saying so.
 
-**Supplier-billed Level II codes (DMEPOS):** L-codes and other Level II device codes are billed by *suppliers*, not physicians, so they never appear in the physician datasets at all. MedIntel also searches CMS's **Durable Medical Equipment, Devices & Supplies** datasets and shows a separate **"HCPCS Level II — supplier-billed (DMEPOS)"** panel with national supplier volume, Medicare payments, beneficiaries, and supplier count — plus a ranked list of the **ordering physicians who drive those device orders** (from the *by Referring Provider and Service* dataset). So `L8699` (prosthetic implant, NOS) resolves with real numbers instead of a dead end.
+**Supplier-billed Level II codes (DMEPOS):** L-codes and other supplier-billed Level II codes are billed by *suppliers*, not physicians, so they never appear in the physician datasets at all. MedIntel also searches CMS's **Durable Medical Equipment, Devices & Supplies** datasets and shows a separate **"HCPCS Level II — supplier-billed (DMEPOS)"** panel with national supplier volume, Medicare payments, beneficiaries, and supplier count — plus a ranked list of the **ordering physicians who drive those device orders** (from the *by Referring Provider and Service* dataset). So `L8699` (prosthetic implant, NOS) resolves with real numbers instead of a dead end.
+
+**Level II is not one set — the letter tells you who bills it.** MedIntel classifies the code by its leading letter and tailors the answer, because an `L8699` miss and a `C1889` miss have completely different explanations:
+
+| Letters | Family | Where the data lives |
+|---|---|---|
+| `A` `B` `E` `K` `L` `J` `Q` `V` | Supplies, DME, enteral/parenteral, orthotics & prosthetics, Part B drugs | **DMEPOS** panel — real volume and payments |
+| `C` | Hospital outpatient (OPPS) device pass-through | **Nowhere per-code.** CMS's public Outpatient Hospitals files are aggregated to APC, not HCPCS, so no public dataset reports per-code volume for a C-code. Size these from the procedure side (Market TAM + MS-DRGs) |
+| `G` `M` `P` `R` | Practitioner-billed procedures, screening, lab, radiology | Physician Part B data — the CPT/HCPCS panel above |
+| `S` `T` `H` | Commercial-payer and state Medicaid codes | Not valid for Medicare, so no Medicare dataset reports them |
+
+**"Could not check" is never shown as "no results."** If the supplier datasets can't be resolved or a request fails, the panel says so in amber and states explicitly that it is *not* a no-results answer — a silent failure here is what previously made `L8699` look like an unbilled code.
 
 **Why suggestions, not a crosswalk:** there is no official CPT↔DRG mapping — hospitals assign DRGs from ICD-10-PCS procedure codes plus diagnoses via CMS's GROUPER, so cross-vocabulary matches are heuristic leads to verify against a coding guide.
 
@@ -215,7 +226,7 @@ Look any of these up (and find related codes and their MS-DRGs) in the **Code Lo
 
 All are free, public, and maintained by the Centers for Medicare & Medicaid Services (CMS). Each CMS dataset has one versioned `{id}` per calendar year, discovered at runtime from the [catalog](https://data.cms.gov/data.json).
 
-**Verifying live-API assumptions:** run `npm run smoke` (from any network-connected machine, Node 18+). It hits the real CMS API and checks that all dataset titles resolve and the exact fields the app reads still exist — run it after a CMS data refresh, or once after deploy to confirm the unique-beneficiary dataset is wired correctly. It prints a pass/fail per check and exits non-zero if anything drifted; it makes no changes.
+**Verifying live-API assumptions:** run `npm run smoke` (from any network-connected machine, Node 18+). It hits the real CMS API and checks that all dataset titles resolve, the exact fields the app reads still exist, and that the DMEPOS geography-level column is still named as expected (check 12b — a rename there is what previously made `L8699` look like an unbilled code, so it is now asserted explicitly) — run it after a CMS data refresh, or once after deploy to confirm the unique-beneficiary dataset is wired correctly. It prints a pass/fail per check and exits non-zero if anything drifted; it makes no changes.
 
 ---
 
@@ -232,7 +243,7 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 200 unit tests via Vitest (`npm test`)
+- **Test suite:** 219 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile

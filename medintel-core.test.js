@@ -6,6 +6,7 @@ const {
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
   tokenizeMedical, searchDict, crossSuggest,
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
+  getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
 } = require('./medintel-core.js');
 
@@ -1392,5 +1393,136 @@ describe('getReferringName() / groupByReferrer()', () => {
 
   it('returns empty for empty input', () => {
     expect(groupByReferrer([])).toEqual([]);
+  });
+});
+
+// ─── Geography-level scoping ─────────────────────────────────────────────────
+// Regression: the app filtered DMEPOS requests on Rndrng_Prvdr_Geo_Lvl, but the
+// DMEPOS geography file keys geography off the REFERRING provider
+// (Rfrg_Prvdr_Geo_Lvl). Filtering an absent column returned zero rows, which the
+// UI rendered as "L8699 has no data". Scoping is now client-side and
+// name-tolerant.
+describe('getGeoLevel()', () => {
+  it('reads the DMEPOS referring-provider spelling', () => {
+    expect(getGeoLevel({ Rfrg_Prvdr_Geo_Lvl: 'National' })).toBe('National');
+  });
+
+  it('reads the physician/inpatient rendering-provider spelling', () => {
+    expect(getGeoLevel({ Rndrng_Prvdr_Geo_Lvl: 'State' })).toBe('State');
+  });
+
+  it('handles the space-separated field variant', () => {
+    expect(getGeoLevel({ 'Rfrg Prvdr Geo Lvl': 'National' })).toBe('National');
+  });
+
+  it('returns empty string when no geography column exists', () => {
+    expect(getGeoLevel({ HCPCS_Cd: 'L8699' })).toBe('');
+  });
+
+  it('skips empty values and keeps looking', () => {
+    expect(getGeoLevel({ Rfrg_Prvdr_Geo_Lvl: '', Rndrng_Prvdr_Geo_Lvl: 'National' })).toBe('National');
+  });
+});
+
+describe('pickNationalRows()', () => {
+  it('keeps only National rows when present', () => {
+    const rows = [
+      { Rfrg_Prvdr_Geo_Lvl: 'National', Tot_Suplr_Srvcs: '100' },
+      { Rfrg_Prvdr_Geo_Lvl: 'State', Tot_Suplr_Srvcs: '40' },
+      { Rfrg_Prvdr_Geo_Lvl: 'State', Tot_Suplr_Srvcs: '60' },
+    ];
+    const out = pickNationalRows(rows);
+    expect(out.scope).toBe('national');
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0].Tot_Suplr_Srvcs).toBe('100');
+  });
+
+  it('matches National case-insensitively', () => {
+    const out = pickNationalRows([{ Rfrg_Prvdr_Geo_Lvl: 'NATIONAL' }]);
+    expect(out.scope).toBe('national');
+    expect(out.rows).toHaveLength(1);
+  });
+
+  it('falls back to summing states when no National row exists', () => {
+    const out = pickNationalRows([
+      { Rfrg_Prvdr_Geo_Lvl: 'State', Tot_Suplr_Srvcs: '40' },
+      { Rfrg_Prvdr_Geo_Lvl: 'State', Tot_Suplr_Srvcs: '60' },
+    ]);
+    expect(out.scope).toBe('state-sum');
+    expect(out.rows).toHaveLength(2);
+  });
+
+  it('returns all rows unscoped when the dataset has no geography column', () => {
+    const out = pickNationalRows([{ HCPCS_Cd: 'L8699' }, { HCPCS_Cd: 'L8699' }]);
+    expect(out.scope).toBe('unscoped');
+    expect(out.rows).toHaveLength(2);
+  });
+
+  it('reports none for an empty or missing row set', () => {
+    expect(pickNationalRows([]).scope).toBe('none');
+    expect(pickNationalRows(null).scope).toBe('none');
+    expect(pickNationalRows(undefined).rows).toEqual([]);
+  });
+});
+
+// ─── HCPCS Level II families ─────────────────────────────────────────────────
+// Level II is not one set. The leading letter says who bills the code and
+// therefore which dataset (if any) reports it — so an L-code miss and a C-code
+// miss need completely different explanations.
+describe('hcpcsLevelIIFamily()', () => {
+  it('classifies L-codes as supplier-billed orthotics/prosthetics', () => {
+    const fam = hcpcsLevelIIFamily('L8699');
+    expect(fam.letter).toBe('L');
+    expect(fam.inDmepos).toBe(true);
+    expect(fam.label).toMatch(/prosthetic/i);
+  });
+
+  it('classifies C-codes as hospital outpatient OPPS, not DMEPOS', () => {
+    const fam = hcpcsLevelIIFamily('C1889');
+    expect(fam.letter).toBe('C');
+    expect(fam.inDmepos).toBe(false);
+    expect(fam.label).toMatch(/outpatient/i);
+    expect(fam.note).toMatch(/APC/);
+  });
+
+  it('classifies G-codes as practitioner-billed (already in the CPT panel)', () => {
+    expect(hcpcsLevelIIFamily('G0121').inDmepos).toBe(false);
+  });
+
+  it('flags S and T codes as outside Medicare', () => {
+    expect(hcpcsLevelIIFamily('S2900').note).toMatch(/not valid for Medicare/i);
+    expect(hcpcsLevelIIFamily('T1015').note).toMatch(/not valid for Medicare/i);
+  });
+
+  it('classifies E and K codes as DME', () => {
+    expect(hcpcsLevelIIFamily('E0143').inDmepos).toBe(true);
+    expect(hcpcsLevelIIFamily('K0001').inDmepos).toBe(true);
+  });
+
+  it('is case-insensitive and trims input', () => {
+    expect(hcpcsLevelIIFamily('  l8699  ').letter).toBe('L');
+  });
+
+  it('returns null for CPT (Level I) codes and non-codes', () => {
+    expect(hcpcsLevelIIFamily('27447')).toBeNull();
+    expect(hcpcsLevelIIFamily('62140')).toBeNull();
+    expect(hcpcsLevelIIFamily('knee')).toBeNull();
+    expect(hcpcsLevelIIFamily('')).toBeNull();
+    expect(hcpcsLevelIIFamily(null)).toBeNull();
+  });
+
+  it('defaults an unmapped Level II letter to DMEPOS rather than dropping it', () => {
+    const fam = hcpcsLevelIIFamily('X1234');
+    expect(fam.letter).toBe('X');
+    expect(fam.inDmepos).toBe(true);
+  });
+
+  it('gives every non-DMEPOS family an explanation to show the user', () => {
+    Object.entries(HCPCS_LEVEL_II_FAMILIES)
+      .filter(([, fam]) => fam.inDmepos === false)
+      .forEach(([letter, fam]) => {
+        expect(fam.note, `${letter}-code needs a note`).toBeTruthy();
+        expect(fam.billedBy, `${letter}-code needs a billedBy`).toBeTruthy();
+      });
   });
 });
