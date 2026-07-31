@@ -1192,8 +1192,8 @@
   <div class="main" id="mainContent">
     <div class="empty-state" id="emptyState">
       <div class="empty-icon">🔍</div>
-      <h2>Search CMS Medicare Data</h2>
-      <p>Find high-value providers by name, procedure code, specialty, or geography. Results include procedure volumes and Medicare payment amounts.</p>
+      <h2>Find your next call.</h2>
+      <p>Search by name, procedure code, or location — every result comes ranked by complexity score, so the highest-value targets surface first. Try 27447 (total knee arthroplasty) under By Code to see it in action.</p>
     </div>
     <div id="resultsArea" role="region" aria-label="Search results" aria-live="polite" style="display:none;"></div>
   </div>
@@ -1641,14 +1641,48 @@ function resetSearchButton() {
   `;
 }
 
+// Destination-aware idle copy — orients a first-time user with one concrete,
+// runnable example for wherever they actually are, rather than one generic
+// blurb repeated regardless of tab. All static text (no user input), so no
+// escaping needed — matches the prior version's approach.
+function emptyStateCopy() {
+  if (currentTab === 'tam') {
+    return {
+      icon: '📈',
+      h2: 'Size the market.',
+      p: 'Paste a CPT code family — e.g. 62140, 62141 (cranioplasty) — plus your device’s ASP, and get a modeled US TAM with a real multi-year trend, not just a volume count.',
+    };
+  }
+  if (currentTab === 'lookup') {
+    return {
+      icon: '🔎',
+      h2: 'Not sure of the code?',
+      p: 'Search by keyword or code — CPT/HCPCS and MS-DRG side by side, each with national volume so you can tell real-world codes from noise.',
+    };
+  }
+  if (currentTab === 'npi') {
+    return {
+      icon: '🪪',
+      h2: 'Verify a provider.',
+      p: 'Look up any name or NPI for credentials, address, and contact info straight from the national registry.',
+    };
+  }
+  return {
+    icon: '🔍',
+    h2: 'Find your next call.',
+    p: 'Search by name, procedure code, or location — every result comes ranked by complexity score, so the highest-value targets surface first. Try 27447 (total knee arthroplasty) under By Code to see it in action.',
+  };
+}
+
 // Restore the default idle empty-state (the search-prompt card). Needed because
 // showSearchProgress()/renderers overwrite emptyState's content.
 function resetEmptyState() {
   const empty = document.getElementById('emptyState');
+  const { icon, h2, p } = emptyStateCopy();
   empty.innerHTML = `
-    <div class="empty-icon">🔍</div>
-    <h2>Search CMS Medicare Data</h2>
-    <p>Find high-value providers by name, procedure code, specialty, or geography. Results include procedure volumes and Medicare payment amounts.</p>
+    <div class="empty-icon">${icon}</div>
+    <h2>${h2}</h2>
+    <p>${p}</p>
   `;
 }
 
@@ -2339,7 +2373,7 @@ function announceResultCount() {
   if (fatalError) return;
   if (currentTab === 'npi') setStatus(`${currentResults.length} NPI record${currentResults.length !== 1 ? 's' : ''} shown`);
   else if (currentTab === 'procedure') setStatus(`${procedureGroups.length} procedure${procedureGroups.length !== 1 ? 's' : ''} found`);
-  else if (currentTab === 'tam') setStatus(tamResults ? 'Market TAM results ready' : 'No market data found');
+  else if (currentTab === 'tam') setStatus(tamResults ? 'Market size results ready' : 'No market data found');
   else if (currentTab === 'lookup') setStatus('Code lookup results ready');
   else setStatus(`${allGroupedResults.length} provider${allGroupedResults.length !== 1 ? 's' : ''} found`);
 }
@@ -3121,14 +3155,14 @@ async function probeSuppressedVolume() {
   const withVolume = results.filter(r => r.t && r.t.services);
   const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
   if (!withVolume.length) {
-    box.innerHTML = 'CMS aggregate data also shows no volume for these codes — likely an inpatient-only code (billed to Part A, not Part B physician claims), or not billed to Medicare at all. Try the <strong>Market TAM</strong> tab with the matching MS-DRG codes to see the hospital side.';
+    box.innerHTML = 'CMS aggregate data also shows no volume for these codes — likely an inpatient-only code (billed to Part A, not Part B physician claims), or not billed to Medicare at all. Try <strong>Size a Market</strong> with the matching MS-DRG codes to see the hospital side.';
     return;
   }
   box.innerHTML = `
     <strong style="color:var(--green);">The procedure does have volume.</strong>
     ${withVolume.map(r => `${escapeHtml(r.code)}: <strong>${fmtNumber(r.t.services)}</strong> ${escapeHtml(scope.toLowerCase())} services in CY ${r.t.year}`).join(' · ')}.
     No individual surgeon is listed because each performed it for ≤10 Medicare beneficiaries, CMS's reporting floor — the volume is real, the providers are just not nameable from public data.
-    Use <strong>Volume trend by year</strong> on the Market TAM tab for the full history, or widen to a national (no-state) search to surface the highest-volume surgeons.
+    Use <strong>Volume trend by year</strong> on Size a Market for the full history, or widen to a national (no-state) search to surface the highest-volume surgeons.
   `;
 }
 
@@ -3524,8 +3558,8 @@ function renderNoTamResults(codes) {
   const emptyState = document.getElementById('emptyState');
   emptyState.innerHTML = `
     <div class="empty-icon">📭</div>
-    <h2>No Market Data Found</h2>
-    <p>No Medicare FFS data found for code(s) <strong>${escapeHtml(codes.join(', '))}</strong>. Check the codes, or note that inpatient-only procedures still appear here via the surgeon's professional claim — codes with no Part B billing at all cannot be sized from this dataset.</p>
+    <h2>These codes returned nothing.</h2>
+    <p>No Medicare FFS data found for <strong>${escapeHtml(codes.join(', '))}</strong>. Double-check the codes — inpatient-only procedures still show up here via the surgeon's professional claim, but a code with no Part B billing at all can't be sized from this dataset. <a href="#" onclick="switchTab('lookup');return false;">Look up the right code</a> and try again.</p>
   `;
   emptyState.style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
@@ -3627,7 +3661,7 @@ function renderTamResults() {
   let html = `
     <div class="results-header">
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        <span>Market TAM — <strong>${codes.length}</strong> CPT${drgs.length ? ` + <strong>${drgs.length}</strong> DRG` : ''} code${codes.length + drgs.length !== 1 ? 's' : ''}</span>
+        <span>Size a Market — <strong>${codes.length}</strong> CPT${drgs.length ? ` + <strong>${drgs.length}</strong> DRG` : ''} code${codes.length + drgs.length !== 1 ? 's' : ''}</span>
         <span class="year-badge">${mixedYears ? `CY ${minYear}–${baseYear} (mixed)` : `CY ${(baseYear || drgYear) || '—'}`} base · national Medicare FFS</span>
       </div>
       <div style="display:flex;gap:8px;">
@@ -4372,7 +4406,7 @@ function dmeFamilyPanelHtml(family, query) {
       <strong style="color:var(--amber);">${code} is not a supplier-billed (DMEPOS) code</strong>, so the supplier data was not searched.
       ${family.billedBy ? `${escapeHtml(family.letter)}-codes are billed by ${escapeHtml(family.billedBy)}.` : ''}
       ${family.note ? escapeHtml(family.note) : ''}
-      ${family.letter === 'C' ? ` For device-heavy outpatient or inpatient procedures, size the market from the procedure side instead: use the <strong>Market TAM</strong> tab with the CPT codes for the operation (and its MS-DRGs for inpatient facility dollars), then apply your device ASP. That is the same reason implants placed during inpatient surgery aren't itemized anywhere — they're bundled into the DRG payment.` : ''}
+      ${family.letter === 'C' ? ` For device-heavy outpatient or inpatient procedures, size the market from the procedure side instead: use <strong>Size a Market</strong> with the CPT codes for the operation (and its MS-DRGs for inpatient facility dollars), then apply your device ASP. That is the same reason implants placed during inpatient surgery aren't itemized anywhere — they're bundled into the DRG payment.` : ''}
     </div>
   </div>`;
 }
@@ -4423,7 +4457,7 @@ function dmePanelHtml(dme, dmeReferrers, query) {
 
   return `<div class="result-card" id="lookupDmePanel" style="margin-top:16px;">
     <div class="provider-name" style="margin-bottom:8px;">HCPCS Level II — supplier-billed (DMEPOS) <span style="color:var(--text-3);font-size:12px;">· ${dmeMatches.length} match${dmeMatches.length !== 1 ? 'es' : ''} · national volume ${escapeHtml(year)}${scopeNote}</span></div>
-    ${dmeMatches.length ? rows : `<div class="year-note" style="margin:0;">No Level II (supplier-billed) matches for “${escapeHtml(query)}”. This covers orthotics, prosthetics, DME and supplies. Note implants placed during inpatient surgery are bundled into the hospital's DRG payment and are not itemized in any dataset — use the Market TAM tab's DRG view for those.</div>`}
+    ${dmeMatches.length ? rows : `<div class="year-note" style="margin:0;">No Level II (supplier-billed) matches for “${escapeHtml(query)}”. This covers orthotics, prosthetics, DME and supplies. Note implants placed during inpatient surgery are bundled into the hospital's DRG payment and are not itemized in any dataset — use Size a Market's DRG view for those.</div>`}
     ${refs}
   </div>`;
 }
