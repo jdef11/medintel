@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-231%20passing-brightgreen)
 
 ---
 
@@ -82,7 +82,7 @@ The nav is organized around what you're trying to do, not around which CMS datas
 
 ### Market TAM Tab
 
-Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and get: national Medicare FFS procedure volume (latest year + full multi-year trend), modeled total US procedures across all payers, modeled addressable case count, modeled total US TAM, and the top surgeons by volume. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
+Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and the top of the page leads with one number: your modeled TAM, a one-line thesis ("A $340M market, growing 18% since CY 2021"), and a real trend chart, not a metrics dump. Supporting evidence — hospital billing detail, top hospitals, the per-code breakdown, top surgeons — sits below in collapsed sections you open only when you need to justify the number. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
 
 ### Code Lookup Tab
 
@@ -253,7 +253,7 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 219 unit tests via Vitest (`npm test`)
+- **Test suite:** 231 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile

@@ -371,6 +371,57 @@ function combineTrendsByYear(trends) {
     .sort((a, b) => a.year - b.year);
 }
 
+// ─── TREND CHART (SVG) + GROWTH CALLOUT ───
+// Pure math behind the real trend chart: mapping a yearly series to SVG
+// coordinates, and the "grew X% since CY——" figure. Both take the same
+// {year, services, payment, ok}[] shape produced by finishTrend()/
+// combineTrendsByYear() — used for the Procedure tab's per-code trend and the
+// Market TAM combined trend alike, so there is one chart implementation, not two.
+
+// Percent change in `services` between the first and last OK year. Returns
+// null when it can't be meaningfully stated: fewer than two OK years, or a
+// zero-volume first year (dividing by zero isn't a growth rate).
+function pctChangeAcrossYears(trend) {
+  const points = (trend || []).filter(t => t && t.ok).slice().sort((a, b) => a.year - b.year);
+  if (points.length < 2) return null;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (!first.services) return null;
+  return {
+    firstYear: first.year,
+    lastYear: last.year,
+    pct: ((last.services - first.services) / first.services) * 100,
+  };
+}
+
+// Maps a trend series to SVG path data within a width×height viewBox. Always
+// anchors the y-axis at zero (a market chart shouldn't visually exaggerate
+// small swings) and skips any year whose fetch failed (ok:false) rather than
+// plotting a false zero. Returns coords too, for point labels/hover.
+function trendSvgPath(trend, width, height, padding) {
+  const pad = padding == null ? 8 : padding;
+  const points = (trend || []).filter(t => t && t.ok).slice().sort((a, b) => a.year - b.year);
+  if (!points.length) return { linePath: '', areaPath: '', coords: [] };
+  const maxServices = Math.max(...points.map(p => p.services), 1);
+  const innerW = Math.max(width - pad * 2, 1);
+  const innerH = Math.max(height - pad * 2, 1);
+  const n = points.length;
+  const coords = points.map((p, i) => ({
+    x: n === 1 ? pad + innerW / 2 : pad + (i / (n - 1)) * innerW,
+    y: pad + innerH - (p.services / maxServices) * innerH,
+    year: p.year,
+    services: p.services,
+    payment: p.payment,
+  }));
+  const fmt = n => Math.round(n * 10) / 10;
+  const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${fmt(c.x)} ${fmt(c.y)}`).join(' ');
+  const floorY = fmt(height - pad);
+  const areaPath = `M ${fmt(coords[0].x)} ${floorY} ` +
+    coords.map(c => `L ${fmt(c.x)} ${fmt(c.y)}`).join(' ') +
+    ` L ${fmt(coords[coords.length - 1].x)} ${floorY} Z`;
+  return { linePath, areaPath, coords };
+}
+
 // The TAM model. All money/volume math in one tested place.
 //   estTotal      = FFS volume / (share%)         — all-payer procedures
 //   estAddressable = estTotal * (portion%)         — device-addressable cases
@@ -912,5 +963,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath };
 }

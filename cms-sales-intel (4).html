@@ -25,6 +25,8 @@
     --amber-dim: rgba(251,191,36,0.12);
     --red: #F87171;
     --red-dim: rgba(248,113,113,0.12);
+    --chart-ink: #5B7CFA;      /* trend line/area — distinct from --accent's UI-chrome job */
+    --chart-ink-dim: rgba(91,124,250,0.16);
     --radius: 10px;
     --radius-sm: 6px;
   }
@@ -490,6 +492,42 @@
     margin-top: 2px;
   }
 
+  /* ─── MARKET TAM HERO ───
+     The one deliberately elevated moment in the app (see Design Language
+     notes) — the TAM figure and its trend are the thesis a rep screenshots
+     into a business case; every other card stays in the plain .result-card
+     treatment. The global prefers-reduced-motion rule near the top of this
+     stylesheet already zeroes out the fade-in below via `animation: none
+     !important`, so it doesn't need repeating here. */
+  .tam-hero {
+    position: relative;
+    background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+    box-shadow: 0 0 0 1px var(--border), 0 8px 40px var(--accent-glow);
+    animation: tam-hero-in 0.5s ease both;
+  }
+  @keyframes tam-hero-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .tam-hero-thesis {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 19px;
+    color: var(--text-2);
+  }
+  .tam-hero-figure {
+    font-size: 42px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+    margin-top: 8px;
+  }
+  .tam-hero-label {
+    font-size: 12px;
+    color: var(--text-3);
+    margin: 2px 0 16px;
+  }
+
   /* ─── PROCEDURE TAG ─── */
   .procedure-tag {
     display: inline-flex;
@@ -785,41 +823,29 @@
     margin-top: 6px;
   }
 
-  /* ─── PROCEDURE TREND CHART ─── */
-  .trend-chart { padding: 4px 0; }
-  .trend-row {
-    display: grid;
-    grid-template-columns: 48px 1fr 90px 110px;
-    gap: 10px;
-    align-items: center;
-    padding: 4px 0;
-    font-size: 12px;
-  }
-  .trend-year { color: var(--text-2); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .trend-bar-wrap {
-    background: var(--surface-3);
-    border-radius: 4px;
-    height: 14px;
-    overflow: hidden;
-  }
-  .trend-bar {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 4px;
-    min-width: 2px;
-    transition: width 0.4s ease;
-  }
-  .trend-val { text-align: right; font-variant-numeric: tabular-nums; }
-  .trend-pay { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  /* ─── PROCEDURE / TAM TREND CHART (real SVG line+area, not a bar-in-a-row) ─── */
   .trend-caption {
     font-size: 11px;
     color: var(--text-3);
     margin: 6px 0 2px;
     line-height: 1.5;
   }
-  @media (max-width: 900px) {
-    .trend-row { grid-template-columns: 44px 1fr 80px; }
-    .trend-row > :nth-child(4) { display: none; }
+  .trend-growth {
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin: 2px 0 8px;
+  }
+  .trend-svg-wrap { padding: 4px 0; }
+  .trend-svg-wrap svg text {
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    font-size: 10px;
+    fill: var(--text-3);
+  }
+  .trend-missing-note {
+    font-size: 11px;
+    color: var(--amber);
+    margin-top: 4px;
   }
 
   /* ─── CODE LOOKUP ─── */
@@ -916,13 +942,14 @@
     .card-metrics { grid-template-columns: 1fr; }
     .main { padding: 12px 12px 84px; }
     .result-card { padding: 14px 16px; }
+    .tam-hero-figure { font-size: 32px; }
   }
 
   /* Coarse pointers (touch) get slightly taller data rows regardless of
      viewport width (a touch-capable desktop/tablet in landscape still
      benefits), since the ≤900px rules above are keyed to size, not input type. */
   @media (pointer: coarse) {
-    .proc-row, .trend-row, .lookup-row { padding: 10px 0; }
+    .proc-row, .lookup-row { padding: 10px 0; }
   }
 </style>
 </head>
@@ -1228,6 +1255,11 @@ let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
 let tamResults = null;        // Market TAM tab results ({codes, trends, surgeons, descMap})
+// Args for the DRG hospital trend chart, deferred until its collapsed detail
+// section is actually opened — that section starts display:none, so
+// rendering the chart eagerly would measure a zero-width container (see
+// toggleTamDrgDetail()).
+let tamDrgTrendArgs = null;
 let cptDict = null;           // Code Lookup: [{code, desc, services}] sorted by volume
 let drgDict = null;           // Code Lookup: [{code, desc, discharges, avgPaid}] sorted by volume
 const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v1';
@@ -1584,6 +1616,7 @@ function switchTab(tab) {
   allGroupedResults = [];
   procedureGroups = [];
   tamResults = null;
+  tamDrgTrendArgs = null;
   searchFailedCodes = [];
   searchAndMismatch = 0;
   displayPage = 0;
@@ -2599,6 +2632,35 @@ function toggleProcedures(npi) {
   }
 }
 
+// Generic version of the toggle above for page-level (not per-row) detail
+// sections — used by Market TAM's collapsed-by-default supporting-evidence
+// cards (hospital billing, top hospitals, per-code breakdown, top surgeons),
+// which only ever have one instance each rather than one per NPI/code.
+function toggleDetail(id) {
+  const list = document.getElementById(`detail-${id}`);
+  const btn = document.getElementById(`detail-btn-${id}`);
+  if (list && btn) {
+    list.classList.toggle('open');
+    btn.classList.toggle('open');
+  }
+}
+
+// The "Hospital billing detail" section starts collapsed (display:none), so
+// its trend chart can't be rendered up front — renderTrendChart() measures
+// the container's width to size the SVG, and a hidden container measures
+// zero. Render it lazily on first open instead, mirroring the same
+// first-open-only pattern toggleTrend()/toggleProviderTrend() already use.
+function toggleTamDrgDetail() {
+  toggleDetail('drg');
+  const list = document.getElementById('detail-drg');
+  if (!list || !list.classList.contains('open') || list.dataset.chartLoaded || !tamDrgTrendArgs) return;
+  const box = document.getElementById('tam-drg-trend');
+  if (box) {
+    renderTrendChart(box, tamDrgTrendArgs.caption, tamDrgTrendArgs.combined);
+    list.dataset.chartLoaded = '1';
+  }
+}
+
 // ─── FILTER + SORT HELPERS ───
 function getFilteredSorted() {
   let results = allGroupedResults.filter(g => g.totalServices >= minVolumeFilter);
@@ -3201,26 +3263,51 @@ async function fetchYearlyTrend(kind, cacheKey, buildYear) {
   return finishTrend(results, cacheKey);
 }
 
+// Real trend chart — one implementation shared by the Procedure tab's
+// per-code trend, the per-provider volume trend, and both Market TAM trend
+// panels (combined codes, DRG hospital series). Pure math (coordinates,
+// growth %) lives in medintel-core.js so it's unit-tested; this function just
+// measures the box and builds the markup.
 function renderTrendChart(box, captionHtml, trend) {
-  const max = Math.max(...trend.map(t => t.services), 1);
+  const failedYears = (trend || []).filter(t => t && !t.ok).map(t => t.year);
+  const change = pctChangeAcrossYears(trend);
+  const growthHtml = change
+    ? `<div class="trend-growth" style="color:${change.pct >= 0 ? 'var(--green)' : 'var(--red)'};">${change.pct >= 0 ? '▲' : '▼'} ${change.pct >= 0 ? 'Grew' : 'Declined'} ${Math.abs(Math.round(change.pct))}% from CY ${change.firstYear} to CY ${change.lastYear}</div>`
+    : '';
+
+  const chartWidth = Math.max(box.clientWidth || 0, 280);
+  const plotHeight = 100;
+  const labelHeight = 22;
+  const pad = 10;
+  const { linePath, areaPath, coords } = trendSvgPath(trend, chartWidth, plotHeight, pad);
+
+  if (!coords.length) {
+    box.innerHTML = `
+      <div class="trend-caption">${captionHtml}</div>
+      ${growthHtml}
+      <div class="trend-caption" style="color:var(--amber);">No years of data could be plotted (every request failed).</div>
+    `;
+    return;
+  }
+
+  const svg = `
+    <svg viewBox="0 0 ${chartWidth} ${plotHeight + labelHeight}" width="${chartWidth}" height="${plotHeight + labelHeight}" role="img" aria-label="${escapeHtml(change ? `Trend chart, ${change.pct >= 0 ? 'up' : 'down'} ${Math.abs(Math.round(change.pct))}% from CY ${change.firstYear} to CY ${change.lastYear}` : 'Trend chart')}">
+      <path d="${areaPath}" style="fill:var(--chart-ink-dim);stroke:none;"></path>
+      <path d="${linePath}" style="fill:none;stroke:var(--chart-ink);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;"></path>
+      ${coords.map(c => `
+        <circle cx="${c.x}" cy="${c.y}" r="3" style="fill:var(--chart-ink);">
+          <title>CY ${c.year}: ${fmtNumber(c.services)} services · ${fmtCurrency(c.payment)}</title>
+        </circle>
+        <text x="${c.x}" y="${plotHeight + 16}" text-anchor="middle">${c.year}</text>
+      `).join('')}
+    </svg>
+  `;
+
   box.innerHTML = `
     <div class="trend-caption">${captionHtml}</div>
-    <div class="trend-chart">
-      <div class="trend-row proc-row-header" style="border-bottom:1px solid var(--border);">
-        <div>Year</div><div></div><div style="text-align:right;">Services</div><div style="text-align:right;">Medicare Paid</div>
-      </div>
-      ${trend.map(t => t.ok ? `
-        <div class="trend-row">
-          <div class="trend-year">${t.year}</div>
-          <div class="trend-bar-wrap"><div class="trend-bar" style="width:${Math.max(1, (t.services / max) * 100)}%"></div></div>
-          <div class="trend-val">${fmtNumber(t.services)}</div>
-          <div class="trend-pay">${fmtCurrency(t.payment)}</div>
-        </div>` : `
-        <div class="trend-row">
-          <div class="trend-year">${t.year}</div>
-          <div class="trend-caption" style="grid-column:2/-1;margin:0;">data unavailable (request failed)</div>
-        </div>`).join('')}
-    </div>
+    ${growthHtml}
+    <div class="trend-svg-wrap">${svg}</div>
+    ${failedYears.length ? `<div class="trend-missing-note">⚠ No data for CY ${failedYears.join(', ')} — request failed, not plotted (not a real dip).</div>` : ''}
   `;
 }
 
@@ -3333,6 +3420,7 @@ async function executeTamSearch(codes) {
 
   if (!trends.some(t => t.trend) && !surgeons.length && !drgTrends.some(t => t.trend)) {
     tamResults = null;
+    tamDrgTrendArgs = null; // otherwise a prior search's DRG chart args linger
     procedureGroups = []; // reuse the no-results empty state
     renderNoTamResults(codes.concat(drgs));
     return;
@@ -3521,6 +3609,21 @@ function renderTamResults() {
   const drgCombined = Object.values(drgByYear).sort((a, b) => a.year - b.year);
   const hasHospital = drgs.length > 0 && perDrg.some(d => d.year);
 
+  // The hero's thesis line — one sentence stating the argument, not a metrics
+  // dump. Built from the same combined series that feeds the hero's trend
+  // chart below, so the growth clause and the chart always agree.
+  const heroChange = codes.length ? pctChangeAcrossYears(combined) : null;
+  const heroTrendClause = heroChange
+    ? `, ${heroChange.pct >= 0 ? 'growing' : 'down'} ${Math.abs(Math.round(heroChange.pct))}% since CY ${heroChange.firstYear}`
+    : '';
+  const heroThesis = !codes.length
+    ? ''
+    : estTAM
+      ? `A ${fmtCurrency(estTAM)} market${heroTrendClause}.`
+      : totalFFS
+        ? `${fmtNumber(totalFFS)} Medicare FFS procedures${heroTrendClause} — enter a device ASP for a market-size figure.`
+        : `No Medicare FFS volume found for these codes yet.`;
+
   let html = `
     <div class="results-header">
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -3537,6 +3640,17 @@ function renderTamResults() {
     </div>
 
     ${codes.length ? `
+    <div class="result-card tam-hero">
+      <div class="tam-hero-thesis">${escapeHtml(heroThesis)}</div>
+      <div class="tam-hero-figure" style="color:${estTAM ? 'var(--green)' : 'var(--text)'};">${estTAM ? fmtCurrency(estTAM) : fmtNumber(totalFFS)}</div>
+      <div class="tam-hero-label">${estTAM ? `Est. Total US TAM / yr @ ${fmtCurrency(asp)} ASP · ${share}% FFS share × ${portion}% addressable` : 'Medicare FFS procedures — enter a device ASP in the sidebar for a $ figure'} · ${mixedYears ? `CY ${minYear}–${baseYear} (mixed)` : `CY ${baseYear || '—'}`}</div>
+      <div class="trend-svg-wrap" id="tam-hero-trend"></div>
+      <div class="year-note" style="margin-top:8px;">
+        Procedure counts come from Medicare FFS claims (the surgeon's claim is the only public CPT-level counter — the fee itself doesn't matter here). Hospital dollars come from inpatient DRG data below. Device spend is bundled into DRG payments and never itemized, so the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share × ${portion}% addressable portion${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
+        ${mixedYears ? `<br><strong style="color:var(--amber);">Mixed data years:</strong> not all codes have the same latest year — this headline sums each code's most recent available year (CY ${minYear}–${baseYear}). See the per-code breakdown below for each code's year.` : ''}
+      </div>
+    </div>
+
     <div class="result-card" style="margin-bottom:16px;">
       <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
         <div class="metric">
@@ -3552,126 +3666,130 @@ function renderTamResults() {
           <div class="metric-label">Est. Addressable Cases (@ ${portion}% of all)</div>
         </div>
         <div class="metric">
-          <div class="metric-value" style="color:var(--green);">${estTAM ? fmtCurrency(estTAM) : '—'}</div>
-          <div class="metric-label">${estTAM ? `Est. Total US TAM / yr (@ ${fmtCurrency(asp)} ASP)` : 'Est. Total US TAM — enter an ASP'}</div>
-        </div>
-        <div class="metric">
           <div class="metric-value">${hasHospital ? fmtCurrency(hospPaid) : '—'}</div>
           <div class="metric-label">${hasHospital ? `Paid to Hospitals (DRG set) · CY ${drgYear}` : 'Hospital view — add MS-DRG codes'}</div>
         </div>
-      </div>
-      <div class="year-note">
-        Procedure counts come from Medicare FFS claims (the surgeon's claim is the only public CPT-level counter — the fee itself doesn't matter here). Hospital dollars come from inpatient DRG data below. Device spend is bundled into DRG payments and never itemized, so the TAM figure is <em>modeled</em>: FFS volume ÷ ${share}% FFS share × ${portion}% addressable portion${asp ? ` × ${fmtCurrency(asp)} device revenue per procedure` : ''}. Adjust assumptions in the sidebar; the model updates instantly.
-        ${mixedYears ? `<br><strong style="color:var(--amber);">Mixed data years:</strong> not all codes have the same latest year — this headline sums each code's most recent available year (CY ${minYear}–${baseYear}). See the per-code table for each code's year.` : ''}
       </div>
     </div>` : ''}
 
     ${hasHospital ? `
     <div class="result-card" style="margin-bottom:16px;">
-      <div class="provider-name" style="margin-bottom:8px;">Hospital billing &amp; payments — MS-DRG ${escapeHtml(drgs.join(', '))} <span class="year-badge">CY ${drgYear} · Medicare FFS inpatient</span></div>
-      <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
-        <div class="metric">
-          <div class="metric-value">${fmtNumber(Math.round(hospDischarges))}</div>
-          <div class="metric-label">Inpatient Discharges · CY ${drgYear}</div>
+      <button class="procedures-toggle" id="detail-btn-drg" onclick="toggleTamDrgDetail()">
+        <span class="arrow">▼</span> Hospital billing detail — MS-DRG ${escapeHtml(drgs.join(', '))}
+      </button>
+      <div class="procedures-list" id="detail-drg">
+        <div class="provider-name" style="margin:12px 0 8px;">Hospital billing &amp; payments <span class="year-badge">CY ${drgYear} · Medicare FFS inpatient</span></div>
+        <div class="card-metrics" style="border-top:none;padding-top:0;margin-top:0;">
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(Math.round(hospDischarges))}</div>
+            <div class="metric-label">Inpatient Discharges · CY ${drgYear}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtCurrency(hospBilled)}</div>
+            <div class="metric-label">Hospitals Billed (covered charges)</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value" style="color:var(--green);">${fmtCurrency(hospPaid)}</div>
+            <div class="metric-label">Hospitals Paid (total, all sources)</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtCurrency(hospMdcr)}</div>
+            <div class="metric-label">Medicare's Portion</div>
+          </div>
         </div>
-        <div class="metric">
-          <div class="metric-value">${fmtCurrency(hospBilled)}</div>
-          <div class="metric-label">Hospitals Billed (covered charges)</div>
+        <div class="year-note">
+          “Billed” is chargemaster charges; “Paid” is what hospitals actually received per DRG stay (Medicare + beneficiary + other payers), device cost included but not itemized.
+          <strong>MS-DRGs bundle every procedure in the group</strong> — e.g. craniotomy DRGs include far more than your code family — so treat these as the facility-side ceiling and use the per-CPT volume above for procedure-level math.
         </div>
-        <div class="metric">
-          <div class="metric-value" style="color:var(--green);">${fmtCurrency(hospPaid)}</div>
-          <div class="metric-label">Hospitals Paid (total, all sources)</div>
+        <div class="proc-row proc-row-header">
+          <div>DRG</div><div>Description</div><div>Discharges</div><div>Billed</div><div>Paid</div>
         </div>
-        <div class="metric">
-          <div class="metric-value">${fmtCurrency(hospMdcr)}</div>
-          <div class="metric-label">Medicare's Portion</div>
-        </div>
+        ${perDrg.map(d => d.year ? `
+          <div class="proc-row">
+            <div class="proc-code">${escapeHtml(d.code)}</div>
+            <div class="proc-desc" title="${escapeHtml(d.desc)}">${escapeHtml(d.desc || '—')}${d.year !== drgYear ? ` <span style="color:var(--text-3);">(CY ${d.year})</span>` : ''}</div>
+            <div class="proc-num">${fmtNumber(Math.round(d.discharges))}</div>
+            <div class="proc-num">${fmtCurrency(d.billed)}</div>
+            <div class="proc-num">${fmtCurrency(d.paid)}</div>
+          </div>` : `
+          <div class="proc-row">
+            <div class="proc-code">${escapeHtml(d.code)}</div>
+            <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no data found${d.error ? ` — ${escapeHtml(d.error)}` : ''}</div>
+          </div>`).join('')}
+        <div class="procedures-list open" style="margin-top:12px;" id="tam-drg-trend"></div>
       </div>
-      <div class="year-note">
-        “Billed” is chargemaster charges; “Paid” is what hospitals actually received per DRG stay (Medicare + beneficiary + other payers), device cost included but not itemized.
-        <strong>MS-DRGs bundle every procedure in the group</strong> — e.g. craniotomy DRGs include far more than your code family — so treat these as the facility-side ceiling and use the per-CPT volume above for procedure-level math.
-      </div>
-      <div class="proc-row proc-row-header">
-        <div>DRG</div><div>Description</div><div>Discharges</div><div>Billed</div><div>Paid</div>
-      </div>
-      ${perDrg.map(d => d.year ? `
-        <div class="proc-row">
-          <div class="proc-code">${escapeHtml(d.code)}</div>
-          <div class="proc-desc" title="${escapeHtml(d.desc)}">${escapeHtml(d.desc || '—')}${d.year !== drgYear ? ` <span style="color:var(--text-3);">(CY ${d.year})</span>` : ''}</div>
-          <div class="proc-num">${fmtNumber(Math.round(d.discharges))}</div>
-          <div class="proc-num">${fmtCurrency(d.billed)}</div>
-          <div class="proc-num">${fmtCurrency(d.paid)}</div>
-        </div>` : `
-        <div class="proc-row">
-          <div class="proc-code">${escapeHtml(d.code)}</div>
-          <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no data found${d.error ? ` — ${escapeHtml(d.error)}` : ''}</div>
-        </div>`).join('')}
-      <div class="procedures-list open" style="margin-top:12px;" id="tam-drg-trend"></div>
     </div>
 
     <div class="result-card" style="margin-bottom:16px;">
-      <div class="provider-name" style="margin-bottom:4px;">Top hospitals by volume — MS-DRG ${escapeHtml(drgs.join(', '))} · CY ${drgYear}</div>
-      <div class="year-note" style="margin:0 0 10px;">
-        Ranked by inpatient discharges across the DRG set.${hospitalsCapped ? ' List may be incomplete — the fetch hit its row cap.' : ''}
-      </div>
-      ${hospitals.length ? `
-      <div class="proc-row proc-row-header">
-        <div>#</div><div>Hospital</div><div>Location</div><div>Discharges</div><div>Paid</div>
-      </div>
-      ${hospitals.slice(0, 15).map((h, i) => `
-        <div class="proc-row">
-          <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
-          <div class="proc-desc" title="CCN ${escapeHtml(h.ccn)}">${escapeHtml(h.name)}</div>
-          <div class="proc-desc">${escapeHtml([h.city, h.state].filter(Boolean).join(', '))}</div>
-          <div class="proc-num">${fmtNumber(Math.round(h.discharges))}</div>
-          <div class="proc-num">${fmtCurrency(h.paid)}</div>
+      <button class="procedures-toggle" id="detail-btn-hospitals" onclick="toggleDetail('hospitals')">
+        <span class="arrow">▼</span> Top hospitals by volume — MS-DRG ${escapeHtml(drgs.join(', '))}
+      </button>
+      <div class="procedures-list" id="detail-hospitals">
+        <div class="year-note" style="margin:12px 0 10px;">
+          Ranked by inpatient discharges across the DRG set.${hospitalsCapped ? ' List may be incomplete — the fetch hit its row cap.' : ''}
         </div>
-      `).join('')}` : '<div class="year-note" style="margin:0;">No hospital-level rows found for these DRGs.</div>'}
+        ${hospitals.length ? `
+        <div class="proc-row proc-row-header">
+          <div>#</div><div>Hospital</div><div>Location</div><div>Discharges</div><div>Paid</div>
+        </div>
+        ${hospitals.slice(0, 15).map((h, i) => `
+          <div class="proc-row">
+            <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
+            <div class="proc-desc" title="CCN ${escapeHtml(h.ccn)}">${escapeHtml(h.name)}</div>
+            <div class="proc-desc">${escapeHtml([h.city, h.state].filter(Boolean).join(', '))}</div>
+            <div class="proc-num">${fmtNumber(Math.round(h.discharges))}</div>
+            <div class="proc-num">${fmtCurrency(h.paid)}</div>
+          </div>
+        `).join('')}` : '<div class="year-note" style="margin:0;">No hospital-level rows found for these DRGs.</div>'}
+      </div>
     </div>` : ''}
 
     ${codes.length ? `
     <div class="result-card" style="margin-bottom:16px;">
-      <div class="provider-name" style="margin-bottom:8px;">Combined market volume by year</div>
-      <div class="procedures-list open" style="border-top:none;margin-top:0;padding-top:0;" id="tam-combined-trend"></div>
-    </div>
-
-    <div class="result-card" style="margin-bottom:16px;">
-      <div class="provider-name" style="margin-bottom:8px;">Per-code breakdown · CY ${baseYear || '—'}</div>
-      <div class="proc-row proc-row-header">
-        <div>Code</div><div>Description</div><div>FFS Services</div><div>Est. Total</div><div>FFS Paid (prof.)</div>
+      <button class="procedures-toggle" id="detail-btn-percode" onclick="toggleDetail('percode')">
+        <span class="arrow">▼</span> Per-code breakdown · CY ${baseYear || '—'}
+      </button>
+      <div class="procedures-list" id="detail-percode">
+        <div class="proc-row proc-row-header" style="margin-top:12px;">
+          <div>Code</div><div>Description</div><div>FFS Services</div><div>Est. Total</div><div>FFS Paid (prof.)</div>
+        </div>
+        ${perCode.map(c => c.year ? `
+          <div class="proc-row">
+            <div class="proc-code">${escapeHtml(c.code)}</div>
+            <div class="proc-desc" title="${escapeHtml(c.desc)}">${escapeHtml(c.desc || '—')}${c.year !== baseYear ? ` <span style="color:var(--text-3);">(CY ${c.year})</span>` : ''}</div>
+            <div class="proc-num">${fmtNumber(c.services)}</div>
+            <div class="proc-num">${fmtNumber(Math.round(c.services / (share / 100)))}</div>
+            <div class="proc-num">${fmtCurrency(c.payment)}</div>
+          </div>` : `
+          <div class="proc-row">
+            <div class="proc-code">${escapeHtml(c.code)}</div>
+            <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no FFS data found${c.error ? ` — ${escapeHtml(c.error)}` : ''}</div>
+          </div>`).join('')}
       </div>
-      ${perCode.map(c => c.year ? `
-        <div class="proc-row">
-          <div class="proc-code">${escapeHtml(c.code)}</div>
-          <div class="proc-desc" title="${escapeHtml(c.desc)}">${escapeHtml(c.desc || '—')}${c.year !== baseYear ? ` <span style="color:var(--text-3);">(CY ${c.year})</span>` : ''}</div>
-          <div class="proc-num">${fmtNumber(c.services)}</div>
-          <div class="proc-num">${fmtNumber(Math.round(c.services / (share / 100)))}</div>
-          <div class="proc-num">${fmtCurrency(c.payment)}</div>
-        </div>` : `
-        <div class="proc-row">
-          <div class="proc-code">${escapeHtml(c.code)}</div>
-          <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no FFS data found${c.error ? ` — ${escapeHtml(c.error)}` : ''}</div>
-        </div>`).join('')}
     </div>
 
     <div class="result-card">
-      <div class="provider-name" style="margin-bottom:4px;">Top surgeons by volume · ${surgeonYear ? `CY ${surgeonYear}` : 'latest year'}</div>
-      <div class="year-note" style="margin:0 0 10px;">
-        From provider-level claims: surgeons with ≤10 Medicare beneficiaries per code per year are suppressed by CMS, so this list is the visible top of the market — use it for targeting, not for market math.${surgeonsCapped ? ` <strong style="color:var(--amber);">Partial:</strong> at least one code returned more than ${(FETCH_SIZE * MAX_FETCHES).toLocaleString()} provider rows and was truncated, so high-volume surgeons may be missing from this ranking.` : ''}
-      </div>
-      ${surgeons.length ? `
-      <div class="proc-row proc-row-header">
-        <div>#</div><div>Surgeon</div><div>Location</div><div>Services</div><div>FFS Paid</div>
-      </div>
-      ${surgeons.slice(0, 15).map((s, i) => `
-        <div class="proc-row">
-          <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
-          <div class="proc-desc" title="NPI ${escapeHtml(s.npi)}">${escapeHtml(s.name)}${s.specialty ? ` <span style="color:var(--text-3);">· ${escapeHtml(s.specialty)}</span>` : ''}</div>
-          <div class="proc-desc">${escapeHtml(s.location)}</div>
-          <div class="proc-num">${fmtNumber(s.totalServices)}</div>
-          <div class="proc-num">${fmtCurrency(s.totalPayment)}</div>
+      <button class="procedures-toggle" id="detail-btn-surgeons" onclick="toggleDetail('surgeons')">
+        <span class="arrow">▼</span> Top surgeons by volume · ${surgeonYear ? `CY ${surgeonYear}` : 'latest year'}
+      </button>
+      <div class="procedures-list" id="detail-surgeons">
+        <div class="year-note" style="margin:12px 0 10px;">
+          From provider-level claims: surgeons with ≤10 Medicare beneficiaries per code per year are suppressed by CMS, so this list is the visible top of the market — use it for targeting, not for market math.${surgeonsCapped ? ` <strong style="color:var(--amber);">Partial:</strong> at least one code returned more than ${(FETCH_SIZE * MAX_FETCHES).toLocaleString()} provider rows and was truncated, so high-volume surgeons may be missing from this ranking.` : ''}
         </div>
-      `).join('')}` : '<div class="year-note" style="margin:0;">No unsuppressed providers found for these codes — every billing surgeon had ≤10 Medicare beneficiaries per code.</div>'}
+        ${surgeons.length ? `
+        <div class="proc-row proc-row-header">
+          <div>#</div><div>Surgeon</div><div>Location</div><div>Services</div><div>FFS Paid</div>
+        </div>
+        ${surgeons.slice(0, 15).map((s, i) => `
+          <div class="proc-row">
+            <div class="proc-num" style="text-align:left;color:var(--text-3);">${i + 1}</div>
+            <div class="proc-desc" title="NPI ${escapeHtml(s.npi)}">${escapeHtml(s.name)}${s.specialty ? ` <span style="color:var(--text-3);">· ${escapeHtml(s.specialty)}</span>` : ''}</div>
+            <div class="proc-desc">${escapeHtml(s.location)}</div>
+            <div class="proc-num">${fmtNumber(s.totalServices)}</div>
+            <div class="proc-num">${fmtCurrency(s.totalPayment)}</div>
+          </div>
+        `).join('')}` : '<div class="year-note" style="margin:0;">No unsuppressed providers found for these codes — every billing surgeon had ≤10 Medicare beneficiaries per code.</div>'}
+      </div>
     </div>` : ''}
   `;
 
@@ -3679,18 +3797,17 @@ function renderTamResults() {
   if (codes.length) {
     const partialYears = combined.filter(y => !y.complete).map(y => y.year);
     renderTrendChart(
-      document.getElementById('tam-combined-trend'),
+      document.getElementById('tam-hero-trend'),
       `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data at all: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}${partialYears.length ? ` <strong style="color:var(--amber);">Years ${partialYears.join(', ')} are partial</strong> — one or more codes had no data that year, so those bars sum fewer codes and should not be read as dips.` : ''}`,
       combined
     );
   }
-  if (hasHospital) {
-    renderTrendChart(
-      document.getElementById('tam-drg-trend'),
-      `National inpatient discharges (bars) and total payments to hospitals across MS-DRG ${escapeHtml(drgs.join(', '))} by calendar year.`,
-      drgCombined
-    );
-  }
+  // The DRG trend chart is deferred until "Hospital billing detail" is
+  // actually opened (see toggleTamDrgDetail) — its container starts
+  // display:none, so rendering it now would measure a zero-width box.
+  tamDrgTrendArgs = hasHospital
+    ? { caption: `National inpatient discharges (bars) and total payments to hospitals across MS-DRG ${escapeHtml(drgs.join(', '))} by calendar year.`, combined: drgCombined }
+    : null;
   document.querySelector('.main').scrollTop = 0;
 }
 
@@ -4566,6 +4683,7 @@ function clearSearch() {
   allGroupedResults = [];
   procedureGroups = [];
   tamResults = null;
+  tamDrgTrendArgs = null;
   document.getElementById('tamFfsShare').value = '40';
   document.getElementById('tamCasePortion').value = '100';
   resultsCapped = false;

@@ -16,7 +16,7 @@
 /
 ├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
 ├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
-├── medintel-core.test.js         # Vitest suite for medintel-core.js (219 tests)
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (231 tests)
 ├── scripts/live-smoke.mjs        # Manual live-CMS verification script (npm run smoke)
 ├── package.json                  # Dev-only tooling: vitest. Not a runtime dependency of the app itself
 ├── .github/workflows/deploy.yml  # Runs `npm test`, then publishes the HTML to GitHub Pages
@@ -79,12 +79,14 @@ let currentResults = []          // Raw rows for the NPI tab
 let allGroupedResults = []       // Grouped+scored providers (CMS tabs)
 let procedureGroups = []         // Procedure-grouped results (Procedure tab)
 let tamResults = null            // Market TAM tab results
+let tamDrgTrendArgs = null       // Deferred DRG trend chart args (see toggleTamDrgDetail)
 let displayPage = 0              // Client-side results page (CMS tabs)
 let npiPage = 0                  // NPI results page
 let isLoading = false            // Prevent double-submit
 let searchGen = 0                // Generation token — discards superseded searches
 let activeProxyIndex = 0         // Last successful CORS proxy
 let selectedYear = ''            // '' = latest; else a specific data year
+let lastFindCustomersMode = 'provider'  // Which Find Customers mode to return to
 ```
 
 Pagination is client-side (`displayPage` + `prevPage`/`nextPage`) for the CMS tabs; the NPI tab paginates server-side via `executeNpiSearch(offset)` (guarded by `gotoNpiPage`). There is no `currentPage`/`totalFound` — results are grouped in memory and sliced per page.
@@ -192,8 +194,10 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `getDatasetBase()` | Data-API base URL for the selected data year |
 | `fetchTrend(code)` / `renderTrend(...)` | Multi-year procedure volume trend via the Geography & Service dataset |
 | `fetchProviderTrend(npi)` / `toggleProviderTrend(npi)` | Multi-year per-NPI totals via the Provider & Service dataset versions |
-| `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab) |
-| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab — national volume, modeled TAM, top surgeons; assumptions re-render live |
+| `renderTrendChart(box, captionHtml, trend)` | **Real SVG line/area chart** (not a bar-in-a-table-row) — one implementation shared by the Procedure tab's per-code trend, the per-provider volume trend, and both Market TAM trend panels. Coordinate/path math is `trendSvgPath()` (pure, in medintel-core.js); the growth callout ("Grew X% since CY——") is `pctChangeAcrossYears()` (same file). Measures `box.clientWidth` to size the chart, so the box must already be visible (`display` other than `none`) when called — see `toggleTamDrgDetail()` for the deferred-render pattern this requires when a chart lives inside a collapsed section |
+| `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab); the top-providers sub-table's Tier badges come from `executeSearch()`'s second `assignScoresAndTiers(groupByProvider(allRows))` pass, not from `groupByProcedure` itself |
+| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab. Renders a hero card first (`.tam-hero` — thesis line, TAM $ figure, trend chart into `#tam-hero-trend`) since that figure is the one thing a rep screenshots into a business case; supporting detail (hospital billing, top hospitals, per-code breakdown, top surgeons) renders as collapsed-by-default sections via `toggleDetail(id)`/`toggleTamDrgDetail()`. Assumptions re-render live |
+| `toggleDetail(id)` / `toggleTamDrgDetail()` | Generic collapse/expand for Market TAM's page-level (not per-row) detail sections — `id` matching `detail-btn-${id}`/`detail-${id}`. The DRG variant additionally lazy-renders `#tam-drg-trend` on first open (via the module-level `tamDrgTrendArgs`, set at the end of `renderTamResults()`) since that chart's container starts `display:none` |
 | `parseDrgs(input)` / `fetchDrgTrend(drg)` / `fetchDrgHospitals(drgs)` | MS-DRG parsing + inpatient hospital billing/payment totals and top hospitals (Inpatient Hospitals datasets) |
 | `tokenizeMedical` / `searchDict` / `crossSuggest` | Code Lookup search core (pure, in medintel-core.js) — keyword AND-match with prefix-stem fallback; heuristic cross-vocabulary suggestions |
 | `loadCptDict()` / `loadDrgDict()` / `executeLookupSearch()` | Code Lookup tab — dictionaries from national dataset rows, localStorage-cached (`medintel_cpt_dict_v1`/`medintel_drg_dict_v1`). Page-capped builds set `cptDictTruncated`/`drgDictTruncated` |
@@ -267,7 +271,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 219 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 231 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
 - Manual UI validation: open in a browser (or `npx serve .`), exercise all three Find Customers modes plus Size a Market and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
