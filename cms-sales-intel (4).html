@@ -170,7 +170,14 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ─── PRIMARY NAV — the two destinations (Find Customers / Size a Market) ─── */
+  /* ─── PRIMARY NAV — the two destinations (Find Customers / Size a Market) ───
+     Own class namespace (.dest-btn), shared with NO other nav tier. Two prior
+     bugs both traced back to sharing one .tab class across all three tiers,
+     where an .active rule for one tier left a property (background/color)
+     unset and a same-specificity rule from ANOTHER tier leaked through per
+     CSS's per-property cascade. Giving each tier a distinct class makes that
+     class of bug structurally impossible — there is no rule anywhere that can
+     apply to more than one tier's elements. */
   .tabs {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -179,7 +186,7 @@
     border-radius: var(--radius-sm);
     padding: 3px;
   }
-  .tab {
+  .dest-btn {
     flex: 1;
     padding: 11px 10px;
     font-size: 13px;
@@ -192,19 +199,18 @@
     transition: all 0.2s;
     white-space: nowrap;
   }
-  .tab:hover { color: var(--text-2); }
-  .tab.active {
+  .dest-btn:hover { color: var(--text-2); }
+  .dest-btn.active {
     background: var(--accent);
     color: #fff;
   }
   /* "Find Customers" hands its highlight off to whichever mode button is
      active below it (see .mode-btn.active) — two filled/active-looking
-     controls for one location read as two separate selections, which is
-     exactly the "highlight jumps between the upper and lower row" confusion
-     this fixes. It still shows it's the current section (bold text + a thin
-     accent underline), just never the loud solid fill. "Size a Market" has
-     no subordinate row to hand off to, so it keeps the full .tab.active
-     treatment above. #-selector specificity wins regardless of source order. */
+     controls for one location read as two separate selections. It still
+     shows it's the current section (bold text + a thin accent underline),
+     just never the loud solid fill. "Size a Market" has no subordinate row
+     to hand off to, so it keeps the full .dest-btn.active treatment above.
+     #-selector specificity wins regardless of source order or class names. */
   #navFindCustomers.active {
     background: transparent;
     color: var(--text);
@@ -212,21 +218,29 @@
   }
 
   /* ─── SECONDARY NAV — Find Customers' three modes ───
-     This row is the ONLY place a loud "active" highlight appears while Find
-     Customers is open — see the #navFindCustomers.active override above. */
+     Own class namespace (.mode-btn), never combined with .dest-btn or
+     .tab-utility on the same element. This row is the only place a loud
+     "active" highlight appears while Find Customers is open. */
   .mode-row {
     display: flex;
     gap: 6px;
     margin-top: 10px;
   }
   .mode-btn {
+    flex: 1;
     padding: 7px 4px;
     font-size: 11px;
+    font-weight: 600;
+    color: var(--text-3);
+    background: transparent;
     border: 1px solid var(--border);
     border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
     text-align: center;
   }
-  .mode-btn:hover { border-color: var(--text-3); }
+  .mode-btn:hover { border-color: var(--text-3); color: var(--text-2); }
   .mode-btn.active {
     background: var(--accent-dim);
     border-color: var(--accent);
@@ -234,8 +248,9 @@
   }
 
   /* ─── UTILITY STRIP — Code Lookup / NPI Lookup, demoted to helpers ───
-     Styled as plain text links (matching .info-box a / .year-note a
-     elsewhere), never a filled pill or bordered button, so this reads as a
+     Own class namespace (.tab-utility), never combined with .dest-btn or
+     .mode-btn. Styled as plain text links (matching .info-box a / .year-note
+     a elsewhere), never a filled pill or bordered button, so this reads as a
      clearly separate "quick tools" area rather than a 3rd/4th row of nav
      tabs competing with the destination/mode rows above it. */
   .utility-strip {
@@ -263,7 +278,11 @@
     font-weight: 500;
     color: var(--accent);
     background: transparent;
+    border: none;
     border-radius: 0;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
   }
   .tab-utility:hover { text-decoration: underline; }
   .tab-utility.active { font-weight: 700; text-decoration: underline; }
@@ -998,23 +1017,23 @@
     <div class="sidebar-drag-handle" aria-hidden="true"></div>
     <div class="sidebar-section">
       <div class="tabs" role="tablist" aria-label="What do you want to do?" onkeydown="onTabKeydown(event)">
-        <button class="tab active" id="navFindCustomers" role="tab" aria-selected="true" data-tab-group="provider,procedure,geography" onclick="switchTab(lastFindCustomersMode)">Find Customers</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="tam" onclick="switchTab('tam')">Size a Market</button>
+        <button class="dest-btn active" id="navFindCustomers" role="tab" aria-selected="true" data-tab-group="provider,procedure,geography" onclick="switchTab(lastFindCustomersMode)">Find Customers</button>
+        <button class="dest-btn" role="tab" aria-selected="false" data-tab="tam" onclick="switchTab('tam')">Size a Market</button>
       </div>
 
       <div class="mode-row" id="findCustomersModeRow" role="tablist" aria-label="Find customers by" onkeydown="onTabKeydown(event)">
-        <button class="tab mode-btn active" role="tab" aria-selected="true" data-tab="provider" onclick="switchTab('provider')">By Name</button>
-        <button class="tab mode-btn" role="tab" aria-selected="false" data-tab="procedure" onclick="switchTab('procedure')">By Code</button>
-        <button class="tab mode-btn" role="tab" aria-selected="false" data-tab="geography" onclick="switchTab('geography')">By Location</button>
+        <button class="mode-btn active" role="tab" aria-selected="true" data-tab="provider" onclick="switchTab('provider')">By Name</button>
+        <button class="mode-btn" role="tab" aria-selected="false" data-tab="procedure" onclick="switchTab('procedure')">By Code</button>
+        <button class="mode-btn" role="tab" aria-selected="false" data-tab="geography" onclick="switchTab('geography')">By Location</button>
       </div>
 
       <div class="utility-strip">
         <div class="utility-strip-label">Quick Lookup</div>
-        <button class="tab tab-utility" data-tab="lookup" onclick="switchTab('lookup')">
+        <button class="tab-utility" data-tab="lookup" onclick="switchTab('lookup')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
           Look up a code
         </button>
-        <button class="tab tab-utility" data-tab="npi" onclick="switchTab('npi')">
+        <button class="tab-utility" data-tab="npi" onclick="switchTab('npi')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6"/></svg>
           Verify a provider
         </button>
@@ -1606,21 +1625,45 @@ function dataYearValue() {
 // ─── TAB SWITCHING ───
 // "Find Customers" (provider/procedure/geography), "Size a Market" (tam), and
 // the utility strip (lookup/npi) are all still just `tab` values underneath —
-// see FIND_CUSTOMER_MODES above. Any element with class `.tab` and either a
-// matching `data-tab` or a `data-tab-group` list gets its active state toggled
-// here, which is what lets the primary destination button, the three mode
-// buttons, and the two utility buttons all share one active-state loop below.
+// see FIND_CUSTOMER_MODES above. Each nav tier (destination row, mode row,
+// utility strip) has its OWN class and its OWN updater below — deliberately
+// NOT one shared class/loop. Two earlier bugs both came from all three tiers
+// sharing one `.tab` class: an .active rule for one tier left a CSS property
+// unset, and a same-specificity rule from a DIFFERENT tier leaked through.
+// Separate classes make that impossible — no rule anywhere can apply to more
+// than one tier's elements, so there's nothing left to leak.
+function updateDestActive(tab) {
+  document.querySelectorAll('.dest-btn').forEach(t => {
+    const on = t.dataset.tab === tab || (t.dataset.tabGroup && t.dataset.tabGroup.split(',').includes(tab));
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+}
+function updateModeActive(tab) {
+  document.querySelectorAll('.mode-btn').forEach(t => {
+    const on = t.dataset.tab === tab;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+}
+function updateUtilityActive(tab) {
+  // No aria-selected here — these aren't role="tab" elements (they're plain
+  // links to a destination, not peers in a tablist), so there's nothing to
+  // keep in sync beyond the visual .active state.
+  document.querySelectorAll('.tab-utility').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+}
+
 function switchTab(tab) {
   currentTab = tab;
   if (FIND_CUSTOMER_MODES.includes(tab)) lastFindCustomersMode = tab;
   // Invalidate any in-flight search so its results can't paint into this tab.
   searchGen++;
   isLoading = false;
-  document.querySelectorAll('.tab').forEach(t => {
-    const on = t.dataset.tab === tab || (t.dataset.tabGroup && t.dataset.tabGroup.split(',').includes(tab));
-    t.classList.toggle('active', on);
-    t.setAttribute('aria-selected', on ? 'true' : 'false');
-  });
+  updateDestActive(tab);
+  updateModeActive(tab);
+  updateUtilityActive(tab);
   const modeRow = document.getElementById('findCustomersModeRow');
   if (modeRow) modeRow.style.display = FIND_CUSTOMER_MODES.includes(tab) ? 'flex' : 'none';
 
@@ -1743,15 +1786,19 @@ function cancelSearch() {
 }
 
 // Left/Right arrow navigation across a tablist (ARIA tab pattern). There are
-// now two separate tablist containers (primary destinations, and Find
-// Customers' mode row) — this is shared by both via e.currentTarget, which is
-// whichever container the listener is actually attached to, so each cycles
-// only its own tabs rather than one flat list across both rows. Cycling is by
-// DOM focus, not by currentTab, since the primary "Find Customers" button has
-// no single data-tab value to match against (see data-tab-group).
+// two separate tablist containers (primary destinations, and Find Customers'
+// mode row) — this is shared by both via e.currentTarget, which is whichever
+// container the listener is actually attached to, so each cycles only its
+// own tabs rather than one flat list across both rows. Queries by
+// [role="tab"] rather than a specific class, since the destination row and
+// mode row now use different classes (.dest-btn / .mode-btn) — this makes the
+// handler tier-agnostic, so a future tier rename needs no change here.
+// Cycling is by DOM focus, not by currentTab, since the primary "Find
+// Customers" button has no single data-tab value to match against (see
+// data-tab-group).
 function onTabKeydown(e) {
   if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-  const tabs = Array.from(e.currentTarget.querySelectorAll('.tab'));
+  const tabs = Array.from(e.currentTarget.querySelectorAll('[role="tab"]'));
   const i = tabs.indexOf(document.activeElement);
   if (i === -1) return;
   const next = e.key === 'ArrowRight' ? (i + 1) % tabs.length : (i - 1 + tabs.length) % tabs.length;
