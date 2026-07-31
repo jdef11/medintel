@@ -14,13 +14,34 @@
 
 ```
 /
-├── cms-sales-intel (4).html   # The entire UI (HTML/CSS + inline app script)
-├── README.md                  # User-facing documentation and example searches
-├── LICENSE                    # MIT License
-└── CLAUDE.md                  # This file
+├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
+├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (231 tests)
+├── scripts/live-smoke.mjs        # Manual live-CMS verification script (npm run smoke)
+├── package.json                  # Dev-only tooling: vitest. Not a runtime dependency of the app itself
+├── .github/workflows/deploy.yml  # Runs `npm test`, then publishes the HTML to GitHub Pages
+├── README.md                      # User-facing documentation and example searches
+├── LICENSE                        # MIT License
+└── CLAUDE.md                      # This file
 ```
 
-There are no subdirectories, no source maps, no compiled assets, and no configuration files.
+The app itself ships as a single static file with zero runtime dependencies — `package.json`/`vitest` exist only to test the pure logic extracted into `medintel-core.js`, not to build or bundle anything.
+
+---
+
+## Commands
+
+```bash
+npm install          # one-time — installs vitest only, nothing runtime-related
+npm test              # run the full medintel-core.test.js suite once (vitest run)
+npm run test:watch    # vitest in watch mode while iterating
+npm run smoke          # node scripts/live-smoke.mjs — hits the REAL CMS API (network + Node 18+ required)
+npx serve .            # serve the repo locally, then open http://localhost:3000/cms-sales-intel%20(4).html
+```
+
+To run a single test or file with Vitest directly: `npx vitest run -t "test name substring"` or `npx vitest run medintel-core.test.js`.
+
+There is no lint/typecheck/build script — the HTML file is edited directly and the browser is the only "build".
 
 ---
 
@@ -58,12 +79,14 @@ let currentResults = []          // Raw rows for the NPI tab
 let allGroupedResults = []       // Grouped+scored providers (CMS tabs)
 let procedureGroups = []         // Procedure-grouped results (Procedure tab)
 let tamResults = null            // Market TAM tab results
+let tamDrgTrendArgs = null       // Deferred DRG trend chart args (see toggleTamDrgDetail)
 let displayPage = 0              // Client-side results page (CMS tabs)
 let npiPage = 0                  // NPI results page
 let isLoading = false            // Prevent double-submit
 let searchGen = 0                // Generation token — discards superseded searches
 let activeProxyIndex = 0         // Last successful CORS proxy
 let selectedYear = ''            // '' = latest; else a specific data year
+let lastFindCustomersMode = 'provider'  // Which Find Customers mode to return to
 ```
 
 Pagination is client-side (`displayPage` + `prevPage`/`nextPage`) for the CMS tabs; the NPI tab paginates server-side via `executeNpiSearch(offset)` (guarded by `gotoNpiPage`). There is no `currentPage`/`totalFound` — results are grouped in memory and sliced per page.
@@ -76,16 +99,27 @@ Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `FETCH_SIZE`, `CORS_PROXIES`
 
 ## Search Modes
 
-The app has six tabs, each with different input fields and API targets:
+The nav is organized around two goal-oriented destinations plus a demoted utility strip — **not** around the six CMS/NPPES data sources underneath, though those six `currentTab` values (`provider`/`procedure`/`geography`/`tam`/`lookup`/`npi`) are unchanged internally (see "Navigation vs. internal tab ids" below):
 
-| Tab | API | Key Inputs | Query Parameter |
-|-----|-----|-----------|----------------|
-| `provider` | CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`. Mutually exclusive — validated up front |
-| `procedure` | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
-| `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
-| `tam` | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side |
-| `lookup` | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other tabs via `addToField` |
-| `npi` | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
+- **Find Customers** (`.tabs` primary button, `id="navFindCustomers"`) — one destination, three internal modes selected via `#findCustomersModeRow`'s "By Name"/"By Code"/"By Location" buttons:
+  | Mode (`currentTab`) | API | Key Inputs | Query Parameter |
+  |-----|-----|-----------|----------------|
+  | `provider` (By Name) | CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`. Mutually exclusive — validated up front |
+  | `procedure` (By Code) | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends. The "top providers for this code" sub-table also carries Tier 1/2/3 badges via a second `assignScoresAndTiers(groupByProvider(allRows))` pass in `executeSearch()`, so ranking reads the same as the By Name/By Location modes regardless of entry point |
+  | `geography` (By Location) | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
+- **Size a Market** (`data-tab="tam"`) | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
+- **Utility strip** (`.utility-strip`, always visible, demoted below the primary/mode nav) — two helpers, reachable directly or via inline "Look it up" links next to the HCPCS fields in By Code mode and Size a Market:
+  | Utility (`currentTab`) | API | Key Inputs | Query Parameter |
+  |-----|-----|-----------|----------------|
+  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other modes via `addToField` |
+  | `npi` (Verify a provider) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
+
+### Navigation vs. internal tab ids
+
+The six `currentTab` strings above are unchanged from before this nav restructure and must stay that way — `TAB_FIELDS`, `SHAREABLE_TABS` (medintel-core.js), `decodeSearchState`'s whitelist, `getSearchCriteria()`, and `executeSearch()`'s dispatch all key off them, and existing shared links (`#tab=procedure&...`) decode straight into `switchTab()` with no compatibility shim needed. Only the nav *presentation* changed:
+- `.tab` elements now render in three tiers: the primary `.tabs` row (Find Customers, Size a Market), the secondary `#findCustomersModeRow` (By Name/By Code/By Location, shown only when `currentTab` is in `FIND_CUSTOMER_MODES`), and `.utility-strip` (Look up a code, Verify a provider). All three tiers share one active-state loop in `switchTab()` — a `.tab` matches either by `data-tab === tab` or, for the "Find Customers" button (which has no single tab id), by `data-tab-group` containing `tab`.
+- `lastFindCustomersMode` remembers which of the three modes to return to when re-entering Find Customers from Size a Market or a utility; the button's `onclick` reads it live (`switchTab(lastFindCustomersMode)`).
+- `onTabKeydown(e)` (arrow-key cycling) now scopes to `e.currentTarget` so the primary row and the mode row each cycle independently rather than one flat list across both.
 
 ---
 
@@ -160,8 +194,10 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `getDatasetBase()` | Data-API base URL for the selected data year |
 | `fetchTrend(code)` / `renderTrend(...)` | Multi-year procedure volume trend via the Geography & Service dataset |
 | `fetchProviderTrend(npi)` / `toggleProviderTrend(npi)` | Multi-year per-NPI totals via the Provider & Service dataset versions |
-| `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab) |
-| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab — national volume, modeled TAM, top surgeons; assumptions re-render live |
+| `renderTrendChart(box, captionHtml, trend)` | **Real SVG line/area chart** (not a bar-in-a-table-row) — one implementation shared by the Procedure tab's per-code trend, the per-provider volume trend, and both Market TAM trend panels. Coordinate/path math is `trendSvgPath()` (pure, in medintel-core.js); the growth callout ("Grew X% since CY——") is `pctChangeAcrossYears()` (same file). Measures `box.clientWidth` to size the chart, so the box must already be visible (`display` other than `none`) when called — see `toggleTamDrgDetail()` for the deferred-render pattern this requires when a chart lives inside a collapsed section |
+| `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab); the top-providers sub-table's Tier badges come from `executeSearch()`'s second `assignScoresAndTiers(groupByProvider(allRows))` pass, not from `groupByProcedure` itself |
+| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab. Renders a hero card first (`.tam-hero` — thesis line, TAM $ figure, trend chart into `#tam-hero-trend`) since that figure is the one thing a rep screenshots into a business case; supporting detail (hospital billing, top hospitals, per-code breakdown, top surgeons) renders as collapsed-by-default sections via `toggleDetail(id)`/`toggleTamDrgDetail()`. Assumptions re-render live |
+| `toggleDetail(id)` / `toggleTamDrgDetail()` | Generic collapse/expand for Market TAM's page-level (not per-row) detail sections — `id` matching `detail-btn-${id}`/`detail-${id}`. The DRG variant additionally lazy-renders `#tam-drg-trend` on first open (via the module-level `tamDrgTrendArgs`, set at the end of `renderTamResults()`) since that chart's container starts `display:none` |
 | `parseDrgs(input)` / `fetchDrgTrend(drg)` / `fetchDrgHospitals(drgs)` | MS-DRG parsing + inpatient hospital billing/payment totals and top hospitals (Inpatient Hospitals datasets) |
 | `tokenizeMedical` / `searchDict` / `crossSuggest` | Code Lookup search core (pure, in medintel-core.js) — keyword AND-match with prefix-stem fallback; heuristic cross-vocabulary suggestions |
 | `loadCptDict()` / `loadDrgDict()` / `executeLookupSearch()` | Code Lookup tab — dictionaries from national dataset rows, localStorage-cached (`medintel_cpt_dict_v1`/`medintel_drg_dict_v1`). Page-capped builds set `cptDictTruncated`/`drgDictTruncated` |
@@ -184,6 +220,8 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `encodeSearchState` / `decodeSearchState` | Share-link serialization (pure, in medintel-core.js). Decode treats the URL as untrusted: tab must be in `SHAREABLE_TABS`, year must be 4 digits, field keys must be alphanumeric, values capped at 300 chars |
 | `captureSearchState()` / `buildShareUrl()` / `copyShareLink(btn)` | Capture the current tab's fields (`TAB_FIELDS`) into a `#fragment` URL and copy it (clipboard API with an execCommand fallback for `file://`) |
 | `restoreSharedSearch()` | On load and on `hashchange`: restores tab/fields/year from the fragment (via `.value`, never HTML) and auto-runs the search |
+| `openFilterDrawer()` / `closeFilterDrawer()` / `onDrawerKeydown(e)` / `drawerActive()` | **Mobile filter drawer** (≤900px) — `#sidebar` becomes an off-canvas bottom sheet toggled by `#filterFab`. `drawerActive()` gates every viewport-dependent behavior (matches the same `900px` breakpoint as the CSS) so desktop, where the FAB is never shown, is unaffected. `onDrawerKeydown` closes on Escape and wraps Tab within the open drawer (minimal focus trap). `executeSearch()` calls `closeFilterDrawer()` once validation passes (not before, so `#errorBox` — inside the drawer — stays visible on a validation failure) |
+| `updateFilterFabBadge()` | Counts filled fields for the active tab from `TAB_FIELDS` (the same map share-links use) and shows the count on the FAB; called from `switchTab()`, `clearSearch()`, and `closeFilterDrawer()` |
 
 ---
 
@@ -208,11 +246,14 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 
 ### Adding a New Search Tab
 
-1. Add a `.tab` button in the HTML sidebar with `onclick="switchTab('newtab')"`
-2. Add a `<div id="newtabFields" class="field-group" style="display:none">` with inputs
-3. Add a `case 'newtab':` branch in `switchTab()` to show/hide fields
-4. Add a `case 'newtab':` branch in `buildApiUrl()` or a new fetch function
-5. Add rendering logic in `executeSearch()` or a dedicated `executeNewtabSearch()` function
+First decide where it belongs in the nav: a new **Find Customers mode** (add to `FIND_CUSTOMER_MODES` and `#findCustomersModeRow`), a new **primary destination** (add to `.tabs`), or a new **utility** (add to `.utility-strip`) — this determines which markup tier it goes in, but the wiring below is the same regardless.
+
+1. Add a `.tab` button (in `.tabs`, `#findCustomersModeRow`, or `.utility-strip` per the above) with `onclick="switchTab('newtab')"` and a `data-tab="newtab"` attribute (so `switchTab()`'s active-state loop and `onTabKeydown()`'s arrow-cycling pick it up automatically — no extra plumbing needed there)
+2. Add a `<div id="newtabFields" style="display:none">` with inputs
+3. Add an `if (tab === 'newtab') ... else if` branch in `switchTab()` to show/hide `#newtabFields`
+4. Add a branch in `getSearchCriteria()`/`buildApiUrl()` (if it fits the declarative CMS-filter model) or a dedicated `executeNewtabSearch()` function otherwise
+5. Add rendering logic in `executeSearch()`'s dispatch or the dedicated function
+6. Add `newtab: [...]` to `TAB_FIELDS` and (if the tab should be shareable) to `SHAREABLE_TABS` in medintel-core.js
 
 ### Adding New Result Fields
 
@@ -230,10 +271,10 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 219 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 231 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
-- Manual UI validation: open in a browser (or `npx serve .`), exercise all six tabs with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
+- Manual UI validation: open in a browser (or `npx serve .`), exercise all three Find Customers modes plus Size a Market and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
 
 ---
 

@@ -7,7 +7,8 @@ const {
   tokenizeMedical, searchDict, crossSuggest,
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
-  extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers
+  extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
+  pctChangeAcrossYears, trendSvgPath
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -1524,5 +1525,126 @@ describe('hcpcsLevelIIFamily()', () => {
         expect(fam.note, `${letter}-code needs a note`).toBeTruthy();
         expect(fam.billedBy, `${letter}-code needs a billedBy`).toBeTruthy();
       });
+  });
+});
+
+// ─── Trend chart (SVG) + growth callout ──────────────────────────────────────
+// The Market TAM hero and the Procedure tab's per-code trend both need a real
+// chart instead of a bar-in-a-table-row, and a "grew X% since CY——" callout —
+// this is the pure math behind both, shared by one renderTrendChart() call site.
+describe('pctChangeAcrossYears()', () => {
+  it('computes percent change between the first and last OK years', () => {
+    const trend = [
+      { year: 2021, services: 100, ok: true },
+      { year: 2022, services: 150, ok: true },
+      { year: 2023, services: 180, ok: true },
+    ];
+    const out = pctChangeAcrossYears(trend);
+    expect(out.firstYear).toBe(2021);
+    expect(out.lastYear).toBe(2023);
+    expect(out.pct).toBeCloseTo(80, 5);
+  });
+
+  it('reports a negative pct for a shrinking market', () => {
+    const trend = [
+      { year: 2021, services: 200, ok: true },
+      { year: 2023, services: 100, ok: true },
+    ];
+    expect(pctChangeAcrossYears(trend).pct).toBeCloseTo(-50, 5);
+  });
+
+  it('sorts out-of-order input by year before comparing endpoints', () => {
+    const trend = [
+      { year: 2023, services: 180, ok: true },
+      { year: 2021, services: 100, ok: true },
+      { year: 2022, services: 150, ok: true },
+    ];
+    const out = pctChangeAcrossYears(trend);
+    expect(out.firstYear).toBe(2021);
+    expect(out.lastYear).toBe(2023);
+  });
+
+  it('skips failed years and compares the OK ones on either side', () => {
+    const trend = [
+      { year: 2021, services: 100, ok: true },
+      { year: 2022, services: 0, ok: false },
+      { year: 2023, services: 120, ok: true },
+    ];
+    const out = pctChangeAcrossYears(trend);
+    expect(out.firstYear).toBe(2021);
+    expect(out.lastYear).toBe(2023);
+    expect(out.pct).toBeCloseTo(20, 5);
+  });
+
+  it('returns null with fewer than two OK years', () => {
+    expect(pctChangeAcrossYears([{ year: 2023, services: 100, ok: true }])).toBeNull();
+    expect(pctChangeAcrossYears([{ year: 2023, services: 100, ok: false }])).toBeNull();
+    expect(pctChangeAcrossYears([])).toBeNull();
+    expect(pctChangeAcrossYears(null)).toBeNull();
+  });
+
+  it('returns null rather than dividing by zero when the first OK year had no volume', () => {
+    const trend = [
+      { year: 2021, services: 0, ok: true },
+      { year: 2022, services: 50, ok: true },
+    ];
+    expect(pctChangeAcrossYears(trend)).toBeNull();
+  });
+});
+
+describe('trendSvgPath()', () => {
+  it('returns one coordinate per OK year, in year order', () => {
+    const trend = [
+      { year: 2022, services: 150, ok: true },
+      { year: 2021, services: 100, ok: true },
+      { year: 2023, services: 180, ok: true },
+    ];
+    const { coords } = trendSvgPath(trend, 300, 100);
+    expect(coords.map(c => c.year)).toEqual([2021, 2022, 2023]);
+  });
+
+  it('skips failed years entirely rather than plotting a false zero', () => {
+    const trend = [
+      { year: 2021, services: 100, ok: true },
+      { year: 2022, services: 0, ok: false },
+      { year: 2023, services: 120, ok: true },
+    ];
+    const { coords } = trendSvgPath(trend, 300, 100);
+    expect(coords).toHaveLength(2);
+    expect(coords.map(c => c.year)).toEqual([2021, 2023]);
+  });
+
+  it('anchors the highest point at the top padding and the lowest year at the floor for a rising series', () => {
+    const trend = [
+      { year: 2021, services: 10, ok: true },
+      { year: 2022, services: 100, ok: true },
+    ];
+    const { coords } = trendSvgPath(trend, 300, 100, 8);
+    expect(coords[1].y).toBeCloseTo(8, 1); // max value sits at the top padding line
+    expect(coords[0].y).toBeGreaterThan(coords[1].y); // smaller value sits lower on screen
+  });
+
+  it('places a single point centered horizontally without dividing by zero', () => {
+    const { coords } = trendSvgPath([{ year: 2023, services: 50, ok: true }], 300, 100, 8);
+    expect(coords).toHaveLength(1);
+    expect(coords[0].x).toBeCloseTo(150, 1);
+  });
+
+  it('returns empty paths and no coords when there is no OK data', () => {
+    expect(trendSvgPath([], 300, 100)).toEqual({ linePath: '', areaPath: '', coords: [] });
+    expect(trendSvgPath([{ year: 2023, services: 50, ok: false }], 300, 100).coords).toEqual([]);
+    expect(trendSvgPath(null, 300, 100).linePath).toBe('');
+  });
+
+  it('produces a line path with one M/L command per point and a closed area path', () => {
+    const trend = [
+      { year: 2021, services: 10, ok: true },
+      { year: 2022, services: 50, ok: true },
+      { year: 2023, services: 30, ok: true },
+    ];
+    const { linePath, areaPath } = trendSvgPath(trend, 300, 100);
+    expect(linePath.match(/^M /)).toBeTruthy();
+    expect((linePath.match(/L /g) || []).length).toBe(2); // 2 of 3 points use L, first uses M
+    expect(areaPath.endsWith('Z')).toBe(true);
   });
 });

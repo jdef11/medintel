@@ -3,7 +3,7 @@
 A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-231%20passing-brightgreen)
 
 ---
 
@@ -28,7 +28,7 @@ Don't know the codes in advance? The **Code Lookup** tab searches CPT/HCPCS and 
 
 ### Multi-Code Search
 
-Paste multiple CPT/HCPCS codes into the Procedure tab (or a state + code family into Geography) and search them all at once. The app fetches each code in parallel from the CMS API and aggregates results — so you see, e.g., a surgeon's total revision burden across a whole code family in one result list.
+Paste multiple CPT/HCPCS codes into Find Customers' By Code mode (or a state + code family into By Location) and search them all at once. The app fetches each code in parallel from the CMS API and aggregates results — so you see, e.g., a surgeon's total revision burden across a whole code family in one result list.
 
 ### Separate Last Name and Organization Search
 
@@ -59,20 +59,30 @@ Providers are automatically tiered within each result set:
 
 Filter results to providers above a minimum annual procedure threshold — cut the noise and focus on high-volume revision specialists.
 
-### Six Search Modes
+### Two Destinations, Not Six Tabs
 
-| Tab | Data Source | What You Search | What You Get |
+The nav is organized around what you're trying to do, not around which CMS dataset answers it:
+
+**Find Customers** — one destination, three modes (a segmented control under the Find Customers button):
+
+| Mode | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
-| **Provider** | CMS Medicare | **Last name** or **organization name** (separate fields), NPI, specialty, state | Payment totals, procedure volumes, unique beneficiary counts |
-| **Procedure** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown with an explicit coverage %, and a multi-year volume trend |
-| **Geography** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
-| **Market TAM** | CMS Medicare (Physician + Inpatient Hospital datasets) | A CPT code family, MS-DRG codes, payer-mix/ASP assumptions | National FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals |
-| **Code Lookup** | CMS national datasets (client-side dictionaries) | Keyword, CPT/HCPCS code, or MS-DRG code | Both vocabularies side by side with national volumes, cross-vocabulary suggestions, one-click add to Procedure/TAM searches |
-| **NPI Lookup** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
+| **By Name** | CMS Medicare | **Last name** or **organization name** (separate fields), NPI, specialty, state | Payment totals, procedure volumes, unique beneficiary counts, Tier 1/2/3 ranking |
+| **By Code** | CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown (now with the same Tier 1/2/3 badges as By Name) with an explicit coverage %, and a multi-year volume trend |
+| **By Location** | CMS Medicare | State, city, specialty, procedure code | Territory-level provider discovery |
+
+**Size a Market** — CMS Medicare (Physician + Inpatient Hospital datasets); a CPT code family, MS-DRG codes, and payer-mix/ASP assumptions in → national FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals out.
+
+**Utilities** — two small helpers, always reachable from the sidebar (and inline via "Look it up" next to any HCPCS field):
+
+| Utility | Data Source | What You Search | What You Get |
+|-----|------------|----------------|-------------|
+| **Look up a code** | CMS national datasets (client-side dictionaries) | Keyword, CPT/HCPCS code, or MS-DRG code | Both vocabularies side by side with national volumes, cross-vocabulary suggestions, one-click add to Find Customers/Size a Market |
+| **Verify a provider** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
 
 ### Market TAM Tab
 
-Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and get: national Medicare FFS procedure volume (latest year + full multi-year trend), modeled total US procedures across all payers, modeled addressable case count, modeled total US TAM, and the top surgeons by volume. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
+Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and the top of the page leads with one number: your modeled TAM, a one-line thesis ("A $340M market, growing 18% since CY 2021"), and a real trend chart, not a metrics dump. Supporting evidence — hospital billing detail, top hospitals, the per-code breakdown, top surgeons — sits below in collapsed sections you open only when you need to justify the number. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
 
 ### Code Lookup Tab
 
@@ -103,7 +113,7 @@ Because physician fees don't represent the money that buys devices, the TAM tab 
 
 ### Bulk Code Search
 
-Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into the Procedure tab's code box (or the Geography tab's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from the **Code Lookup** tab's one-click add buttons.
+Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into Find Customers' By Code mode (or By Location's HCPCS filter). MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from **Look up a code**'s one-click add buttons.
 
 ### Share a Search by Link
 
@@ -171,22 +181,22 @@ Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Ne
 ## Example Searches
 
 **Find all hip revision surgeons in California:**
-> Tab: Geography → State: CA → HCPCS Code Filter: `27134, 27137, 27138` → Search
+> Find Customers → By Location → State: CA → HCPCS Code Filter: `27134, 27137, 27138` → Search
 
 **Find revision knee specialists above 50 procedures/year in Texas:**
-> Tab: Procedure → HCPCS: `27486, 27487` → State: TX → Search → set Min services filter to 50
+> Find Customers → By Code → HCPCS: `27486, 27487` → State: TX → Search → set Min services filter to 50
 
 **Not sure of the codes?**
-> Tab: Code Lookup → search `knee revision` → click **+ Procedure** on the codes you want → Tab: Procedure → Search
+> Look up a code → search `knee revision` → click **+ Procedure** on the codes you want → Find Customers → By Code → Search
 
 **Look up a specific provider's Medicare billing:**
-> Tab: Provider → NPI: `1234567890` → Search
+> Find Customers → By Name → NPI: `1234567890` → Search
 
 **Prospect orthopedic surgeons in Houston:**
-> Tab: Geography → State: TX → City: Houston → Specialty: Orthopedic Surgery → Search
+> Find Customers → By Location → State: TX → City: Houston → Specialty: Orthopedic Surgery → Search
 
 **Get contact info for a surgeon:**
-> Tab: NPI Lookup → Last Name: Smith → State: FL → Taxonomy: Orthopedic Surgery → Search
+> Verify a provider → Last Name: Smith → State: FL → Taxonomy: Orthopedic Surgery → Search
 
 ---
 
@@ -243,7 +253,7 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 219 unit tests via Vitest (`npm test`)
+- **Test suite:** 231 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile
