@@ -216,6 +216,8 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `encodeSearchState` / `decodeSearchState` | Share-link serialization (pure, in medintel-core.js). Decode treats the URL as untrusted: tab must be in `SHAREABLE_TABS`, year must be 4 digits, field keys must be alphanumeric, values capped at 300 chars |
 | `captureSearchState()` / `buildShareUrl()` / `copyShareLink(btn)` | Capture the current tab's fields (`TAB_FIELDS`) into a `#fragment` URL and copy it (clipboard API with an execCommand fallback for `file://`) |
 | `restoreSharedSearch()` | On load and on `hashchange`: restores tab/fields/year from the fragment (via `.value`, never HTML) and auto-runs the search |
+| `openFilterDrawer()` / `closeFilterDrawer()` / `onDrawerKeydown(e)` / `drawerActive()` | **Mobile filter drawer** (≤900px) — `#sidebar` becomes an off-canvas bottom sheet toggled by `#filterFab`. `drawerActive()` gates every viewport-dependent behavior (matches the same `900px` breakpoint as the CSS) so desktop, where the FAB is never shown, is unaffected. `onDrawerKeydown` closes on Escape and wraps Tab within the open drawer (minimal focus trap). `executeSearch()` calls `closeFilterDrawer()` once validation passes (not before, so `#errorBox` — inside the drawer — stays visible on a validation failure) |
+| `updateFilterFabBadge()` | Counts filled fields for the active tab from `TAB_FIELDS` (the same map share-links use) and shows the count on the FAB; called from `switchTab()`, `clearSearch()`, and `closeFilterDrawer()` |
 
 ---
 

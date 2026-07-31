@@ -125,6 +125,49 @@
     font-weight: 600;
   }
 
+  /* ─── MOBILE FILTER DRAWER (components; positioning lives in the ≤900px
+     query below — on desktop these three elements render inert/hidden) ─── */
+  .sidebar-drag-handle { display: none; }
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 99;
+  }
+  .sidebar-backdrop.open { display: block; }
+  .filter-fab {
+    display: none;
+    position: fixed;
+    right: 16px; bottom: 16px;
+    z-index: 101;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 18px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 24px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+  .filter-fab:active { transform: scale(0.97); }
+  .filter-fab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    background: rgba(255,255,255,0.25);
+    border-radius: 10px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* ─── PRIMARY NAV — the two destinations (Find Customers / Size a Market) ─── */
   .tabs {
     display: grid;
@@ -820,14 +863,66 @@
     .lookup-row > .lookup-metric { display: none; }
   }
 
-  /* ─── RESPONSIVE ─── */
+  /* ─── RESPONSIVE ───
+     Below 900px, results — not a wall of filter inputs — are the primary
+     mobile scroll surface: the sidebar becomes a bottom-sheet drawer (opened
+     via #filterFab), not a section stacked above .main. */
   @media (max-width: 900px) {
     .app { flex-direction: column; height: auto; }
-    .sidebar { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid var(--border); }
-    .main { padding: 16px; }
+    .sidebar {
+      position: fixed;
+      left: 0; right: 0; bottom: 0; top: auto;
+      width: auto; min-width: 0;
+      max-height: 85vh;
+      border-right: none;
+      border-top: 1px solid var(--border);
+      border-radius: 16px 16px 0 0;
+      box-shadow: 0 -8px 40px rgba(0,0,0,0.45);
+      transform: translateY(105%);
+      transition: transform 0.25s ease;
+      z-index: 100;
+      overflow-y: auto;
+    }
+    .sidebar.open { transform: translateY(0); }
+    .sidebar-drag-handle {
+      display: block;
+      width: 36px; height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      margin: 10px auto 0;
+      flex-shrink: 0;
+    }
+    .filter-fab { display: flex; }
+    .main { padding: 16px 16px 88px; }
     .header { padding: 16px; }
     .logo-sub { display: none; }
     .card-metrics { grid-template-columns: repeat(2, 1fr); }
+
+    /* Touch floor: comfortable to hit with a mouse isn't comfortable with a
+       fingertip. Scoped to mobile only so desktop's denser tables/spacing
+       are untouched. .procedures-toggle/.tab-utility/.mode-btn just grow;
+       .mini-btn instead gets an invisible expanded hit area (::before below)
+       so cramped table rows (several mini-btns in a 4px gap) don't get
+       visually bulkier while still meeting a real touch-target size. */
+    .procedures-toggle { min-height: 44px; }
+    .tab-utility, .mode-btn { min-height: 44px; }
+    .mini-btn { position: relative; }
+    .mini-btn::before { content: ''; position: absolute; top: -12px; bottom: -12px; left: -4px; right: -4px; }
+  }
+
+  /* True-phone density only — the drawer/FAB mechanism above doesn't change,
+     just how tight things sit inside it and in the results list. */
+  @media (max-width: 600px) {
+    .card-metrics { grid-template-columns: 1fr; }
+    .main { padding: 12px 12px 84px; }
+    .result-card { padding: 14px 16px; }
+  }
+
+  /* Coarse pointers (touch) get slightly taller data rows regardless of
+     viewport width (a touch-capable desktop/tablet in landscape still
+     benefits), since the ≤900px rules above are keyed to size, not input type. */
+  @media (pointer: coarse) {
+    .proc-row, .trend-row, .lookup-row { padding: 10px 0; }
   }
 </style>
 </head>
@@ -847,8 +942,9 @@
 </div>
 
 <div class="app">
-  <!-- SIDEBAR -->
-  <div class="sidebar">
+  <!-- SIDEBAR (a bottom-sheet drawer on mobile — see #sidebarBackdrop/#filterFab below) -->
+  <div class="sidebar" id="sidebar" onkeydown="onDrawerKeydown(event)">
+    <div class="sidebar-drag-handle" aria-hidden="true"></div>
     <div class="sidebar-section">
       <div class="tabs" role="tablist" aria-label="What do you want to do?" onkeydown="onTabKeydown(event)">
         <button class="tab active" id="navFindCustomers" role="tab" aria-selected="true" data-tab-group="provider,procedure,geography" onclick="switchTab(lastFindCustomersMode)">Find Customers</button>
@@ -1056,6 +1152,15 @@
     </div>
   </div>
 
+  <!-- Mobile-only: backdrop + trigger for the filter drawer above. Both are
+       display:none by default and only shown inside the ≤900px breakpoint. -->
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeFilterDrawer()"></div>
+  <button class="filter-fab" id="filterFab" onclick="openFilterDrawer()" aria-label="Open search filters">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="10" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>
+    Filters
+    <span class="filter-fab-badge" id="filterFabBadge" style="display:none;"></span>
+  </button>
+
   <!-- MAIN CONTENT -->
   <div class="main" id="mainContent">
     <div class="empty-state" id="emptyState">
@@ -1156,6 +1261,10 @@ function init() {
     showError('medintel-core.js failed to load — searches cannot run. Make sure it is deployed in the same directory as this page.', true);
     return;
   }
+
+  // The filter drawer starts closed on mobile — mark it inert immediately so
+  // a keyboard user's first Tab press doesn't land in off-screen fields.
+  if (drawerActive()) document.getElementById('sidebar').inert = true;
 
   const selects = ['stateSelect', 'stateSelectProc', 'stateSelectGeo', 'stateSelectNpi'];
   selects.forEach(id => {
@@ -1485,6 +1594,7 @@ function switchTab(tab) {
   resetEmptyState();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
+  updateFilterFabBadge();
 }
 
 // Restore the search button to its idle state (shared across search paths).
@@ -1556,6 +1666,84 @@ function onTabKeydown(e) {
   e.preventDefault();
   tabs[next].focus();
   tabs[next].click();
+}
+
+// ─── MOBILE FILTER DRAWER ───
+// Below ~900px (see CSS) #sidebar becomes a bottom-sheet toggled by these.
+// Desktop never calls these, so they're harmless no-ops there regardless.
+
+// True only when the drawer mechanism is actually in play (the ≤900px
+// breakpoint) — #sidebar is always fully interactive on desktop, so `inert`
+// must never be applied there regardless of open/closed state.
+function drawerActive() {
+  return window.matchMedia('(max-width: 900px)').matches;
+}
+
+function openFilterDrawer() {
+  const sidebar = document.getElementById('sidebar');
+  sidebar.classList.add('open');
+  sidebar.inert = false;
+  document.getElementById('sidebarBackdrop').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  const firstField = document.querySelector('#sidebar .field input, #sidebar .field textarea, #sidebar .field select');
+  if (firstField) firstField.focus();
+}
+
+function closeFilterDrawer() {
+  const sidebar = document.getElementById('sidebar');
+  sidebar.classList.remove('open');
+  // Off-canvas-but-in-DOM fields shouldn't be keyboard-reachable while hidden.
+  if (drawerActive()) sidebar.inert = true;
+  document.getElementById('sidebarBackdrop').classList.remove('open');
+  document.body.style.overflow = '';
+  updateFilterFabBadge();
+}
+
+// A tablet/window resize can cross the breakpoint without a page reload —
+// keep `inert` in sync so the sidebar never gets stuck non-interactive on
+// desktop, and starts non-interactive if you load/resize into mobile closed.
+window.addEventListener('resize', () => {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  if (drawerActive()) {
+    if (!sidebar.classList.contains('open')) sidebar.inert = true;
+  } else {
+    sidebar.inert = false;
+  }
+});
+
+// Escape closes the drawer; Tab wraps within it while open (a minimal focus
+// trap — not a full library, just first/last-focusable wrapping).
+function onDrawerKeydown(e) {
+  if (!document.getElementById('sidebar').classList.contains('open')) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeFilterDrawer();
+    document.getElementById('filterFab').focus();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const focusables = Array.from(document.getElementById('sidebar').querySelectorAll('button, input, select, textarea, a[href]'))
+    .filter(el => el.offsetParent !== null);
+  if (!focusables.length) return;
+  const first = focusables[0], last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+
+// Badge on the mobile Filters FAB — how many fields on the active mode/tab
+// already have a value, reusing TAB_FIELDS (the same map share-links use) so
+// there's one source of truth for "which fields belong to this tab."
+function updateFilterFabBadge() {
+  const badge = document.getElementById('filterFabBadge');
+  if (!badge) return;
+  const ids = TAB_FIELDS[currentTab] || [];
+  const filled = ids.filter(id => {
+    const el = document.getElementById(id);
+    return el && String(el.value).trim() !== '';
+  }).length;
+  badge.textContent = filled;
+  badge.style.display = filled > 0 ? 'inline-flex' : 'none';
 }
 
 // ─── SHAREABLE SEARCH LINKS ───
@@ -2001,6 +2189,10 @@ async function executeSearch() {
   }
 
   isLoading = true;
+  closeFilterDrawer(); // past validation — the search is really running, so on
+                       // mobile reveal results instead of leaving the drawer
+                       // covering them. Validation errors above kept it open
+                       // since #errorBox lives inside the drawer.
   displayPage = 0;
   minVolumeFilter = 0;
   currentSortOrder = currentTab === 'procedure' ? 'services' : 'score';
@@ -4390,6 +4582,7 @@ function clearSearch() {
   resetEmptyState();
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
+  updateFilterFabBadge();
 }
 
 init();
