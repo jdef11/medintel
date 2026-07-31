@@ -125,19 +125,19 @@
     font-weight: 600;
   }
 
-  /* ─── TABS ─── */
+  /* ─── PRIMARY NAV — the two destinations (Find Customers / Size a Market) ─── */
   .tabs {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 2px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 3px;
     background: var(--bg);
     border-radius: var(--radius-sm);
     padding: 3px;
   }
   .tab {
     flex: 1;
-    padding: 8px 8px;
-    font-size: 11px;
+    padding: 11px 10px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-3);
     background: transparent;
@@ -152,6 +152,52 @@
     background: var(--accent);
     color: #fff;
   }
+
+  /* ─── SECONDARY NAV — Find Customers' three modes ───
+     Visually subordinate to the primary destinations: an outlined pill with a
+     dim accent fill when active, never the solid Claims Blue fill the primary
+     nav uses, so the hierarchy reads at a glance. */
+  .mode-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .mode-btn {
+    padding: 7px 4px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    text-align: center;
+  }
+  .mode-btn:hover { border-color: var(--text-3); }
+  .mode-btn.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ─── UTILITY STRIP — Code Lookup / NPI Lookup, demoted to helpers ─── */
+  .utility-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .tab-utility {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    text-align: left;
+    padding: 7px 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-3);
+    border-radius: 4px;
+  }
+  .tab-utility:hover { color: var(--text-2); background: var(--surface-2); }
+  .tab-utility.active { color: var(--accent); background: var(--accent-dim); }
 
   /* ─── ACCESSIBILITY UTILITIES ─── */
   .sr-only {
@@ -531,6 +577,8 @@
   .info-box a { color: var(--accent); text-decoration: none; }
   .info-box a:hover { text-decoration: underline; }
   .info-box strong { color: var(--text-2); }
+  .year-note a { color: var(--accent); text-decoration: none; }
+  .year-note a:hover { text-decoration: underline; }
 
   /* ─── ERROR ─── */
   .error-msg {
@@ -802,14 +850,26 @@
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="sidebar-section">
-      <div class="section-label" id="searchTypeLabel">Search Type</div>
-      <div class="tabs" role="tablist" aria-labelledby="searchTypeLabel" onkeydown="onTabKeydown(event)">
-        <button class="tab active" role="tab" aria-selected="true" data-tab="provider" onclick="switchTab('provider')">Provider</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="procedure" onclick="switchTab('procedure')">Procedure</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="geography" onclick="switchTab('geography')">Geography</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="tam" onclick="switchTab('tam')">Market TAM</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="lookup" onclick="switchTab('lookup')">Code Lookup</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="npi" onclick="switchTab('npi')">NPI Lookup</button>
+      <div class="tabs" role="tablist" aria-label="What do you want to do?" onkeydown="onTabKeydown(event)">
+        <button class="tab active" id="navFindCustomers" role="tab" aria-selected="true" data-tab-group="provider,procedure,geography" onclick="switchTab(lastFindCustomersMode)">Find Customers</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="tam" onclick="switchTab('tam')">Size a Market</button>
+      </div>
+
+      <div class="mode-row" id="findCustomersModeRow" role="tablist" aria-label="Find customers by" onkeydown="onTabKeydown(event)">
+        <button class="tab mode-btn active" role="tab" aria-selected="true" data-tab="provider" onclick="switchTab('provider')">By Name</button>
+        <button class="tab mode-btn" role="tab" aria-selected="false" data-tab="procedure" onclick="switchTab('procedure')">By Code</button>
+        <button class="tab mode-btn" role="tab" aria-selected="false" data-tab="geography" onclick="switchTab('geography')">By Location</button>
+      </div>
+
+      <div class="utility-strip">
+        <button class="tab tab-utility" data-tab="lookup" onclick="switchTab('lookup')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          Look up a code
+        </button>
+        <button class="tab tab-utility" data-tab="npi" onclick="switchTab('npi')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6"/></svg>
+          Verify a provider
+        </button>
       </div>
     </div>
 
@@ -847,7 +907,7 @@
         <div class="field">
           <label class="field-label" for="hcpcsCode">HCPCS / CPT Code(s)</label>
           <textarea id="hcpcsCode" rows="2" aria-describedby="hcpcsCodeHint" placeholder="One or many — e.g. 27447, 27130, 22551 (comma, space, or newline separated)"></textarea>
-          <div id="hcpcsCodeHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line</div>
+          <div id="hcpcsCodeHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line · Don't know the code? <a href="#" onclick="switchTab('lookup');return false;">Look it up</a></div>
         </div>
         <div class="field">
           <label class="field-label" for="hcpcsKeyword">Procedure Description (keyword)</label>
@@ -888,7 +948,7 @@
         <div class="field">
           <label class="field-label" for="tamCodes">HCPCS / CPT Code(s) defining the market</label>
           <textarea id="tamCodes" rows="3" aria-describedby="tamCodesHint" placeholder="Paste the code family — e.g. 62140, 62141, 62142, 62143, 62145, 62146, 62147"></textarea>
-          <div id="tamCodesHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line</div>
+          <div id="tamCodesHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line · Don't know the code? <a href="#" onclick="switchTab('lookup');return false;">Look it up</a></div>
         </div>
         <div class="field">
           <label class="field-label" for="tamDrgs">MS-DRG code(s) — hospital billing view</label>
@@ -1052,6 +1112,13 @@ const CORS_PROXIES = [
 let activeProxyIndex = 0;
 
 let currentTab = 'provider';
+// "Find Customers" is one destination with three internal modes; these are
+// still the original tab ids under the hood (see IA notes at switchTab), so
+// TAB_FIELDS/SHAREABLE_TABS/getSearchCriteria/share-links all keep working
+// unchanged. This just remembers which mode to return to when the user
+// re-enters Find Customers from Size a Market or a utility.
+const FIND_CUSTOMER_MODES = ['provider', 'procedure', 'geography'];
+let lastFindCustomersMode = 'provider';
 let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
@@ -1371,16 +1438,25 @@ function dataYearValue() {
 }
 
 // ─── TAB SWITCHING ───
+// "Find Customers" (provider/procedure/geography), "Size a Market" (tam), and
+// the utility strip (lookup/npi) are all still just `tab` values underneath —
+// see FIND_CUSTOMER_MODES above. Any element with class `.tab` and either a
+// matching `data-tab` or a `data-tab-group` list gets its active state toggled
+// here, which is what lets the primary destination button, the three mode
+// buttons, and the two utility buttons all share one active-state loop below.
 function switchTab(tab) {
   currentTab = tab;
+  if (FIND_CUSTOMER_MODES.includes(tab)) lastFindCustomersMode = tab;
   // Invalidate any in-flight search so its results can't paint into this tab.
   searchGen++;
   isLoading = false;
   document.querySelectorAll('.tab').forEach(t => {
-    const on = t.dataset.tab === tab;
+    const on = t.dataset.tab === tab || (t.dataset.tabGroup && t.dataset.tabGroup.split(',').includes(tab));
     t.classList.toggle('active', on);
     t.setAttribute('aria-selected', on ? 'true' : 'false');
   });
+  const modeRow = document.getElementById('findCustomersModeRow');
+  if (modeRow) modeRow.style.display = FIND_CUSTOMER_MODES.includes(tab) ? 'flex' : 'none';
 
   document.getElementById('providerFields').style.display = tab === 'provider' ? 'block' : 'none';
   document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
@@ -1464,15 +1540,22 @@ function cancelSearch() {
   empty.style.display = 'flex';
 }
 
-// Left/Right arrow navigation across the tablist (ARIA tab pattern).
+// Left/Right arrow navigation across a tablist (ARIA tab pattern). There are
+// now two separate tablist containers (primary destinations, and Find
+// Customers' mode row) — this is shared by both via e.currentTarget, which is
+// whichever container the listener is actually attached to, so each cycles
+// only its own tabs rather than one flat list across both rows. Cycling is by
+// DOM focus, not by currentTab, since the primary "Find Customers" button has
+// no single data-tab value to match against (see data-tab-group).
 function onTabKeydown(e) {
   if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-  const tabs = Array.from(document.querySelectorAll('.tab'));
-  const i = tabs.findIndex(t => t.dataset.tab === currentTab);
+  const tabs = Array.from(e.currentTarget.querySelectorAll('.tab'));
+  const i = tabs.indexOf(document.activeElement);
+  if (i === -1) return;
   const next = e.key === 'ArrowRight' ? (i + 1) % tabs.length : (i - 1 + tabs.length) % tabs.length;
   e.preventDefault();
-  switchTab(tabs[next].dataset.tab);
   tabs[next].focus();
+  tabs[next].click();
 }
 
 // ─── SHAREABLE SEARCH LINKS ───
@@ -1982,6 +2065,23 @@ async function executeSearch() {
       if (currentTab === 'procedure') {
         // Procedure tab: group by HCPCS code (one card per procedure)
         procedureGroups = groupByProcedure(allRows);
+        // Give the "top providers for this code" sub-table the same Tier 1/2/3
+        // scoring used by the By Name/By Location modes, so ranking reads the
+        // same regardless of which mode surfaced a provider. groupByProcedure's
+        // provider entries don't carry the procedures[]/place shape
+        // computeComplexityScore needs, so run a second, parallel grouping pass
+        // over the same already-fetched rows purely to compute scores/tiers —
+        // no extra fetch, no change to groupByProcedure's contract.
+        const scoreByNpi = {};
+        assignScoresAndTiers(groupByProvider(allRows)).forEach(p => {
+          scoreByNpi[p.npi] = { score: p.score, tier: p.tier };
+        });
+        procedureGroups.forEach(g => {
+          g.providers.forEach(p => {
+            const s = scoreByNpi[p.npi];
+            if (s) { p.score = s.score; p.tier = s.tier; }
+          });
+        });
         renderProcedureResults();
       } else {
         // Group by provider, score, and assign tiers
@@ -2724,7 +2824,7 @@ function renderProcedureResults() {
           ${topProviders.map(p => `
             <div class="proc-row">
               <div class="proc-code">${escapeHtml(p.npi)}</div>
-              <div class="proc-desc" title="${escapeHtml(p.name)} — ${escapeHtml(p.location)}">${escapeHtml(p.name)}</div>
+              <div class="proc-desc" title="${escapeHtml(p.name)} — ${escapeHtml(p.location)}">${escapeHtml(p.name)} ${p.tier ? tierBadgeHtml(p.tier) : ''}</div>
               <div class="proc-desc">${escapeHtml(p.specialty)}</div>
               <div class="proc-num">${fmtNumber(p.services)}</div>
               <div class="proc-num">${fmtCurrency(p.payment)}</div>

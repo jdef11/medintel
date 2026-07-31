@@ -97,16 +97,27 @@ Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `FETCH_SIZE`, `CORS_PROXIES`
 
 ## Search Modes
 
-The app has six tabs, each with different input fields and API targets:
+The nav is organized around two goal-oriented destinations plus a demoted utility strip — **not** around the six CMS/NPPES data sources underneath, though those six `currentTab` values (`provider`/`procedure`/`geography`/`tam`/`lookup`/`npi`) are unchanged internally (see "Navigation vs. internal tab ids" below):
 
-| Tab | API | Key Inputs | Query Parameter |
-|-----|-----|-----------|----------------|
-| `provider` | CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`. Mutually exclusive — validated up front |
-| `procedure` | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends |
-| `geography` | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
-| `tam` | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side |
-| `lookup` | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other tabs via `addToField` |
-| `npi` | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
+- **Find Customers** (`.tabs` primary button, `id="navFindCustomers"`) — one destination, three internal modes selected via `#findCustomersModeRow`'s "By Name"/"By Code"/"By Location" buttons:
+  | Mode (`currentTab`) | API | Key Inputs | Query Parameter |
+  |-----|-----|-----------|----------------|
+  | `provider` (By Name) | CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`. Mutually exclusive — validated up front |
+  | `procedure` (By Code) | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends. The "top providers for this code" sub-table also carries Tier 1/2/3 badges via a second `assignScoresAndTiers(groupByProvider(allRows))` pass in `executeSearch()`, so ranking reads the same as the By Name/By Location modes regardless of entry point |
+  | `geography` (By Location) | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
+- **Size a Market** (`data-tab="tam"`) | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
+- **Utility strip** (`.utility-strip`, always visible, demoted below the primary/mode nav) — two helpers, reachable directly or via inline "Look it up" links next to the HCPCS fields in By Code mode and Size a Market:
+  | Utility (`currentTab`) | API | Key Inputs | Query Parameter |
+  |-----|-----|-----------|----------------|
+  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other modes via `addToField` |
+  | `npi` (Verify a provider) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
+
+### Navigation vs. internal tab ids
+
+The six `currentTab` strings above are unchanged from before this nav restructure and must stay that way — `TAB_FIELDS`, `SHAREABLE_TABS` (medintel-core.js), `decodeSearchState`'s whitelist, `getSearchCriteria()`, and `executeSearch()`'s dispatch all key off them, and existing shared links (`#tab=procedure&...`) decode straight into `switchTab()` with no compatibility shim needed. Only the nav *presentation* changed:
+- `.tab` elements now render in three tiers: the primary `.tabs` row (Find Customers, Size a Market), the secondary `#findCustomersModeRow` (By Name/By Code/By Location, shown only when `currentTab` is in `FIND_CUSTOMER_MODES`), and `.utility-strip` (Look up a code, Verify a provider). All three tiers share one active-state loop in `switchTab()` — a `.tab` matches either by `data-tab === tab` or, for the "Find Customers" button (which has no single tab id), by `data-tab-group` containing `tab`.
+- `lastFindCustomersMode` remembers which of the three modes to return to when re-entering Find Customers from Size a Market or a utility; the button's `onclick` reads it live (`switchTab(lastFindCustomersMode)`).
+- `onTabKeydown(e)` (arrow-key cycling) now scopes to `e.currentTarget` so the primary row and the mode row each cycle independently rather than one flat list across both.
 
 ---
 
@@ -229,11 +240,14 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 
 ### Adding a New Search Tab
 
-1. Add a `.tab` button in the HTML sidebar with `onclick="switchTab('newtab')"`
-2. Add a `<div id="newtabFields" class="field-group" style="display:none">` with inputs
-3. Add a `case 'newtab':` branch in `switchTab()` to show/hide fields
-4. Add a `case 'newtab':` branch in `buildApiUrl()` or a new fetch function
-5. Add rendering logic in `executeSearch()` or a dedicated `executeNewtabSearch()` function
+First decide where it belongs in the nav: a new **Find Customers mode** (add to `FIND_CUSTOMER_MODES` and `#findCustomersModeRow`), a new **primary destination** (add to `.tabs`), or a new **utility** (add to `.utility-strip`) — this determines which markup tier it goes in, but the wiring below is the same regardless.
+
+1. Add a `.tab` button (in `.tabs`, `#findCustomersModeRow`, or `.utility-strip` per the above) with `onclick="switchTab('newtab')"` and a `data-tab="newtab"` attribute (so `switchTab()`'s active-state loop and `onTabKeydown()`'s arrow-cycling pick it up automatically — no extra plumbing needed there)
+2. Add a `<div id="newtabFields" style="display:none">` with inputs
+3. Add an `if (tab === 'newtab') ... else if` branch in `switchTab()` to show/hide `#newtabFields`
+4. Add a branch in `getSearchCriteria()`/`buildApiUrl()` (if it fits the declarative CMS-filter model) or a dedicated `executeNewtabSearch()` function otherwise
+5. Add rendering logic in `executeSearch()`'s dispatch or the dedicated function
+6. Add `newtab: [...]` to `TAB_FIELDS` and (if the tab should be shareable) to `SHAREABLE_TABS` in medintel-core.js
 
 ### Adding New Result Fields
 
@@ -254,7 +268,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 219 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
-- Manual UI validation: open in a browser (or `npx serve .`), exercise all six tabs with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
+- Manual UI validation: open in a browser (or `npx serve .`), exercise all three Find Customers modes plus Size a Market and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
 
 ---
 
