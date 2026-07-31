@@ -14,13 +14,34 @@
 
 ```
 /
-├── cms-sales-intel (4).html   # The entire UI (HTML/CSS + inline app script)
-├── README.md                  # User-facing documentation and example searches
-├── LICENSE                    # MIT License
-└── CLAUDE.md                  # This file
+├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
+├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (219 tests)
+├── scripts/live-smoke.mjs        # Manual live-CMS verification script (npm run smoke)
+├── package.json                  # Dev-only tooling: vitest. Not a runtime dependency of the app itself
+├── .github/workflows/deploy.yml  # Runs `npm test`, then publishes the HTML to GitHub Pages
+├── README.md                      # User-facing documentation and example searches
+├── LICENSE                        # MIT License
+└── CLAUDE.md                      # This file
 ```
 
-There are no subdirectories, no source maps, no compiled assets, and no configuration files.
+The app itself ships as a single static file with zero runtime dependencies — `package.json`/`vitest` exist only to test the pure logic extracted into `medintel-core.js`, not to build or bundle anything.
+
+---
+
+## Commands
+
+```bash
+npm install          # one-time — installs vitest only, nothing runtime-related
+npm test              # run the full medintel-core.test.js suite once (vitest run)
+npm run test:watch    # vitest in watch mode while iterating
+npm run smoke          # node scripts/live-smoke.mjs — hits the REAL CMS API (network + Node 18+ required)
+npx serve .            # serve the repo locally, then open http://localhost:3000/cms-sales-intel%20(4).html
+```
+
+To run a single test or file with Vitest directly: `npx vitest run -t "test name substring"` or `npx vitest run medintel-core.test.js`.
+
+There is no lint/typecheck/build script — the HTML file is edited directly and the browser is the only "build".
 
 ---
 
