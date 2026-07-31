@@ -197,11 +197,23 @@
     background: var(--accent);
     color: #fff;
   }
+  /* "Find Customers" hands its highlight off to whichever mode button is
+     active below it (see .mode-btn.active) — two filled/active-looking
+     controls for one location read as two separate selections, which is
+     exactly the "highlight jumps between the upper and lower row" confusion
+     this fixes. It still shows it's the current section (bold text + a thin
+     accent underline), just never the loud solid fill. "Size a Market" has
+     no subordinate row to hand off to, so it keeps the full .tab.active
+     treatment above. #-selector specificity wins regardless of source order. */
+  #navFindCustomers.active {
+    background: transparent;
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
 
   /* ─── SECONDARY NAV — Find Customers' three modes ───
-     Visually subordinate to the primary destinations: an outlined pill with a
-     dim accent fill when active, never the solid Claims Blue fill the primary
-     nav uses, so the hierarchy reads at a glance. */
+     This row is the ONLY place a loud "active" highlight appears while Find
+     Customers is open — see the #navFindCustomers.active override above. */
   .mode-row {
     display: flex;
     gap: 6px;
@@ -221,28 +233,40 @@
     color: var(--accent);
   }
 
-  /* ─── UTILITY STRIP — Code Lookup / NPI Lookup, demoted to helpers ─── */
+  /* ─── UTILITY STRIP — Code Lookup / NPI Lookup, demoted to helpers ───
+     Styled as plain text links (matching .info-box a / .year-note a
+     elsewhere), never a filled pill or bordered button, so this reads as a
+     clearly separate "quick tools" area rather than a 3rd/4th row of nav
+     tabs competing with the destination/mode rows above it. */
   .utility-strip {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    margin-top: 14px;
-    padding-top: 12px;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 14px;
     border-top: 1px solid var(--border);
+  }
+  .utility-strip-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-3);
+    font-weight: 600;
   }
   .tab-utility {
     display: flex;
     align-items: center;
     gap: 7px;
     text-align: left;
-    padding: 7px 6px;
+    padding: 2px 0;
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-3);
-    border-radius: 4px;
+    color: var(--accent);
+    background: transparent;
+    border-radius: 0;
   }
-  .tab-utility:hover { color: var(--text-2); background: var(--surface-2); }
-  .tab-utility.active { color: var(--accent); background: var(--accent-dim); }
+  .tab-utility:hover { text-decoration: underline; }
+  .tab-utility.active { font-weight: 700; text-decoration: underline; }
 
   /* ─── ACCESSIBILITY UTILITIES ─── */
   .sr-only {
@@ -985,6 +1009,7 @@
       </div>
 
       <div class="utility-strip">
+        <div class="utility-strip-label">Quick Lookup</div>
         <button class="tab tab-utility" data-tab="lookup" onclick="switchTab('lookup')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
           Look up a code
