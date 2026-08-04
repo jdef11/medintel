@@ -74,7 +74,7 @@ The nav is organized around what you're trying to do, not around which CMS datas
 | Utility | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
 | **Look up a code** | CMS national datasets (client-side dictionaries) | Keyword, CPT/HCPCS code, or MS-DRG code | Both vocabularies side by side with national volumes, cross-vocabulary suggestions, one-click add to Find Customers/Size a Market |
-| **Verify a provider** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy |
+| **NPI Look Up** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy, plus a "View on NPPES ↗" link on each card to that provider's public registry profile |
 
 ### Market TAM Tab
 
@@ -192,7 +192,7 @@ Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Ne
 > Find Customers → State: TX → City: Houston → Specialty: Orthopedic Surgery → Search
 
 **Get contact info for a surgeon:**
-> Verify a provider → Last Name: Smith → State: FL → Taxonomy: Orthopedic Surgery → Search
+> NPI Look Up → Last Name: Smith → State: FL → Taxonomy: Orthopedic Surgery → Search
 
 ---
 

@@ -107,7 +107,7 @@ The nav is three peer destinations plus a demoted utility strip — **not** arou
   | Utility (`currentTab`) | API | Key Inputs | Query Parameter |
   |-----|-----|-----------|----------------|
   | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other destinations via `addToField` |
-  | `npi` (Verify a provider) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
+  | `npi` (NPI Look Up) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params. A "View on NPPES ↗" link on each result card opens that provider's public profile (`npiregistry.cms.hhs.gov/provider-view/{npi}`); the sidebar also links to the registry's own search UI directly |
 
 ### Navigation vs. internal tab ids
 
