@@ -28,7 +28,7 @@ Don't know the codes in advance? The **Code Lookup** tab searches CPT/HCPCS and 
 
 ### Multi-Code Search
 
-Paste multiple CPT/HCPCS codes into Find by Procedure and search them all at once. The app fetches each code in parallel from the CMS API and aggregates results — so you see, e.g., a surgeon's total revision burden across a whole code family in one result list.
+Paste multiple CPT/HCPCS codes into Find by Code and search them all at once. The app fetches each code in parallel from the CMS API and aggregates results — so you see, e.g., a surgeon's total revision burden across a whole code family in one result list.
 
 ### Separate Last Name and Organization Search
 
@@ -65,7 +65,7 @@ The nav is organized around what you're trying to do, not around which CMS datas
 
 **Find Customers** — CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state, city — fill in whichever apply | Payment totals, procedure volumes, unique beneficiary counts, Tier 1/2/3 ranking.
 
-**Find by Procedure** — CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword, plus state | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown (with the same Tier 1/2/3 badges as Find Customers) with an explicit coverage %, and a multi-year volume trend. This stays a separate destination from Find Customers because it returns a genuinely different view — one card per *procedure*, not per person.
+**Find by Code** — CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword, plus state | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown (with the same Tier 1/2/3 badges as Find Customers) with an explicit coverage %, and a multi-year volume trend. This stays a separate destination from Find Customers because it returns a genuinely different view — one card per *procedure*, not per person.
 
 **Size a Market** — CMS Medicare (Physician + Inpatient Hospital datasets); a CPT code family, MS-DRG codes, and payer-mix/ASP assumptions in → national FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals out.
 
@@ -109,7 +109,7 @@ Because physician fees don't represent the money that buys devices, the TAM tab 
 
 ### Bulk Code Search
 
-Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into Find by Procedure. MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from **Look up a code**'s one-click add buttons.
+Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolons, or new lines — into Find by Code. MedIntel fetches every code in parallel (up to 30 per search), aggregates them into one result set, and flags any tokens that aren't valid codes before searching. Build the list quickly from **Look up a code**'s one-click add buttons.
 
 ### Share a Search by Link
 
@@ -127,7 +127,7 @@ Medicare claims data is published one calendar year at a time. MedIntel grounds 
 
 - A **Data Year** selector (sidebar) lets you run any CMS search against a specific calendar year — the list of available years is discovered live from the official [data.cms.gov catalog](https://data.cms.gov/data.json) and cached in your browser.
 - Every CMS results page shows a **year badge** (e.g. `CY 2023 · Medicare FFS`) so you always know which year you're looking at; NPI Lookup results are labeled as a live registry snapshot instead, since NPPES has no historical years.
-- On Find by Procedure results, **Volume trend by year** expands a chart of national (or state-level, if a state filter is set) total service volume and Medicare payment for that code across every published data year — ideal for understanding whether a procedure's volume is growing or shrinking.
+- On Find by Code results, **Volume trend by year** expands a chart of national (or state-level, if a state filter is set) total service volume and Medicare payment for that code across every published data year — ideal for understanding whether a procedure's volume is growing or shrinking.
 - Find Customers results have the same **Volume trend by year** panel per provider card — the provider's total billed services and Medicare payment per calendar year, across all procedure codes.
 - Provider cards stamp their headline metrics with the data year (e.g. `Total Services · CY 2024`).
 - CSV and SharePoint exports include a **Data Year** column.
@@ -177,13 +177,13 @@ Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Ne
 ## Example Searches
 
 **Find all hip revision surgeons in California:**
-> Find by Procedure → HCPCS: `27134, 27137, 27138` → State: CA → Search
+> Find by Code → HCPCS: `27134, 27137, 27138` → State: CA → Search
 
 **Find revision knee specialists above 50 procedures/year in Texas:**
-> Find by Procedure → HCPCS: `27486, 27487` → State: TX → Search → set Min services filter to 50
+> Find by Code → HCPCS: `27486, 27487` → State: TX → Search → set Min services filter to 50
 
 **Not sure of the codes?**
-> Look up a code → search `knee revision` → click **+ Procedure** on the codes you want → Find by Procedure → Search
+> Look up a code → search `knee revision` → click **+ Procedure** on the codes you want → Find by Code → Search
 
 **Look up a specific provider's Medicare billing:**
 > Find Customers → NPI: `1234567890` → Search
@@ -221,7 +221,7 @@ Look any of these up (and find related codes and their MS-DRGs) in the **Code Lo
 
 | Dataset / API | Endpoint | Used for | Auth |
 |-----|----------|----------|:---:|
-| **Physician & Other Practitioners — by Provider and Service** | `data.cms.gov/data-api/v1/dataset/{id}/data` | Find Customers / Find by Procedure searches | No |
+| **Physician & Other Practitioners — by Provider and Service** | `data.cms.gov/data-api/v1/dataset/{id}/data` | Find Customers / Find by Code searches | No |
 | **Physician & Other Practitioners — by Provider** (summary) | same, different `{id}` | True unique beneficiary counts | No |
 | **Physician & Other Practitioners — by Geography and Service** | same, different `{id}` | National/state volume trends, code dictionary | No |
 | **Medicare Inpatient Hospitals — by Geography and Service** | same, different `{id}` | Per-DRG hospital billing/payments, DRG dictionary | No |

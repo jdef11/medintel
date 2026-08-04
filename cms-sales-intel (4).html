@@ -192,10 +192,15 @@
     padding: 3px;
   }
   .nav-btn {
-    padding: 11px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 8px 6px;
     font-size: 12px;
     font-weight: 600;
     font-family: inherit;
+    line-height: 1.2;
     color: var(--text-3);
     background: transparent;
     border: none;
@@ -203,9 +208,6 @@
     cursor: pointer;
     transition: all 0.2s;
     text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .nav-btn:hover { color: var(--text-2); }
   .nav-btn.active {
@@ -983,7 +985,7 @@
     <div class="sidebar-section">
       <div class="nav-row">
         <button class="nav-btn active" data-tab="provider" aria-pressed="true" onclick="switchTab('provider')">Find Customers</button>
-        <button class="nav-btn" data-tab="procedure" aria-pressed="false" onclick="switchTab('procedure')">Find by Procedure</button>
+        <button class="nav-btn" data-tab="procedure" aria-pressed="false" onclick="switchTab('procedure')">Find by Code</button>
         <button class="nav-btn" id="navSizeMarket" data-tab="tam" aria-pressed="false" onclick="switchTab('tam')">Size a Market</button>
       </div>
 
@@ -1179,7 +1181,7 @@
     <div class="empty-state" id="emptyState">
       <div class="empty-icon">🔍</div>
       <h2>Find your next call.</h2>
-      <p>Search by name or location here, ranked by complexity score so the highest-value targets surface first — or try Find by Procedure with 27447 (total knee arthroplasty) to see who bills a specific code.</p>
+      <p>Search by name or location here, ranked by complexity score so the highest-value targets surface first — or try Find by Code with 27447 (total knee arthroplasty) to see who bills a specific code.</p>
     </div>
     <div id="resultsArea" role="region" aria-label="Search results" aria-live="polite" style="display:none;"></div>
   </div>
@@ -1558,7 +1560,7 @@ function dataYearValue() {
 }
 
 // ─── TAB SWITCHING ───
-// Find Customers (provider), Find by Procedure (procedure), and Size a
+// Find Customers (provider), Find by Code (procedure), and Size a
 // Market (tam) are three peer destinations — Find Customers used to be an
 // umbrella over 3 modes (By Name/By Code/By Location) behind a picker, but
 // By Name and By Location queried the same dataset with the same filters
@@ -1661,7 +1663,7 @@ function emptyStateCopy() {
   return {
     icon: '🔍',
     h2: 'Find your next call.',
-    p: 'Search by name or location here, ranked by complexity score so the highest-value targets surface first — or try Find by Procedure with 27447 (total knee arthroplasty) to see who bills a specific code.',
+    p: 'Search by name or location here, ranked by complexity score so the highest-value targets surface first — or try Find by Code with 27447 (total knee arthroplasty) to see who bills a specific code.',
   };
 }
 
