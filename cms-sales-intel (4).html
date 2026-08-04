@@ -1041,7 +1041,9 @@
         </div>
         <div class="field">
           <label class="field-label" for="specialtyInput">Specialty / Provider Type</label>
-          <input type="text" id="specialtyInput" placeholder="e.g. Orthopedic Surgery">
+          <input type="text" id="specialtyInput" list="specialtyList" aria-describedby="specialtyInputHint" placeholder="e.g. Orthopedic Surgery" autocomplete="off">
+          <datalist id="specialtyList"></datalist>
+          <div id="specialtyInputHint" class="year-note" style="margin-top:4px;">Start typing to search known specialties, or enter any partial term.</div>
         </div>
         <div class="field">
           <label class="field-label" for="stateSelect">State</label>
@@ -1218,6 +1220,104 @@ const US_STATES = [
   'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC','PR'
 ];
 
+// Known Rndrng_Prvdr_Type values, harvested from live CMS Physician & Other
+// Practitioners data across every state. This is a search-assist list for the
+// Specialty field's <datalist> — not an enforced enum. The field still submits
+// whatever text is typed (CONTAINS match), so a specialty not in this list, or
+// a partial term like "Cardio", still works exactly as before.
+const PROVIDER_SPECIALTIES = [
+  'Addiction Medicine',
+  'Advanced Heart Failure and Transplant Cardiology',
+  'All Other Suppliers',
+  'Allergy/ Immunology',
+  'Ambulance Service Provider',
+  'Ambulatory Surgical Center',
+  'Anesthesiology',
+  'Anesthesiology Assistant',
+  'Audiologist',
+  'Cardiac Surgery',
+  'Cardiology',
+  'Centralized Flu',
+  'Certified Clinical Nurse Specialist',
+  'Certified Nurse Midwife',
+  'Certified Registered Nurse Anesthetist (CRNA)',
+  'Chiropractic',
+  'Clinical Cardiac Electrophysiology',
+  'Clinical Laboratory',
+  'Colorectal Surgery (Proctology)',
+  'Critical Care (Intensivists)',
+  'Dentist',
+  'Dermatology',
+  'Diagnostic Radiology',
+  'Emergency Medicine',
+  'Endocrinology',
+  'Family Practice',
+  'Gastroenterology',
+  'General Practice',
+  'General Surgery',
+  'Geriatric Medicine',
+  'Gynecological Oncology',
+  'Hand Surgery',
+  'Hematology',
+  'Hematology-Oncology',
+  'Hospice and Palliative Care',
+  'Hospitalist',
+  'Independent Diagnostic Testing Facility (IDTF)',
+  'Infectious Disease',
+  'Internal Medicine',
+  'Interventional Cardiology',
+  'Interventional Pain Management',
+  'Interventional Radiology',
+  'Licensed Clinical Social Worker',
+  'Licensed Professional Counselor',
+  'Mammography Center',
+  'Marriage and Family Therapist',
+  'Mass Immunizer Roster Biller',
+  'Medical Oncology',
+  'Medicare Diabetes Preventive Program',
+  'Micrographic Dermatologic Surgery',
+  'Nephrology',
+  'Neurology',
+  'Neuropsychiatry',
+  'Neurosurgery',
+  'Nuclear Medicine',
+  'Nurse Practitioner',
+  'Obstetrics & Gynecology',
+  'Occupational Therapist in Private Practice',
+  'Ophthalmology',
+  'Opioid Treatment Program',
+  'Optometry',
+  'Oral Surgery (Dentist only)',
+  'Orthopedic Surgery',
+  'Osteopathic Manipulative Medicine',
+  'Otolaryngology',
+  'Pain Management',
+  'Pathology',
+  'Pediatric Medicine',
+  'Pharmacy',
+  'Physical Medicine and Rehabilitation',
+  'Physical Therapist in Private Practice',
+  'Physician Assistant',
+  'Plastic and Reconstructive Surgery',
+  'Podiatry',
+  'Psychiatry',
+  'Psychologist, Clinical',
+  'Public Health or Welfare Agency',
+  'Pulmonary Disease',
+  'Radiation Oncology',
+  'Registered Dietitian or Nutrition Professional',
+  'Rheumatology',
+  'Sleep Medicine',
+  'Speech Language Pathologist',
+  'Sports Medicine',
+  'Surgical Oncology',
+  'Thoracic Surgery',
+  'Undefined Physician type',
+  'Unknown Supplier/Provider Specialty',
+  'Urology',
+  'Vascular Surgery',
+];
+
 // The dataset UUID for "Medicare Physician & Other Practitioners by Provider and Service"
 // (always resolves to the latest published data year)
 const DATASET_ID = '92396110-2aed-4d63-a6a2-5d6207d46a29';
@@ -1308,6 +1408,13 @@ function init() {
       opt.textContent = st;
       el.appendChild(opt);
     });
+  });
+
+  const specialtyList = document.getElementById('specialtyList');
+  PROVIDER_SPECIALTIES.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    specialtyList.appendChild(opt);
   });
 
   // Enter key triggers search

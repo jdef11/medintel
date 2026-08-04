@@ -63,7 +63,7 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 
 The nav is organized around what you're trying to do, not around which CMS dataset answers it. "By Name" and "By Location" used to be separate modes, but both queried the same dataset with the same filters and returned the same provider-ranked view — genuinely redundant, not distinct — so they're now one form:
 
-**Find Customers** — CMS Medicare | First name (optional) + last name **or** organization name (separate fields), NPI, specialty, state, city — fill in whichever apply | Payment totals, procedure volumes, unique beneficiary counts, Tier 1/2/3 ranking.
+**Find Customers** — CMS Medicare | First name (optional) + last name **or** organization name (separate fields), NPI, specialty (type to search ~90 known specialties, or enter any partial term), state, city — fill in whichever apply | Payment totals, procedure volumes, unique beneficiary counts, Tier 1/2/3 ranking.
 
 **Find by Code** — CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword, plus state | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown (with the same Tier 1/2/3 badges as Find Customers) with an explicit coverage %, and a multi-year volume trend. This stays a separate destination from Find Customers because it returns a genuinely different view — one card per *procedure*, not per person.
 
