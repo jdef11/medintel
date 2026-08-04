@@ -63,7 +63,7 @@ Filter results to providers above a minimum annual procedure threshold — cut t
 
 The nav is organized around what you're trying to do, not around which CMS dataset answers it:
 
-**Find Customers** — one destination, three modes (a segmented control under the Find Customers button):
+**Find Customers** — one destination, three modes (a dropdown next to "Size a Market" — pick one to switch):
 
 | Mode | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
