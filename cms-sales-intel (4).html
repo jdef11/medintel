@@ -1022,6 +1022,10 @@
       <!-- Provider search (default) -->
       <div id="providerFields">
         <div class="field">
+          <label class="field-label" for="providerFirstName">Provider First Name</label>
+          <input type="text" id="providerFirstName" aria-describedby="providerNameHint" placeholder="e.g. Jane — optional, individuals only">
+        </div>
+        <div class="field">
           <label class="field-label" for="providerName">Provider Last Name</label>
           <input type="text" id="providerName" aria-describedby="providerNameHint" placeholder="e.g. Smith — individuals only">
           <div id="providerNameHint" class="year-note" style="margin-top:4px;">Matches individual practitioners; organizations are excluded.</div>
@@ -1808,7 +1812,7 @@ function updateFilterFabBadge() {
 // Which input ids belong to each tab. Used to capture the current search into a
 // URL and to restore it when someone opens a shared link.
 const TAB_FIELDS = {
-  provider:  ['providerName', 'providerOrg', 'npiInput', 'specialtyInput', 'stateSelect', 'cityInput'],
+  provider:  ['providerFirstName', 'providerName', 'providerOrg', 'npiInput', 'specialtyInput', 'stateSelect', 'cityInput'],
   procedure: ['hcpcsCode', 'hcpcsKeyword', 'stateSelectProc'],
   tam:       ['tamCodes', 'tamDrgs', 'tamFfsShare', 'tamCasePortion', 'tamAsp'],
   lookup:    ['lookupQuery'],
@@ -1914,6 +1918,7 @@ function getSearchCriteria() {
 
   if (currentTab === 'provider') {
     const npi = val('npiInput').trim();
+    const firstName = val('providerFirstName').trim();
     const name = val('providerName').trim();
     const org = val('providerOrg').trim();
     const specialty = val('specialtyInput').trim();
@@ -1927,8 +1932,11 @@ function getSearchCriteria() {
     // "Gross" surname search from returning "GROSSMONT HOSPITAL".
     // (We target this column rather than the API's `keyword=` full-text scan,
     // which scans every column of a ~10M-row dataset and times out with a 408.)
-    if (name) {
-      c.push({ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: name.toUpperCase() });
+    if (name || firstName) {
+      if (name) c.push({ path: 'Rndrng_Prvdr_Last_Org_Name', op: 'CONTAINS', value: name.toUpperCase() });
+      // First name lives in its own column (organizations have no first name),
+      // so it's a separate CONTAINS criterion, not folded into the surname one.
+      if (firstName) c.push({ path: 'Rndrng_Prvdr_First_Name', op: 'CONTAINS', value: firstName.toUpperCase(), lenient: true });
       // Exclude organizations. Enforced client-side only: 'O' is the value the
       // codebase already relies on, but we don't bet on the API supporting a
       // not-equal operator. Lenient so a dataset year lacking the column doesn't
@@ -2606,7 +2614,8 @@ function exportNpiCSV() {
 
 function validateInput() {
   if (currentTab === 'provider') {
-    return document.getElementById('providerName').value.trim() ||
+    return document.getElementById('providerFirstName').value.trim() ||
+           document.getElementById('providerName').value.trim() ||
            document.getElementById('providerOrg').value.trim() ||
            document.getElementById('npiInput').value.trim() ||
            document.getElementById('specialtyInput').value.trim() ||
