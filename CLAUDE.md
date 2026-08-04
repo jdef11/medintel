@@ -86,7 +86,6 @@ let isLoading = false            // Prevent double-submit
 let searchGen = 0                // Generation token — discards superseded searches
 let activeProxyIndex = 0         // Last successful CORS proxy
 let selectedYear = ''            // '' = latest; else a specific data year
-let lastFindCustomersMode = 'provider'  // Which Find Customers mode to return to
 ```
 
 Pagination is client-side (`displayPage` + `prevPage`/`nextPage`) for the CMS tabs; the NPI tab paginates server-side via `executeNpiSearch(offset)` (guarded by `gotoNpiPage`). There is no `currentPage`/`totalFound` — results are grouped in memory and sliced per page.
@@ -99,28 +98,24 @@ Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `FETCH_SIZE`, `CORS_PROXIES`
 
 ## Search Modes
 
-The nav is organized around two goal-oriented destinations plus a demoted utility strip — **not** around the six CMS/NPPES data sources underneath, though those six `currentTab` values (`provider`/`procedure`/`geography`/`tam`/`lookup`/`npi`) are unchanged internally (see "Navigation vs. internal tab ids" below):
+The nav is three peer destinations plus a demoted utility strip — **not** around the CMS/NPPES data sources underneath, though the `currentTab` values (`provider`/`procedure`/`tam`/`lookup`/`npi`) map directly to them (see "Navigation vs. internal tab ids" below). `provider` and `geography` used to be separate modes (By Name / By Location) hidden behind a picker on "Find Customers," but both queried the same dataset with the same filters and rendered through the same `groupByProvider()`/`renderResults()` path — genuinely redundant, not distinct — so they're merged into one form and the `geography` tab id no longer exists:
 
-- **Find Customers** (`<select id="findCustomersModeSelect">`, options grouped under an `<optgroup label="Find Customers">`) — one destination, three internal modes selected by picking an option:
-  | Mode (`currentTab`) | API | Key Inputs | Query Parameter |
-  |-----|-----|-----------|----------------|
-  | `provider` (By Name) | CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`. Mutually exclusive — validated up front |
-  | `procedure` (By Code) | CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends. The "top providers for this code" sub-table also carries Tier 1/2/3 badges via a second `assignScoresAndTiers(groupByProvider(allRows))` pass in `executeSearch()`, so ranking reads the same as the By Name/By Location modes regardless of entry point |
-  | `geography` (By Location) | CMS Medicare | State, city, specialty, code | `filter[Rndrng_Prvdr_State_Abrvtn]` + others |
-- **Size a Market** (`id="navSizeMarket"`, `data-tab="tam"`) | CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
-- **Utility strip** (`.utility-strip`, always visible, demoted below the nav row) — two helpers, reachable directly or via inline "Look it up" links next to the HCPCS fields in By Code mode and Size a Market:
+- **Find Customers** (`data-tab="provider"`) — CMS Medicare | Last name **or** organization name (separate fields), NPI, specialty, state, city — fill in whichever apply | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last name excludes `'O'` client-side, organization requires `'O'`, mutually exclusive and validated up front; `Rndrng_Prvdr_Type` CONTAINS for specialty; `Rndrng_Prvdr_State_Abrvtn`/`Rndrng_Prvdr_City` for state/city.
+- **Find by Procedure** (`data-tab="procedure"`) — CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends. The "top providers for this code" sub-table carries Tier 1/2/3 badges via a second `assignScoresAndTiers(groupByProvider(allRows))` pass in `executeSearch()`, so ranking reads the same as Find Customers regardless of entry point. Stays a separate destination from Find Customers because it returns a genuinely different view (one card per *procedure*, not per person) — this is the one true code-search destination; Find Customers has no code field.
+- **Size a Market** (`id="navSizeMarket"`, `data-tab="tam"`) — CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
+- **Utility strip** (`.utility-strip`, always visible, demoted below the nav row) — two helpers, reachable directly or via inline "Look it up" links next to the HCPCS field in Find by Procedure and Size a Market:
   | Utility (`currentTab`) | API | Key Inputs | Query Parameter |
   |-----|-----|-----------|----------------|
-  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other modes via `addToField` |
+  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other destinations via `addToField` |
   | `npi` (Verify a provider) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params |
 
 ### Navigation vs. internal tab ids
 
-The six `currentTab` strings above are unchanged from before this nav restructure and must stay that way — `TAB_FIELDS`, `SHAREABLE_TABS` (medintel-core.js), `decodeSearchState`'s whitelist, `getSearchCriteria()`, and `executeSearch()`'s dispatch all key off them, and existing shared links (`#tab=procedure&...`) decode straight into `switchTab()` with no compatibility shim needed. Only the nav *presentation* changed:
-- **The nav is one row, always** — `.nav-row` holds a native `<select id="findCustomersModeSelect">` (Find Customers' 3 modes) and a plain `<button id="navSizeMarket">` (Size a Market), both styled identically via `.nav-select`/`.nav-btn` + a shared `.active` fill. There is **no second row of mode buttons** — that design went through three rounds of highlight bugs (two CSS-specificity leaks across a shared `.tab` class, then a still-unexplained case where a destination and a utility both showed active at once) before it was replaced with this native-`<select>` version. A `<select>`'s open/close/keyboard/outside-click/typeahead behavior is the browser's problem, not custom JS that can drift out of sync — removing the second row removes the entire class of "which row is highlighted" bug, not just the specific ones found so far.
-- `updateDestActive(tab)` is the only nav updater tied to `switchTab()`'s destination state: it sets `.active` on the select (`FIND_CUSTOMER_MODES.includes(tab)`) or the Size a Market button (`tab === 'tam'`), never both, and keeps the select's displayed value in sync with `lastFindCustomersMode` even while a *different* destination (Size a Market or a utility) is current, so reopening it doesn't reset to the first option. `updateUtilityActive(tab)` independently handles the two `.tab-utility` links — no shared class with `.nav-select`/`.nav-btn`, so nothing here can bleed into the destination row's styling either.
-- `lastFindCustomersMode` remembers which of the three modes to return to; the select's own `value` reflects it whenever Find Customers isn't the active destination. The select has both `onclick` and `onchange` wired to `switchTab(this.value)` — `onclick` covers "reopen Find Customers without necessarily changing mode" (native `change` events don't fire if the picked option matches the already-set value), `onchange` covers actually picking a different mode.
-- There is no more `onTabKeydown`/custom tablist — a native `<select>` and a plain `<button>` aren't tablist peers, so that whole mechanism (and its `role="tab"`/`aria-selected` markup) was removed rather than kept as unused scaffolding. `<button id="navSizeMarket">` uses `aria-pressed` (correct ARIA for a persistent toggle button) instead.
+- **The nav is three plain, identically-styled buttons sharing one class (`.nav-btn`)** — Find Customers / Find by Procedure / Size a Market — plus the separately-classed utility strip. This is safe specifically because all three are now genuinely *the same kind of thing* (peer destinations); the earlier bugs (three rounds of them) all came from mixing genuinely different tiers — destination, mode, utility — under one shared class or picker. Once Provider+Geography merged, there was no more "mode" tier left to mix in, so three peers sharing a class stopped being a trap.
+- `updateDestActive(tab)` is one generic loop over `.nav-btn` — `t.dataset.tab === tab` decides `.active`/`aria-pressed`, no special-casing for any of the three. `updateUtilityActive(tab)` independently handles the two `.tab-utility` links — no shared class with `.nav-btn`.
+- **Compatibility**: `provider` survives as Find Customers' tab id (unchanged from before the merge — `TAB_FIELDS.provider` just gained `'cityInput'`), so old `#tab=provider&...` share-links still restore correctly with no compatibility shim. `geography` is gone from `SHAREABLE_TABS` (medintel-core.js) and `TAB_FIELDS` — an old `#tab=geography&...` link fails closed (doesn't restore, no crash) rather than being migrated, since `decodeSearchState` already whitelist-rejects unknown tab ids by design.
+- `procedure`'s fields/dispatch/rendering are completely unchanged — it was only ever hidden behind the old mode-picker at the nav level, never altered internally; promoting it to its own nav button required zero changes to `getSearchCriteria()`, `executeSearch()`, or `groupByProcedure()`.
+- When merging or splitting a destination in the future, remember to check `fetchAllRows()`'s multi-code state-select branch, `getTypedCodes()`'s per-tab field lookup, and `validateInput()`'s per-tab required-field check — all three have their own `currentTab === '...'` branches independent of `getSearchCriteria()` and are easy to miss.
 
 ---
 
@@ -247,14 +242,15 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 
 ### Adding a New Search Tab
 
-First decide where it belongs in the nav: a new **Find Customers mode** (add to `FIND_CUSTOMER_MODES` and `#findCustomersModeRow`), a new **primary destination** (add to `.tabs`), or a new **utility** (add to `.utility-strip`) — this determines which markup tier it goes in, but the wiring below is the same regardless.
+First decide where it belongs in the nav: a new **primary destination** (add to `.nav-row`, own `data-tab`) or a new **utility** (add to `.utility-strip`) — this determines which class it gets, but the wiring below is the same regardless. Before adding a new destination, check whether it would actually be redundant with an existing one (same dataset, same filters, same output shape) — that redundancy is exactly what caused Provider/Geography to need merging.
 
-1. Add a `.tab` button (in `.tabs`, `#findCustomersModeRow`, or `.utility-strip` per the above) with `onclick="switchTab('newtab')"` and a `data-tab="newtab"` attribute (so `switchTab()`'s active-state loop and `onTabKeydown()`'s arrow-cycling pick it up automatically — no extra plumbing needed there)
+1. Add a button (`.nav-btn` for a destination, `.tab-utility` for a utility) with `onclick="switchTab('newtab')"` and a `data-tab="newtab"` attribute (`updateDestActive()`/`updateUtilityActive()` pick it up automatically via `document.querySelectorAll('.nav-btn'|'.tab-utility')` — no extra plumbing needed there)
 2. Add a `<div id="newtabFields" style="display:none">` with inputs
-3. Add an `if (tab === 'newtab') ... else if` branch in `switchTab()` to show/hide `#newtabFields`
+3. Add a `document.getElementById('newtabFields').style.display = tab === 'newtab' ? 'block' : 'none';` line in `switchTab()`
 4. Add a branch in `getSearchCriteria()`/`buildApiUrl()` (if it fits the declarative CMS-filter model) or a dedicated `executeNewtabSearch()` function otherwise
 5. Add rendering logic in `executeSearch()`'s dispatch or the dedicated function
 6. Add `newtab: [...]` to `TAB_FIELDS` and (if the tab should be shareable) to `SHAREABLE_TABS` in medintel-core.js
+7. Check `fetchAllRows()`'s multi-code state-select branch, `getTypedCodes()`, and `validateInput()` — each has its own `currentTab === '...'` branches independent of `getSearchCriteria()` and is easy to miss
 
 ### Adding New Result Fields
 
@@ -275,7 +271,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 231 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
-- Manual UI validation: open in a browser (or `npx serve .`), exercise all three Find Customers modes plus Size a Market and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
+- Manual UI validation: open in a browser (or `npx serve .`), exercise Find Customers, Find by Procedure, Size a Market, and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
 
 ---
 

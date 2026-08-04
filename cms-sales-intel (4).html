@@ -170,25 +170,29 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ─── PRIMARY NAV — one row, always. Find Customers' three modes live
-     inside a native <select> instead of a second row of buttons.
-     A two-row nav (destination row + mode row) went through three rounds of
-     highlight bugs, because a second row gives a highlight something to
-     "jump between" or desync from. A single row removes that entire
-     category structurally — there's only one thing that can ever be
-     highlighted, and the mode picker is a native form control, so its
-     open/close/keyboard/outside-click behavior is the browser's problem, not
-     custom JS that can drift out of sync again. */
+  /* ─── PRIMARY NAV — three peer destinations, one row, one class.
+     Provider (By Name) and Geography (By Location) used to be separate
+     modes hidden behind a picker on "Find Customers" — but they queried the
+     same dataset with the same filters and rendered through the same
+     provider-grouped view, so they were genuinely redundant, not distinct.
+     Merging them into one "Find Customers" form removes the mode concept
+     entirely: there's no longer a family of sub-things needing a picker,
+     just three plain, equal destinations (Find Customers / Find by
+     Procedure / Size a Market) that happen to share one class — which is
+     safe here specifically because they're all the same *kind* of thing.
+     (Earlier bugs came from mixing genuinely different tiers — destination,
+     mode, utility — under one shared class; three peers sharing a class is
+     not that trap.) */
   .nav-row {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 3px;
     background: var(--bg);
     border-radius: var(--radius-sm);
     padding: 3px;
   }
-  .nav-select, .nav-btn {
-    padding: 11px 8px;
+  .nav-btn {
+    padding: 11px 6px;
     font-size: 12px;
     font-weight: 600;
     font-family: inherit;
@@ -203,22 +207,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* Tells the browser to theme the native dropdown popup (and its option
-     list) for a dark UI, rather than rendering it with light OS-default
-     colors that would clash. Widely supported in current browsers. */
-  .nav-select { color-scheme: dark; }
-  .nav-select:hover, .nav-btn:hover { color: var(--text-2); }
-  /* Both controls use the exact same "active" treatment — no asymmetry
-     between "quiet underline" and "solid fill" this time. Whichever
-     destination is current gets this, full stop. */
-  .nav-select.active, .nav-btn.active {
+  .nav-btn:hover { color: var(--text-2); }
+  .nav-btn.active {
     background: var(--accent);
     color: #fff;
   }
 
   /* ─── UTILITY STRIP — Code Lookup / NPI Lookup, demoted to helpers ───
-     Own class namespace (.tab-utility), never combined with .nav-select or
-     .nav-btn. Styled as plain text links (matching .info-box a / .year-note
+     Own class namespace (.tab-utility), never combined with .nav-btn.
+     Styled as plain text links (matching .info-box a / .year-note
      a elsewhere), never a filled pill or bordered button, so this reads as a
      clearly separate "quick tools" area rather than more nav. */
   .utility-strip {
@@ -937,13 +934,12 @@
 
     /* Touch floor: comfortable to hit with a mouse isn't comfortable with a
        fingertip. Scoped to mobile only so desktop's denser tables/spacing
-       are untouched. .procedures-toggle/.tab-utility/.nav-select/.nav-btn
-       just grow; .mini-btn instead gets an invisible expanded hit area
-       (::before below) so cramped table rows (several mini-btns in a 4px
-       gap) don't get visually bulkier while still meeting a real
-       touch-target size. */
+       are untouched. .procedures-toggle/.tab-utility/.nav-btn just grow;
+       .mini-btn instead gets an invisible expanded hit area (::before below)
+       so cramped table rows (several mini-btns in a 4px gap) don't get
+       visually bulkier while still meeting a real touch-target size. */
     .procedures-toggle { min-height: 44px; }
-    .tab-utility, .nav-select, .nav-btn { min-height: 44px; }
+    .tab-utility, .nav-btn { min-height: 44px; }
     .mini-btn { position: relative; }
     .mini-btn::before { content: ''; position: absolute; top: -12px; bottom: -12px; left: -4px; right: -4px; }
   }
@@ -986,13 +982,8 @@
     <div class="sidebar-drag-handle" aria-hidden="true"></div>
     <div class="sidebar-section">
       <div class="nav-row">
-        <select class="nav-select active" id="findCustomersModeSelect" onclick="switchTab(this.value)" onchange="switchTab(this.value)" aria-label="Find Customers — choose how to search">
-          <optgroup label="Find Customers">
-            <option value="provider">By Name</option>
-            <option value="procedure">By Code</option>
-            <option value="geography">By Location</option>
-          </optgroup>
-        </select>
+        <button class="nav-btn active" data-tab="provider" aria-pressed="true" onclick="switchTab('provider')">Find Customers</button>
+        <button class="nav-btn" data-tab="procedure" aria-pressed="false" onclick="switchTab('procedure')">Find by Procedure</button>
         <button class="nav-btn" id="navSizeMarket" data-tab="tam" aria-pressed="false" onclick="switchTab('tam')">Size a Market</button>
       </div>
 
@@ -1036,6 +1027,10 @@
             <option value="">All States</option>
           </select>
         </div>
+        <div class="field">
+          <label class="field-label" for="cityInput">City</label>
+          <input type="text" id="cityInput" placeholder="e.g. Houston, Boston...">
+        </div>
       </div>
 
       <!-- Procedure search -->
@@ -1054,28 +1049,6 @@
           <select id="stateSelectProc">
             <option value="">All States</option>
           </select>
-        </div>
-      </div>
-
-      <!-- Geography search -->
-      <div id="geographyFields" style="display:none;">
-        <div class="field">
-          <label class="field-label" for="stateSelectGeo">State</label>
-          <select id="stateSelectGeo">
-            <option value="">Select a State</option>
-          </select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="cityInput">City</label>
-          <input type="text" id="cityInput" placeholder="e.g. Houston, Boston...">
-        </div>
-        <div class="field">
-          <label class="field-label" for="specialtyGeo">Specialty Filter</label>
-          <input type="text" id="specialtyGeo" placeholder="e.g. Orthopedic Surgery">
-        </div>
-        <div class="field">
-          <label class="field-label" for="hcpcsGeo">HCPCS Code Filter</label>
-          <input type="text" id="hcpcsGeo" placeholder="One or many — e.g. 27447, 27130">
         </div>
       </div>
 
@@ -1206,7 +1179,7 @@
     <div class="empty-state" id="emptyState">
       <div class="empty-icon">🔍</div>
       <h2>Find your next call.</h2>
-      <p>Search by name, procedure code, or location — every result comes ranked by complexity score, so the highest-value targets surface first. Try 27447 (total knee arthroplasty) under By Code to see it in action.</p>
+      <p>Search by name or location here, ranked by complexity score so the highest-value targets surface first — or try Find by Procedure with 27447 (total knee arthroplasty) to see who bills a specific code.</p>
     </div>
     <div id="resultsArea" role="region" aria-label="Search results" aria-live="polite" style="display:none;"></div>
   </div>
@@ -1257,13 +1230,6 @@ const CORS_PROXIES = [
 let activeProxyIndex = 0;
 
 let currentTab = 'provider';
-// "Find Customers" is one destination with three internal modes; these are
-// still the original tab ids under the hood (see IA notes at switchTab), so
-// TAB_FIELDS/SHAREABLE_TABS/getSearchCriteria/share-links all keep working
-// unchanged. This just remembers which mode to return to when the user
-// re-enters Find Customers from Size a Market or a utility.
-const FIND_CUSTOMER_MODES = ['provider', 'procedure', 'geography'];
-let lastFindCustomersMode = 'provider';
 let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
@@ -1311,7 +1277,7 @@ function init() {
   // a keyboard user's first Tab press doesn't land in off-screen fields.
   if (drawerActive()) document.getElementById('sidebar').inert = true;
 
-  const selects = ['stateSelect', 'stateSelectProc', 'stateSelectGeo', 'stateSelectNpi'];
+  const selects = ['stateSelect', 'stateSelectProc', 'stateSelectNpi'];
   selects.forEach(id => {
     const el = document.getElementById(id);
     US_STATES.forEach(st => {
@@ -1592,32 +1558,21 @@ function dataYearValue() {
 }
 
 // ─── TAB SWITCHING ───
-// "Find Customers" (provider/procedure/geography), "Size a Market" (tam), and
-// the utility strip (lookup/npi) are all still just `tab` values underneath —
-// see FIND_CUSTOMER_MODES above. The nav is one row: a native <select> for
-// Find Customers' three modes, plus a plain Size a Market button — both
-// share the .nav-select/.nav-btn active-fill styling, and neither shares a
-// class with .tab-utility. A second row of buttons (an earlier design) went
-// through repeated highlight bugs from custom JS/CSS trying to keep two rows
-// in sync; a native <select> has no "second row" to desync from, and its
-// open/close/keyboard/outside-click behavior is the browser's problem, not
-// ours.
+// Find Customers (provider), Find by Procedure (procedure), and Size a
+// Market (tam) are three peer destinations — Find Customers used to be an
+// umbrella over 3 modes (By Name/By Code/By Location) behind a picker, but
+// By Name and By Location queried the same dataset with the same filters
+// and rendered through the same provider-grouped view, so they were merged
+// into one form. That removed the mode concept entirely, so all three
+// destinations are now genuinely the same *kind* of thing and can safely
+// share one class/updater — unlike the earlier bugs, which came from mixing
+// different tiers (destination/mode/utility) under one shared class.
 function updateDestActive(tab) {
-  const isFindCustomers = FIND_CUSTOMER_MODES.includes(tab);
-  const select = document.getElementById('findCustomersModeSelect');
-  if (select) {
-    select.classList.toggle('active', isFindCustomers);
-    // Keep the select showing the right mode even when Find Customers isn't
-    // the current destination, so reopening it doesn't reset to the first
-    // option — it should reflect wherever the user left off.
-    select.value = isFindCustomers ? tab : lastFindCustomersMode;
-  }
-  const sizeBtn = document.getElementById('navSizeMarket');
-  if (sizeBtn) {
-    const on = tab === 'tam';
-    sizeBtn.classList.toggle('active', on);
-    sizeBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  }
+  document.querySelectorAll('.nav-btn').forEach(t => {
+    const on = t.dataset.tab === tab;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
 }
 function updateUtilityActive(tab) {
   // No aria-selected/aria-pressed here — these are plain links to a
@@ -1630,7 +1585,6 @@ function updateUtilityActive(tab) {
 
 function switchTab(tab) {
   currentTab = tab;
-  if (FIND_CUSTOMER_MODES.includes(tab)) lastFindCustomersMode = tab;
   // Invalidate any in-flight search so its results can't paint into this tab.
   searchGen++;
   isLoading = false;
@@ -1639,7 +1593,6 @@ function switchTab(tab) {
 
   document.getElementById('providerFields').style.display = tab === 'provider' ? 'block' : 'none';
   document.getElementById('procedureFields').style.display = tab === 'procedure' ? 'block' : 'none';
-  document.getElementById('geographyFields').style.display = tab === 'geography' ? 'block' : 'none';
   document.getElementById('tamFields').style.display = tab === 'tam' ? 'block' : 'none';
   document.getElementById('lookupFields').style.display = tab === 'lookup' ? 'block' : 'none';
   document.getElementById('npiFields').style.display = tab === 'npi' ? 'block' : 'none';
@@ -1708,7 +1661,7 @@ function emptyStateCopy() {
   return {
     icon: '🔍',
     h2: 'Find your next call.',
-    p: 'Search by name, procedure code, or location — every result comes ranked by complexity score, so the highest-value targets surface first. Try 27447 (total knee arthroplasty) under By Code to see it in action.',
+    p: 'Search by name or location here, ranked by complexity score so the highest-value targets surface first — or try Find by Procedure with 27447 (total knee arthroplasty) to see who bills a specific code.',
   };
 }
 
@@ -1837,9 +1790,8 @@ function updateFilterFabBadge() {
 // Which input ids belong to each tab. Used to capture the current search into a
 // URL and to restore it when someone opens a shared link.
 const TAB_FIELDS = {
-  provider:  ['providerName', 'providerOrg', 'npiInput', 'specialtyInput', 'stateSelect'],
+  provider:  ['providerName', 'providerOrg', 'npiInput', 'specialtyInput', 'stateSelect', 'cityInput'],
   procedure: ['hcpcsCode', 'hcpcsKeyword', 'stateSelectProc'],
-  geography: ['stateSelectGeo', 'cityInput', 'specialtyGeo', 'hcpcsGeo'],
   tam:       ['tamCodes', 'tamDrgs', 'tamFfsShare', 'tamCasePortion', 'tamAsp'],
   lookup:    ['lookupQuery'],
   npi:       ['npiFirstName', 'npiLastName', 'stateSelectNpi', 'npiCity', 'npiTaxonomy'],
@@ -1948,6 +1900,7 @@ function getSearchCriteria() {
     const org = val('providerOrg').trim();
     const specialty = val('specialtyInput').trim();
     const state = val('stateSelect');
+    const city = val('cityInput').trim();
     if (npi) c.push({ path: 'Rndrng_NPI', op: '=', value: npi });
     // CMS keeps BOTH the surname (individuals) and the organization name in one
     // column — Rndrng_Prvdr_Last_Org_Name — distinguished by Rndrng_Prvdr_Ent_Cd
@@ -1970,6 +1923,7 @@ function getSearchCriteria() {
     }
     if (specialty) c.push({ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: specialty });
     if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
+    if (city) c.push({ path: 'Rndrng_Prvdr_City', op: 'CONTAINS', value: city.toUpperCase() });
   }
   else if (currentTab === 'procedure') {
     // Multi-code searches take fetchAllRows' per-code path; this covers a single
@@ -1980,16 +1934,6 @@ function getSearchCriteria() {
     if (code) c.push({ path: 'HCPCS_Cd', op: '=', value: code });
     if (keyword) c.push({ path: 'HCPCS_Desc', op: 'CONTAINS', value: keyword });
     if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
-  }
-  else if (currentTab === 'geography') {
-    const state = val('stateSelectGeo');
-    const city = val('cityInput').trim();
-    const specialty = val('specialtyGeo').trim();
-    const hcpcs = parseCodes(val('hcpcsGeo')).codes[0] || '';
-    if (state) c.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: state });
-    if (city) c.push({ path: 'Rndrng_Prvdr_City', op: 'CONTAINS', value: city.toUpperCase() });
-    if (specialty) c.push({ path: 'Rndrng_Prvdr_Type', op: 'CONTAINS', value: specialty });
-    if (hcpcs) c.push({ path: 'HCPCS_Cd', op: '=', value: hcpcs });
   }
   return c;
 }
@@ -2184,11 +2128,9 @@ async function fetchAllRows(searchCodes = []) {
 
   // Multi-code mode: fetch each code in parallel then merge.
   if (searchCodes.length > 1) {
-    const stateVal = currentTab === 'geography'
-      ? document.getElementById('stateSelectGeo').value
-      : currentTab === 'procedure'
-        ? document.getElementById('stateSelectProc').value
-        : document.getElementById('stateSelect').value;
+    const stateVal = currentTab === 'procedure'
+      ? document.getElementById('stateSelectProc').value
+      : document.getElementById('stateSelect').value;
 
     btn.innerHTML = `<div class="spinner"></div> Fetching ${searchCodes.length} code${searchCodes.length > 1 ? 's' : ''}...`;
     // Fail-soft: one bad code must not discard the others. Keep the codes that
@@ -2232,11 +2174,9 @@ async function fetchAllRows(searchCodes = []) {
 function getTypedCodes() {
   const raw = currentTab === 'procedure'
     ? document.getElementById('hcpcsCode').value
-    : currentTab === 'geography'
-      ? document.getElementById('hcpcsGeo').value
-      : currentTab === 'tam'
-        ? document.getElementById('tamCodes').value
-        : '';
+    : currentTab === 'tam'
+      ? document.getElementById('tamCodes').value
+      : '';
   return parseCodes(raw);
 }
 
@@ -2345,8 +2285,8 @@ async function executeSearch() {
         // Procedure tab: group by HCPCS code (one card per procedure)
         procedureGroups = groupByProcedure(allRows);
         // Give the "top providers for this code" sub-table the same Tier 1/2/3
-        // scoring used by the By Name/By Location modes, so ranking reads the
-        // same regardless of which mode surfaced a provider. groupByProcedure's
+        // scoring Find Customers uses, so ranking reads the same regardless of
+        // which destination surfaced a provider. groupByProcedure's
         // provider entries don't carry the procedures[]/place shape
         // computeComplexityScore needs, so run a second, parallel grouping pass
         // over the same already-fetched rows purely to compute scores/tiers —
@@ -2651,15 +2591,12 @@ function validateInput() {
            document.getElementById('providerOrg').value.trim() ||
            document.getElementById('npiInput').value.trim() ||
            document.getElementById('specialtyInput').value.trim() ||
-           document.getElementById('stateSelect').value;
+           document.getElementById('stateSelect').value ||
+           document.getElementById('cityInput').value.trim();
   }
   if (currentTab === 'procedure') {
     return document.getElementById('hcpcsCode').value.trim() ||
            document.getElementById('hcpcsKeyword').value.trim();
-  }
-  if (currentTab === 'geography') {
-    return document.getElementById('stateSelectGeo').value ||
-           document.getElementById('cityInput').value.trim();
   }
   if (currentTab === 'tam') {
     return document.getElementById('tamCodes').value.trim() ||

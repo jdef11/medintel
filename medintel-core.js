@@ -145,7 +145,7 @@ function rowMatchesCriteria(row, criteria) {
 // Shape: { tab: 'procedure', year: '2023', fields: { hcpcsCode: '62140', ... } }
 // Encoded as: tab=procedure&year=2023&hcpcsCode=62140
 
-const SHAREABLE_TABS = ['provider', 'procedure', 'geography', 'tam', 'lookup', 'npi'];
+const SHAREABLE_TABS = ['provider', 'procedure', 'tam', 'lookup', 'npi'];
 const MAX_SHARE_VALUE_LEN = 300; // keep links sane and bound untrusted input
 
 function encodeSearchState(state) {
