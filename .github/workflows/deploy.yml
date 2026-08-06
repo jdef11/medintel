@@ -39,6 +39,7 @@ jobs:
           mkdir _site
           cp "cms-sales-intel (4).html" _site/index.html
           cp medintel-core.js _site/
+          cp -r data _site/
 
       - uses: actions/configure-pages@v4
 

@@ -8,7 +8,8 @@ const {
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
-  pctChangeAcrossYears, trendSvgPath
+  pctChangeAcrossYears, trendSvgPath,
+  parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -797,6 +798,101 @@ describe('parseDrgs()', () => {
 
   it('returns empty results for empty input', () => {
     expect(parseDrgs('')).toEqual({ codes: [], invalid: [] });
+  });
+});
+
+// ─── parseIcd10Pcs() ─────────────────────────────────────────────────────────
+
+describe('parseIcd10Pcs()', () => {
+  it('parses comma/space-separated 7-character codes and uppercases them', () => {
+    expect(parseIcd10Pcs('0016070, 0016071 0dq60zz').codes).toEqual(['0016070', '0016071', '0DQ60ZZ']);
+  });
+
+  it('dedupes case-insensitively', () => {
+    expect(parseIcd10Pcs('0016070, 0016070, 0016070').codes).toEqual(['0016070']);
+  });
+
+  it('rejects codes that are not exactly 7 alphanumeric characters', () => {
+    const r = parseIcd10Pcs('0016070, 27447, 025, TOOLONGCODE');
+    expect(r.codes).toEqual(['0016070']);
+    expect(r.invalid).toEqual(['27447', '025', 'TOOLONGCODE']);
+  });
+
+  it('returns empty results for empty input', () => {
+    expect(parseIcd10Pcs('')).toEqual({ codes: [], invalid: [] });
+  });
+});
+
+// ─── expandDrgRange() ────────────────────────────────────────────────────────
+
+describe('expandDrgRange()', () => {
+  it('expands a range into individual zero-padded codes', () => {
+    expect(expandDrgRange('031-033')).toEqual(['031', '032', '033']);
+  });
+
+  it('expands a single DRG to itself, zero-padded', () => {
+    expect(expandDrgRange('955')).toEqual(['955']);
+    expect(expandDrgRange('27')).toEqual(['027']);
+  });
+
+  it('returns an empty array for an unrecognized shape', () => {
+    expect(expandDrgRange('abc')).toEqual([]);
+    expect(expandDrgRange('')).toEqual([]);
+    expect(expandDrgRange(null)).toEqual([]);
+  });
+});
+
+// ─── resolveIcd10PcsToDrgs() ─────────────────────────────────────────────────
+
+describe('resolveIcd10PcsToDrgs()', () => {
+  const index = {
+    categories: ['Ventricular Shunt Procedures', 'Lymphoma and Leukemia with Major O.R. Procedures'],
+    codes: {
+      '0016070': {
+        desc: 'Bypass Cerebral Ventricle to Nasopharynx with Autologous Tissue Substitute, Open Approach',
+        or: true,
+        drgs: [[1, '031-033', 0], [17, '820-822', 1]],
+      },
+      'XXXXXXX': { desc: 'A code that affects no DRG on its own', or: false, drgs: [] },
+    },
+  };
+
+  it('resolves a known code to its deduped, expanded, padded DRG list', () => {
+    const r = resolveIcd10PcsToDrgs(index, '0016070');
+    expect(r.status).toBe('ok');
+    expect(r.desc).toMatch(/Bypass Cerebral Ventricle/);
+    expect(r.drgs).toEqual(['031', '032', '033', '820', '821', '822']);
+    expect(r.mappings).toHaveLength(2);
+    expect(r.mappings[0]).toMatchObject({ mdc: '01', drgRange: '031-033', category: 'Ventricular Shunt Procedures' });
+  });
+
+  it('is case-insensitive and trims input', () => {
+    expect(resolveIcd10PcsToDrgs(index, ' 0016070 ').status).toBe('ok');
+  });
+
+  it('dedupes DRGs that appear via overlapping ranges', () => {
+    const overlapIndex = {
+      categories: ['A', 'B'],
+      codes: { CODE001: { desc: 'x', or: true, drgs: [[1, '031-033', 0], [2, '032-034', 1]] } },
+    };
+    const r = resolveIcd10PcsToDrgs(overlapIndex, 'CODE001');
+    expect(r.drgs).toEqual(['031', '032', '033', '034']);
+  });
+
+  it('reports "no-drg" for a known code with no DRG mappings, not an empty/false result', () => {
+    const r = resolveIcd10PcsToDrgs(index, 'XXXXXXX');
+    expect(r.status).toBe('no-drg');
+    expect(r.desc).toBe('A code that affects no DRG on its own');
+  });
+
+  it('reports "unknown" for a code absent from the index entirely', () => {
+    const r = resolveIcd10PcsToDrgs(index, 'NOTREAL1');
+    expect(r.status).toBe('unknown');
+  });
+
+  it('handles a missing/malformed index gracefully', () => {
+    expect(resolveIcd10PcsToDrgs(null, '0016070').status).toBe('unknown');
+    expect(resolveIcd10PcsToDrgs({}, '0016070').status).toBe('unknown');
   });
 });
 

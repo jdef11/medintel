@@ -67,22 +67,24 @@ The nav is organized around what you're trying to do, not around which CMS datas
 
 **Find by Code** — CMS Medicare | One HCPCS/CPT code, a **bulk-pasted list of codes**, or a keyword, plus state | Results grouped **by procedure** — **true (unsuppressed) total volume**, beneficiaries, payment, plus the named-provider breakdown (with the same Tier 1/2/3 badges as Find Customers) with an explicit coverage %, and a multi-year volume trend. This stays a separate destination from Find Customers because it returns a genuinely different view — one card per *procedure*, not per person.
 
-**Size a Market** — CMS Medicare (Physician + Inpatient Hospital datasets); a CPT code family, MS-DRG codes, and payer-mix/ASP assumptions in → national FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals out.
+**Size a Market** — CMS Medicare (Physician + Inpatient Hospital datasets); a CPT code family, MS-DRG codes, **ICD-10-PCS codes (auto-resolved to their real MS-DRGs)**, and payer-mix/ASP assumptions in → national FFS volume per year, modeled all-payer volume, modeled total US TAM, hospital billing/payments per DRG, top surgeons & hospitals out.
 
 **Utilities** — two small helpers, always reachable from the sidebar (and inline via "Look it up" next to any HCPCS field):
 
 | Utility | Data Source | What You Search | What You Get |
 |-----|------------|----------------|-------------|
-| **Look up a code** | CMS national datasets (client-side dictionaries) | Keyword, CPT/HCPCS code, or MS-DRG code | Both vocabularies side by side with national volumes, cross-vocabulary suggestions, one-click add to Find Customers/Size a Market |
+| **Look up a code** | CMS national datasets (client-side dictionaries) + local ICD-10-PCS crosswalk | Keyword, CPT/HCPCS code, MS-DRG code, or **ICD-10-PCS code** | CPT/HCPCS and MS-DRG side by side with national volumes and cross-vocabulary suggestions; an ICD-10-PCS code resolves to its **real** MS-DRG mapping(s) (not a suggestion) with one-click "+ TAM DRG(s)" to push all of them into Size a Market |
 | **NPI Look Up** | NPPES NPI Registry | First name, last name, state, city, taxonomy | NPI number, credentials, address, phone, license, specialty taxonomy, plus a "View on NPPES ↗" link on each card to that provider's public registry profile |
 
 ### Market TAM Tab
 
 Size a device market from its procedure codes. Paste the code family, set three assumptions — Medicare FFS share of all cases (%), the addressable portion of all cases your device can serve (%), and your average device revenue per procedure — and the top of the page leads with one number: your modeled TAM, a one-line thesis ("A $340M market, growing 18% since CY 2021"), and a real trend chart, not a metrics dump. Supporting evidence — hospital billing detail, top hospitals, the per-code breakdown, top surgeons — sits below in collapsed sections you open only when you need to justify the number. Assumption changes re-model instantly without refetching. Note: hospitals' implant spend is bundled into inpatient DRG payments and is not itemized in any public CMS dataset — the TAM is modeled from volume × ASP, which is the honest way to do it from public data.
 
+**Don't know the MS-DRG for a procedure?** Paste its ICD-10-PCS code(s) instead — MedIntel resolves each one to its real MS-DRG(s) using CMS's own Procedure Code/MS-DRG Index and folds them straight into the hospital billing numbers above, alongside any DRGs you typed directly. The same procedure code can affect different MS-DRGs depending on the principal diagnosis, so every candidate is included automatically (never a pick-one step) — a note under the results spells out exactly what each code resolved to.
+
 ### Code Lookup Tab
 
-One search box, both vocabularies. Keywords (e.g. "cranioplasty") match CPT/HCPCS and MS-DRG descriptions side by side — each hit shows its national Medicare volume so you can tell real-world codes from noise. Enter a code and you get its record plus description-matched suggestions in the other system (with a match-strength chip). Every row has one-click buttons to push the code into the Procedure or Market TAM searches, and a "Browse all MS-DRGs" button lists the full DRG table. Dictionaries are built from the latest CMS national datasets and cached in your browser for a week.
+One search box, four vocabularies. Keywords (e.g. "cranioplasty") match CPT/HCPCS, MS-DRG, and ICD-10-PCS descriptions side by side — each hit shows its national Medicare volume (or, for ICD-10-PCS, its resolved MS-DRG count) so you can tell real-world codes from noise. Enter a CPT or MS-DRG code and you get its record plus description-matched suggestions in the other system (with a match-strength chip) — there's no official crosswalk between those two, so treat cross-matches as leads. Enter a 7-character ICD-10-PCS code and it's different: CMS *does* publish a real Procedure Code/MS-DRG Index, so you get the code's actual MS-DRG mapping(s), not a guess. Every row has one-click buttons to push the code into the Procedure or Market TAM searches, and a "Browse all MS-DRGs" button lists the full DRG table. Dictionaries are built from the latest CMS national datasets and cached in your browser for a week; the ICD-10-PCS crosswalk is a bundled static file (see Data Sources) refreshed periodically, not a live query.
 
 **CPT vs HCPCS:** CPT *is* HCPCS **Level I** (5-digit physician/professional services, AMA-maintained). **Level II** is the CMS-maintained alphanumeric set (letter + 4 digits) for supplies, drugs, DME, and orthotics/prosthetics. CMS stores both in one `HCPCS_Cd` column, so results are labeled `CPT` / `CPT III` / `Level II` by code shape. Note the descriptions shown are CMS's plain-language text, not AMA official descriptors — wording won't match a manufacturer coding guide verbatim.
 
@@ -194,6 +196,9 @@ Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Ne
 **Get contact info for a surgeon:**
 > NPI Look Up → Last Name: Smith → State: FL → Taxonomy: Orthopedic Surgery → Search
 
+**Size a hospital market from a coding guide's ICD-10-PCS code (no MS-DRG in hand):**
+> Size a Market → ICD-10-PCS: `0016070` → Search — resolves to its real MS-DRG(s) automatically
+
 ---
 
 ## Orthopedic Revision CPT Code Reference
@@ -232,6 +237,8 @@ Look any of these up (and find related codes and their MS-DRGs) in the **Code Lo
 
 All are free, public, and maintained by the Centers for Medicare & Medicaid Services (CMS). Each CMS dataset has one versioned `{id}` per calendar year, discovered at runtime from the [catalog](https://data.cms.gov/data.json).
 
+**ICD-10-PCS → MS-DRG crosswalk** is different: CMS doesn't publish this as a live queryable dataset, only as static reference files (the ICD-10-CM/PCS MS-DRG Definitions Manual and the ICD-10-PCS Order File). MedIntel bundles a pre-built `data/icd10pcs-drg-index.json` (~56k codes) generated by `scripts/build-icd10pcs-drg-index.mjs`, refreshed manually (`npm run build:icd10pcs`) whenever CMS ships a new version — not fetched live on every search.
+
 **Verifying live-API assumptions:** run `npm run smoke` (from any network-connected machine, Node 18+). It hits the real CMS API and checks that all dataset titles resolve, the exact fields the app reads still exist, and that the DMEPOS geography-level column is still named as expected (check 12b — a rename there is what previously made `L8699` look like an unbilled code, so it is now asserted explicitly) — run it after a CMS data refresh, or once after deploy to confirm the unique-beneficiary dataset is wired correctly. It prints a pass/fail per check and exits non-zero if anything drifted; it makes no changes.
 
 ---
@@ -247,9 +254,9 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 ## Technical Details
 
-- **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions)
+- **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions) + `data/icd10pcs-drg-index.json` (static ICD-10-PCS → MS-DRG crosswalk — the one dataset with no live CMS API, so it ships as a bundled file instead)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 231 unit tests via Vitest (`npm test`)
+- **Test suite:** 244 unit tests via Vitest (`npm test`)
 - **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
 - **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
 - **Responsive** — works on desktop and mobile
