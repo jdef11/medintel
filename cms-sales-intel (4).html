@@ -3615,9 +3615,15 @@ async function executeTamSearch(codes) {
   // billing that code is under CMS's ≤10-beneficiary reporting floor, so the
   // code has real volume (from the unsuppressed geography aggregate) but zero
   // provider rows to pull a description from.
+  // Search from the LATEST year backward, not oldest-first: CMS periodically
+  // revises HCPCS description text (e.g. 25446 was literally "Removal of
+  // forearm bone at wrist" in CY2013, "Arthroplasty or replacement of the
+  // entire wrist joint" by CY2024) — trend[] is sorted ascending, so a plain
+  // .find() would silently surface the oldest available wording instead of
+  // the current one, disagreeing with Code Lookup's latest-year dictionary.
   trends.forEach(t => {
     if (descMap[t.code]) return;
-    const withDesc = (t.trend || []).find(y => y.desc);
+    const withDesc = [...(t.trend || [])].reverse().find(y => y.desc);
     if (withDesc) descMap[t.code] = withDesc.desc;
   });
 
