@@ -5,8 +5,9 @@
 **MedIntel** is a single-file, zero-dependency web application for medical device sales intelligence. It searches two free, public CMS government APIs to help sales teams identify high-value Medicare providers by procedure volume and payment data.
 
 - **Architecture:** Client-side only — pure vanilla HTML, CSS, and JavaScript
-- **Entry point:** `cms-sales-intel (4).html` (the entire application lives in this one file)
+- **Entry point:** `cms-sales-intel (4).html` (almost the entire application lives in this one file — see the `data/` exception below)
 - **No build step, no package manager, no framework**
+- **One exception to "single file":** `data/icd10pcs-drg-index.json`, a static reference-data asset (see below). Unlike every other dataset this app queries, ICD-10-PCS↔MS-DRG has no live, filterable CMS API behind it — it only exists as static annual/semi-annual reference files, so it's fetched from a bundled JSON file rather than `data.cms.gov`.
 
 ---
 
@@ -16,16 +17,18 @@
 /
 ├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
 ├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
-├── medintel-core.test.js         # Vitest suite for medintel-core.js (231 tests)
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (244 tests)
+├── data/icd10pcs-drg-index.json  # Static ICD-10-PCS → MS-DRG crosswalk + descriptions (~56k codes, ~9MB) — fetched at runtime, not embedded; rebuilt by the script below
 ├── scripts/live-smoke.mjs        # Manual live-CMS verification script (npm run smoke)
+├── scripts/build-icd10pcs-drg-index.mjs  # Manual, ~annual rebuild of data/icd10pcs-drg-index.json (npm run build:icd10pcs) — scrapes CMS's MS-DRG Definitions Manual + ICD-10-PCS Order File; NOT run by CI
 ├── package.json                  # Dev-only tooling: vitest. Not a runtime dependency of the app itself
-├── .github/workflows/deploy.yml  # Runs `npm test`, then publishes the HTML to GitHub Pages
+├── .github/workflows/deploy.yml  # Runs `npm test`, then publishes the HTML (+ medintel-core.js + data/) to GitHub Pages
 ├── README.md                      # User-facing documentation and example searches
 ├── LICENSE                        # MIT License
 └── CLAUDE.md                      # This file
 ```
 
-The app itself ships as a single static file with zero runtime dependencies — `package.json`/`vitest` exist only to test the pure logic extracted into `medintel-core.js`, not to build or bundle anything.
+The app itself ships as a static file bundle with zero runtime dependencies — `package.json`/`vitest` exist only to test the pure logic extracted into `medintel-core.js`, not to build or bundle anything. `data/icd10pcs-drg-index.json` is a plain static asset fetched by the browser exactly like any other same-origin file (no server-side logic, no database) — it's just not embedded inline, because at ~9MB it would bloat the HTML file and blow past what `localStorage` can reliably cache alongside the CPT/DRG dictionaries (see `loadIcd10PcsIndex()`).
 
 ---
 
@@ -104,11 +107,13 @@ The nav is three peer destinations plus a demoted utility strip — **not** arou
 
   The Specialty field (`specialtyInput`) is a free-text input bound to a `<datalist id="specialtyList">` (native browser autocomplete/combobox — no custom JS widget, no dependency). `PROVIDER_SPECIALTIES` (near `US_STATES` in the HTML) is a 90-entry list of real `Rndrng_Prvdr_Type` values harvested from the live CMS API across every state — a search-assist, not an enforced enum: the field still submits whatever text is typed, so a specialty not in the list, or a partial term like "Cardio", works exactly as before via the existing CONTAINS match. `init()` populates the `<datalist>`'s `<option>`s at page load, the same way it populates the state `<select>`s from `US_STATES`.
 - **Find by Code** (`data-tab="procedure"`) — CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends. The "top providers for this code" sub-table carries Tier 1/2/3 badges via a second `assignScoresAndTiers(groupByProvider(allRows))` pass in `executeSearch()`, so ranking reads the same as Find Customers regardless of entry point. Stays a separate destination from Find Customers because it returns a genuinely different view (one card per *procedure*, not per person) — this is the one true code-search destination; Find Customers has no code field.
-- **Size a Market** (`id="navSizeMarket"`, `data-tab="tam"`) — CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
+- **Size a Market** (`id="navSizeMarket"`, `data-tab="tam"`) — CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), **ICD-10-PCS code(s) (`parseIcd10Pcs`) — auto-resolved to their real MS-DRG(s)**, FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
+
+  **ICD-10-PCS → MS-DRG resolution**: `tamIcd10Pcs` is a bulk-paste field parsed by `parseIcd10Pcs` (always exactly 7 alphanumeric characters — never collides with `parseDrgs`' 1-3 digit codes or `parseCodes`' 4-5 char CPT/HCPCS). `executeTamSearch()` resolves each code via `resolveIcd10PcsToDrgs()` (medintel-core.js) against the crosswalk loaded by `loadIcd10PcsIndex()`, unions the result with whatever the user typed directly into `tamDrgs`, dedupes, and feeds the combined list into the **unchanged** `fetchDrgTrend`/`fetchDrgHospitals`/`perDrg` pipeline — those functions already operate on an arbitrary-length deduped DRG array with no 1:1 assumption. The mapping is genuinely one-to-many (the same procedure code can affect different MS-DRGs depending on principal diagnosis/MDC and CC-MCC severity) — **every candidate DRG is auto-included, never a manual selection step**, with a transparency banner in the results (`icd10ResolutionSummary()`) showing exactly what each entered code resolved to. A code that's valid but has no DRG relevance, or isn't recognized at all, gets an explicit message (never a silent empty result) — see `resolveIcd10PcsToDrgs()`'s three-way status (`'ok'` / `'no-drg'` / `'unknown'`) in medintel-core.js.
 - **Utility strip** (`.utility-strip`, always visible, demoted below the nav row) — two helpers, reachable directly or via inline "Look it up" links next to the HCPCS field in Find by Code and Size a Market:
   | Utility (`currentTab`) | API | Key Inputs | Query Parameter |
   |-----|-----|-----------|----------------|
-  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets | Keyword / CPT / HCPCS / MS-DRG | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; rows push codes into other destinations via `addToField` |
+  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets + local ICD-10-PCS index | Keyword / CPT / HCPCS / MS-DRG / **ICD-10-PCS** | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; **ICD-10-PCS codes resolve via `loadIcd10PcsIndex`/`resolveIcd10PcsToDrgs` — a real crosswalk, not a `crossSuggest` heuristic**; rows push codes into other destinations via `addToField`/`addAllToField` |
   | `npi` (NPI Look Up) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params. A "View on NPPES ↗" link on each result card opens that provider's public profile (`npiregistry.cms.hhs.gov/provider-view/{npi}`); the sidebar also links to the registry's own search UI directly |
 
 ### Navigation vs. internal tab ids
@@ -168,6 +173,15 @@ When running as a local file (`file://`), the app cycles through three proxies:
 
 The `activeProxyIndex` variable remembers the last successful proxy to avoid re-trying failed ones.
 
+### ICD-10-PCS → MS-DRG crosswalk (NOT a live API)
+
+Everything above is a live, filterable `data.cms.gov` dataset the app queries at search time. ICD-10-PCS is different: CMS publishes it only as static reference files, refreshed by CMS roughly annually (MS-DRG grouper version) and semi-annually (ICD-10-PCS code set), with no queryable REST endpoint:
+
+- **ICD-10-CM/PCS MS-DRG Definitions Manual, Appendix E** (`cms.gov/icd10m/.../fullcode_cms/`) — "Procedure Code/MS-DRG Index," ~395 sequential HTML pages (walked via each page's own "next page" link, not a URL numbering scheme — the first page's numbering doesn't match the rest). For every DRG-relevant ICD-10-PCS code, lists every `{MDC, MS-DRG range, surgical category}` it can group into (one-to-many by design — see Search Modes above).
+- **ICD-10-PCS Order File** (Long and Abbreviated Titles ZIP, from `cms.gov/medicare/coding-billing/icd-10-codes`) — fixed-width text, code + description, ~79k rows. Appendix E only describes DRG *categories*, not the procedure code itself, so this is a separate, necessary source for the human-readable description.
+
+`scripts/build-icd10pcs-drg-index.mjs` combines both into `data/icd10pcs-drg-index.json`, scoped to the ~56k codes that actually appear in the crosswalk (not the full ~79k code space — a code with no DRG relevance isn't useful for this feature, and shipping the full set would risk exceeding typical `localStorage` quotas for no benefit). Includes a minimal pure-Node ZIP reader (End of Central Directory → central directory → `zlib.inflateRawSync`) rather than adding a dependency just to unzip one build-time file. Run manually via `npm run build:icd10pcs` whenever CMS ships a new version — **not run by CI**, same reasoning as `scripts/live-smoke.mjs` (no route to `cms.gov` from CI/sandbox, and it's a deliberate multi-minute scrape that shouldn't run on every push). The two source URLs are hardcoded to a specific fiscal-year vintage and will need re-resolving on each rebuild (they rotate per CMS release) — see the constants at the top of the script.
+
 ---
 
 ## Key Functions Reference
@@ -194,12 +208,15 @@ The `activeProxyIndex` variable remembers the last successful proxy to avoid re-
 | `fetchProviderTrend(npi)` / `toggleProviderTrend(npi)` | Multi-year per-NPI totals via the Provider & Service dataset versions |
 | `renderTrendChart(box, captionHtml, trend)` | **Real SVG line/area chart** (not a bar-in-a-table-row) — one implementation shared by the Procedure tab's per-code trend, the per-provider volume trend, and both Market TAM trend panels. Coordinate/path math is `trendSvgPath()` (pure, in medintel-core.js); the growth callout ("Grew X% since CY——") is `pctChangeAcrossYears()` (same file). Measures `box.clientWidth` to size the chart, so the box must already be visible (`display` other than `none`) when called — see `toggleTamDrgDetail()` for the deferred-render pattern this requires when a chart lives inside a collapsed section |
 | `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab); the top-providers sub-table's Tier badges come from `executeSearch()`'s second `assignScoresAndTiers(groupByProvider(allRows))` pass, not from `groupByProcedure` itself |
-| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab. Renders a hero card first (`.tam-hero` — thesis line, TAM $ figure, trend chart into `#tam-hero-trend`) since that figure is the one thing a rep screenshots into a business case; supporting detail (hospital billing, top hospitals, per-code breakdown, top surgeons) renders as collapsed-by-default sections via `toggleDetail(id)`/`toggleTamDrgDetail()`. Assumptions re-render live |
+| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab. Renders a hero card first (`.tam-hero` — thesis line, TAM $ figure, trend chart into `#tam-hero-trend`) since that figure is the one thing a rep screenshots into a business case; supporting detail (hospital billing, top hospitals, per-code breakdown, top surgeons) renders as collapsed-by-default sections via `toggleDetail(id)`/`toggleTamDrgDetail()`. Assumptions re-render live. Before reading `tamDrgs`, resolves any `tamIcd10Pcs` codes to their MS-DRG(s) and unions them in — see `resolveIcd10PcsToDrgs` below |
 | `toggleDetail(id)` / `toggleTamDrgDetail()` | Generic collapse/expand for Market TAM's page-level (not per-row) detail sections — `id` matching `detail-btn-${id}`/`detail-${id}`. The DRG variant additionally lazy-renders `#tam-drg-trend` on first open (via the module-level `tamDrgTrendArgs`, set at the end of `renderTamResults()`) since that chart's container starts `display:none` |
 | `parseDrgs(input)` / `fetchDrgTrend(drg)` / `fetchDrgHospitals(drgs)` | MS-DRG parsing + inpatient hospital billing/payment totals and top hospitals (Inpatient Hospitals datasets) |
+| `parseIcd10Pcs(input)` / `expandDrgRange(range)` / `resolveIcd10PcsToDrgs(index, code)` | (pure, in medintel-core.js) ICD-10-PCS code parsing (always exactly 7 chars); `"031-033"` → `["031","032","033"]` range expansion; and the code → real MS-DRG(s) resolution itself, returning a three-way status (`'ok'` / `'no-drg'` / `'unknown'`) so a code with no DRG relevance or an unrecognized code is never a silent empty result |
+| `loadIcd10PcsIndex()` / `icd10PcsAsArray()` | Fetches/memoizes `data/icd10pcs-drg-index.json` (no `localStorage` caching — the real file is ~9MB, past what's safe to re-stringify into `localStorage` alongside the CPT/DRG dictionaries; relies on the browser's native HTTP cache instead) and derives the `{code,desc}` array view `searchDict()` expects |
+| `icd10ResolutionSummary(r)` | One-line summary of a `resolveIcd10PcsToDrgs()` result, shared by Size a Market's early-validation error and its post-search transparency banner so the wording is identical either way |
 | `tokenizeMedical` / `searchDict` / `crossSuggest` | Code Lookup search core (pure, in medintel-core.js) — keyword AND-match with prefix-stem fallback; heuristic cross-vocabulary suggestions |
 | `loadCptDict()` / `loadDrgDict()` / `executeLookupSearch()` | Code Lookup tab — dictionaries from national dataset rows, localStorage-cached (`medintel_cpt_dict_v1`/`medintel_drg_dict_v1`). Page-capped builds set `cptDictTruncated`/`drgDictTruncated` |
-| `lookupCptCodeDirect` / `lookupDrgCodeDirect` / `lookupCptKeywordDirect` | **Truncation workaround** — the dictionaries are a capped local index, so a miss triggers a targeted direct-API query for that code/keyword. Each verifies the returned rows actually match (filter-bypass safety net) before trusting them |
+| `lookupCptCodeDirect` / `lookupDrgCodeDirect` / `lookupCptKeywordDirect` | **Truncation workaround** — the dictionaries are a capped local index, so a miss triggers a targeted direct-API query for that code/keyword. Each verifies the returned rows actually match (filter-bypass safety net) before trusting them. **No ICD-10-PCS equivalent exists** — there's no live filterable API to query on a miss (see External APIs); `loadIcd10PcsIndex()`'s file is complete or it isn't, so a miss there is a real "not in the index," not a suspected truncation |
 | `hcpcsLevelBadge(code)` | Labels a code CPT (Level I) / CPT III / Level II from its shape |
 | `lookupDmeCode` / `lookupDmeKeyword` / `lookupDmeReferrers` / `dmePanelHtml` | **DMEPOS lookup** — supplier-billed Level II codes are absent from physician data, so Code Lookup also queries the DME Geography & Service dataset (volume/payments/benes/supplier count) and the DME Referring Provider dataset (`groupByReferrer` → ranked ordering physicians), rendered in its own panel. Each returns a `{status: 'ok'\|'none'\|'unavailable'\|'not-applicable'}` object — `unavailable` renders as an explicit amber "could not check", never as an empty result |
 | `fetchDmeGeoRows(base, filterParam, size)` | Requests DMEPOS geography rows scoped to National. **The DMEPOS geo column is `Rfrg_Prvdr_Geo_Lvl`** (geography is the *referring* provider's), not the `Rndrng_Prvdr_Geo_Lvl` used by the physician/inpatient files. Tries the documented filter, then retries unfiltered and scopes via `pickNationalRows` — a renamed column costs a request, never a wrong answer |
@@ -270,10 +287,11 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 231 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 244 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
-- Manual UI validation: open in a browser (or `npx serve .`), exercise Find Customers, Find by Code, Size a Market, and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback.
+- **`npm run build:icd10pcs`** (`node scripts/build-icd10pcs-drg-index.mjs`; run manually, network required, ~5-10 min) rebuilds `data/icd10pcs-drg-index.json` — run whenever CMS ships a new MS-DRG grouper version or ICD-10-PCS code set (roughly annually/semi-annually), not on every change.
+- Manual UI validation: open in a browser (or `npx serve .`), exercise Find Customers, Find by Code, Size a Market, and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback. For the ICD-10-PCS feature specifically: a code that resolves to multiple MS-DRGs, a code with no DRG relevance, an unrecognized code, and an ICD-10-PCS code combined with a manually-typed MS-DRG (confirm union/dedupe) should each produce a distinct, explicit message — never a silent empty result.
 
 ---
 

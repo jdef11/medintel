@@ -519,6 +519,87 @@ function parseDrgs(input) {
   return { codes, invalid };
 }
 
+// ─── ICD-10-PCS PARSING ───
+// Parses a pasted list of ICD-10-PCS codes. Always exactly 7 alphanumeric
+// characters — this shape never collides with parseDrgs' 1-3 digit codes or
+// parseCodes' 4-5 character CPT/HCPCS codes. Returns { codes, invalid }.
+function parseIcd10Pcs(input) {
+  const tokens = String(input || '').split(/[\s,;]+/).filter(Boolean);
+  const codes = [];
+  const invalid = [];
+  const seen = new Set();
+  tokens.forEach(t => {
+    const c = t.toUpperCase();
+    if (/^[A-Z0-9]{7}$/.test(c)) {
+      if (!seen.has(c)) { seen.add(c); codes.push(c); }
+    } else {
+      invalid.push(t);
+    }
+  });
+  return { codes, invalid };
+}
+
+// ─── ICD-10-PCS → MS-DRG CROSSWALK ───
+// Expands a CMS-published DRG range string ("031-033") into individual
+// 3-digit MS-DRG codes (["031","032","033"]); a single DRG ("955") expands to
+// itself. Unrecognized shapes return an empty array rather than throwing, so a
+// malformed crosswalk entry degrades to "no mapping" instead of crashing the
+// whole resolution.
+function expandDrgRange(rangeStr) {
+  const s = String(rangeStr || '').trim();
+  const range = s.match(/^(\d{1,3})-(\d{1,3})$/);
+  if (range) {
+    const start = parseInt(range[1], 10);
+    const end = parseInt(range[2], 10);
+    const out = [];
+    for (let i = start; i <= end; i++) out.push(String(i).padStart(3, '0'));
+    return out;
+  }
+  if (/^\d{1,3}$/.test(s)) return [s.padStart(3, '0')];
+  return [];
+}
+
+// Resolves one ICD-10-PCS code against the loaded crosswalk index (the JSON
+// built by scripts/build-icd10pcs-drg-index.mjs: { categories, codes: { CODE:
+// { desc, or, drgs: [[mdc, drgRange, categoryIndex], ...] } } }).
+//
+// The mapping is one-to-many by design (the same code can affect different
+// MS-DRGs depending on principal diagnosis/MDC and CC-MCC severity), so this
+// never picks a single "best" DRG — it returns every candidate, deduped and
+// 3-digit-padded, for the caller to auto-include (per this app's TAM UX).
+//
+// Three distinct outcomes, never a silent empty result:
+//  - 'unknown'  — code isn't in the index at all (not recognized, or newer
+//                 than the index's last refresh).
+//  - 'no-drg'   — a real, known ICD-10-PCS code that doesn't independently
+//                 affect MS-DRG assignment (its cost is captured under
+//                 whichever DRG the principal diagnosis/other procedures
+//                 assign, not this code alone).
+//  - 'ok'       — resolved to one or more MDC/DRG-range/category mappings.
+function resolveIcd10PcsToDrgs(index, code) {
+  const c = String(code || '').trim().toUpperCase();
+  const entry = index && index.codes ? index.codes[c] : undefined;
+  if (!entry) return { code: c, status: 'unknown' };
+
+  const categories = index.categories || [];
+  const mappings = (entry.drgs || []).map(([mdc, drgRange, categoryIdx]) => ({
+    mdc: String(mdc).padStart(2, '0'),
+    drgRange,
+    category: categories[categoryIdx] || '',
+    drgs: expandDrgRange(drgRange),
+  }));
+
+  if (!mappings.length) {
+    return { code: c, status: 'no-drg', desc: entry.desc || null, or: !!entry.or };
+  }
+
+  const drgs = [];
+  const seen = new Set();
+  mappings.forEach(m => m.drgs.forEach(d => { if (!seen.has(d)) { seen.add(d); drgs.push(d); } }));
+
+  return { code: c, status: 'ok', desc: entry.desc || null, or: !!entry.or, mappings, drgs };
+}
+
 // ─── HOSPITAL (INPATIENT) FIELD ACCESSORS ───
 // The Medicare Inpatient Hospitals datasets report per-DRG averages; totals are
 // derived as discharges × average. Field spellings have varied across dataset
@@ -963,5 +1044,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs };
 }

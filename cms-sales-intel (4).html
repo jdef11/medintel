@@ -1088,6 +1088,11 @@
           <input type="text" id="tamDrgs" placeholder="e.g. 025, 026, 027 (from your coding guide)">
         </div>
         <div class="field">
+          <label class="field-label" for="tamIcd10Pcs">ICD-10-PCS code(s) — resolves to MS-DRG(s)</label>
+          <textarea id="tamIcd10Pcs" rows="2" aria-describedby="tamIcd10PcsHint" placeholder="e.g. 0016070 — auto-resolved to its real MS-DRG(s) above"></textarea>
+          <div id="tamIcd10PcsHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line · Resolved DRGs are combined with any typed above · Don't know the code? <a href="#" onclick="switchTab('lookup');return false;">Look it up</a></div>
+        </div>
+        <div class="field">
           <label class="field-label" for="tamFfsShare">Medicare FFS share of all cases (%)</label>
           <input type="text" id="tamFfsShare" placeholder="e.g. 40" value="40">
         </div>
@@ -1110,12 +1115,12 @@
       <div id="lookupFields" style="display:none;">
         <div class="field">
           <label class="field-label" for="lookupQuery">Code or keyword</label>
-          <input type="text" id="lookupQuery" placeholder="e.g. cranioplasty, 62140, J1885, 025">
+          <input type="text" id="lookupQuery" placeholder="e.g. cranioplasty, 62140, J1885, 025, 0016070">
         </div>
         <button class="btn btn-secondary" onclick="browseAllDrgs()" style="margin-bottom:4px;">Browse all MS-DRGs</button>
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:8px;">
           <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
-            <strong style="color:var(--accent);">One search, both vocabularies</strong> — keywords match CPT/HCPCS and MS-DRG descriptions side by side. Entering a code shows its record plus description-matched suggestions in the other system. There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses), so cross-matches are suggestions to verify against a coding guide.
+            <strong style="color:var(--accent);">One search, four vocabularies</strong> — keywords match CPT/HCPCS, MS-DRG, and ICD-10-PCS descriptions side by side (plus supplier-billed HCPCS Level II). Entering a CPT or MS-DRG code shows its record plus description-matched suggestions in the other system — there's no official CPT↔DRG crosswalk, so those cross-matches are leads to verify. Entering a 7-character ICD-10-PCS code is different: it resolves to its <em>real</em> MS-DRG mapping(s) from CMS's own Procedure Code/MS-DRG Index, ready to feed straight into Size a Market.
           </div>
         </div>
       </div>
@@ -1365,6 +1370,9 @@ let cptDict = null;           // Code Lookup: [{code, desc, services}] sorted by
 let drgDict = null;           // Code Lookup: [{code, desc, discharges, avgPaid}] sorted by volume
 const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v1';
 const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
+let icd10PcsIndex = null;     // { version, builtAt, categories, codes } — built by scripts/build-icd10pcs-drg-index.mjs
+let icd10PcsArray = null;     // memoized [{code, desc}] view of icd10PcsIndex.codes, for searchDict()
+const ICD10PCS_INDEX_URL = './data/icd10pcs-drg-index.json';
 // The dictionaries are a local index built by paginating the national rows, and
 // that pagination is capped. When the cap is hit the index is INCOMPLETE, so a
 // "no matches" result can't be trusted — these flags trigger a targeted
@@ -1422,7 +1430,7 @@ function init() {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
   });
   // Bulk-code textareas: Enter searches, Shift+Enter inserts a newline
-  ['hcpcsCode', 'tamCodes'].forEach(id => {
+  ['hcpcsCode', 'tamCodes', 'tamIcd10Pcs'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); executeSearch(); }
     });
@@ -1921,7 +1929,7 @@ function updateFilterFabBadge() {
 const TAB_FIELDS = {
   provider:  ['providerFirstName', 'providerName', 'providerOrg', 'npiInput', 'specialtyInput', 'stateSelect', 'cityInput'],
   procedure: ['hcpcsCode', 'hcpcsKeyword', 'stateSelectProc'],
-  tam:       ['tamCodes', 'tamDrgs', 'tamFfsShare', 'tamCasePortion', 'tamAsp'],
+  tam:       ['tamCodes', 'tamDrgs', 'tamIcd10Pcs', 'tamFfsShare', 'tamCasePortion', 'tamAsp'],
   lookup:    ['lookupQuery'],
   npi:       ['npiFirstName', 'npiLastName', 'stateSelectNpi', 'npiCity', 'npiTaxonomy'],
 };
@@ -2735,7 +2743,8 @@ function validateInput() {
   }
   if (currentTab === 'tam') {
     return document.getElementById('tamCodes').value.trim() ||
-           document.getElementById('tamDrgs').value.trim();
+           document.getElementById('tamDrgs').value.trim() ||
+           document.getElementById('tamIcd10Pcs').value.trim();
   }
   if (currentTab === 'lookup') {
     return document.getElementById('lookupQuery').value.trim();
@@ -3495,17 +3504,60 @@ async function fetchProviderTrend(npi) {
 //   1. National FFS procedure volume per code per year (Geography & Service dataset)
 //   2. Modeled total volume and device TAM from user assumptions (FFS share, ASP)
 //   3. Top surgeons by volume (latest-year Provider & Service dataset)
+// One-line summary of what an ICD-10-PCS code resolved to — shared by the
+// early-bail error message and the post-search transparency banner, so the
+// wording is consistent whether the resolution succeeded, found no DRG
+// relevance, or the code wasn't recognized at all.
+function icd10ResolutionSummary(r) {
+  if (r.status === 'ok') return `${r.code} → MS-DRG ${r.drgs.join(', ')}`;
+  if (r.status === 'no-drg') return `${r.code} → doesn't independently determine MS-DRG assignment`;
+  return `${r.code} → not recognized (check the code, or the crosswalk may need refreshing)`;
+}
+
 async function executeTamSearch(codes) {
   const btn = document.getElementById('searchBtn');
+
+  const icd10Parsed = parseIcd10Pcs(document.getElementById('tamIcd10Pcs').value);
+  if (icd10Parsed.invalid.length) {
+    showError(`Unrecognized ICD-10-PCS code(s): ${icd10Parsed.invalid.slice(0, 10).join(', ')} — ICD-10-PCS codes are always exactly 7 alphanumeric characters.`);
+    return;
+  }
+
+  // Auto-include every candidate MS-DRG a resolved code maps to (never a
+  // manual selection step — the same code can affect different DRGs
+  // depending on principal diagnosis/MDC, so "which one" isn't a single
+  // right answer; summing across all of them is the honest default).
+  let icd10Resolutions = [];
+  if (icd10Parsed.codes.length) {
+    btn.innerHTML = '<div class="spinner"></div> Resolving ICD-10-PCS to MS-DRG...';
+    try {
+      const index = await loadIcd10PcsIndex();
+      icd10Resolutions = icd10Parsed.codes.map(code => resolveIcd10PcsToDrgs(index, code));
+    } catch (e) {
+      showError(`Could not load the ICD-10-PCS → MS-DRG crosswalk: ${e.message}`);
+      return;
+    }
+  }
+  const resolvedDrgs = [];
+  const resolvedSeen = new Set();
+  icd10Resolutions.forEach(r => (r.drgs || []).forEach(d => { if (!resolvedSeen.has(d)) { resolvedSeen.add(d); resolvedDrgs.push(d); } }));
 
   const drgParsed = parseDrgs(document.getElementById('tamDrgs').value);
   if (drgParsed.invalid.length) {
     showError(`Unrecognized MS-DRG code(s): ${drgParsed.invalid.slice(0, 10).join(', ')} — DRGs are 1–3 digit numbers (e.g. 025, 026, 027).`);
     return;
   }
-  const drgs = drgParsed.codes;
+  // Union with whatever the user already typed directly into MS-DRG — the two
+  // inputs are complementary, not exclusive.
+  const drgSeen = new Set(drgParsed.codes);
+  const drgs = drgParsed.codes.concat(resolvedDrgs.filter(d => !drgSeen.has(d)));
+
   if (!codes.length && !drgs.length) {
-    showError('Enter HCPCS/CPT code(s) and/or MS-DRG code(s) to size the market.');
+    if (icd10Parsed.codes.length) {
+      showError(`No MS-DRG(s) to search: ${icd10Resolutions.map(icd10ResolutionSummary).join('; ')}. Add HCPCS/CPT or MS-DRG codes directly, or check the ICD-10-PCS code(s).`);
+    } else {
+      showError('Enter HCPCS/CPT code(s) and/or MS-DRG code(s) to size the market.');
+    }
     return;
   }
 
@@ -3548,11 +3600,11 @@ async function executeTamSearch(codes) {
     tamResults = null;
     tamDrgTrendArgs = null; // otherwise a prior search's DRG chart args linger
     procedureGroups = []; // reuse the no-results empty state
-    renderNoTamResults(codes.concat(drgs));
+    renderNoTamResults(codes.concat(drgs), icd10Resolutions);
     return;
   }
 
-  tamResults = { codes, trends, surgeons, surgeonsCapped, surgeonYear, descMap, drgs, drgTrends, hospitals: hospitalData.hospitals, hospitalsCapped: hospitalData.capped };
+  tamResults = { codes, trends, surgeons, surgeonsCapped, surgeonYear, descMap, drgs, drgTrends, hospitals: hospitalData.hospitals, hospitalsCapped: hospitalData.capped, icd10Resolutions };
   renderTamResults();
 }
 
@@ -3646,12 +3698,16 @@ async function fetchDrgHospitals(drgs) {
   };
 }
 
-function renderNoTamResults(codes) {
+function renderNoTamResults(codes, icd10Resolutions) {
   const emptyState = document.getElementById('emptyState');
+  const icd10Note = (icd10Resolutions && icd10Resolutions.length)
+    ? `<p style="color:var(--text-3);">ICD-10-PCS resolution: ${escapeHtml(icd10Resolutions.map(icd10ResolutionSummary).join('; '))}</p>`
+    : '';
   emptyState.innerHTML = `
     <div class="empty-icon">📭</div>
     <h2>These codes returned nothing.</h2>
     <p>No Medicare FFS data found for <strong>${escapeHtml(codes.join(', '))}</strong>. Double-check the codes — inpatient-only procedures still show up here via the surgeon's professional claim, but a code with no Part B billing at all can't be sized from this dataset. <a href="#" onclick="switchTab('lookup');return false;">Look up the right code</a> and try again.</p>
+    ${icd10Note}
   `;
   emptyState.style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
@@ -3678,7 +3734,7 @@ function tamAssumptions() {
 
 function renderTamResults() {
   if (!tamResults) return;
-  const { codes, trends, surgeons, surgeonsCapped = false, surgeonYear = null, descMap, drgs = [], drgTrends = [], hospitals = [], hospitalsCapped = false } = tamResults;
+  const { codes, trends, surgeons, surgeonsCapped = false, surgeonYear = null, descMap, drgs = [], drgTrends = [], hospitals = [], hospitalsCapped = false, icd10Resolutions = [] } = tamResults;
   const { share, portion, asp } = tamAssumptions();
 
   document.getElementById('emptyState').style.display = 'none';
@@ -3764,6 +3820,8 @@ function renderTamResults() {
         </button>
       </div>
     </div>
+
+    ${icd10Resolutions.length ? `<div class="year-note" style="margin:0 0 12px;">↳ ICD-10-PCS resolution: ${escapeHtml(icd10Resolutions.map(icd10ResolutionSummary).join('; '))}. Every candidate MS-DRG is auto-included above and below — the same procedure code can affect different MS-DRGs depending on principal diagnosis, so there's no single "right" one to pick.</div>` : ''}
 
     ${codes.length ? `
     <div class="result-card tam-hero">
@@ -3939,7 +3997,7 @@ function renderTamResults() {
 
 function exportTamCSV() {
   if (!tamResults) return;
-  const { trends, descMap, drgTrends = [] } = tamResults;
+  const { trends, descMap, drgTrends = [], icd10Resolutions = [] } = tamResults;
   const { share, portion, asp } = tamAssumptions();
   const today = new Date().toISOString().slice(0, 10);
   const headers = [
@@ -3982,7 +4040,13 @@ function exportTamCSV() {
       latest ? (latest.payment || 0).toFixed(2) : '',
       today
     ];
-  }));
+  })).concat(icd10Resolutions.map(r => [
+    'ICD-10-PCS',
+    r.code,
+    r.status === 'ok' ? `Resolved to MS-DRG ${r.drgs.join(', ')}` : icd10ResolutionSummary(r),
+    '', '', '', '', '', '', '', '', '', '',
+    today
+  ]));
   triggerCsvDownload(headers, rows, `medintel_market_tam_${today}.csv`);
 }
 
@@ -4093,6 +4157,46 @@ async function loadDrgDict(progress) {
   drgDictTruncated = truncated;
   if (!truncated) writeDictCache(DRG_DICT_CACHE_KEY, drgDict);
   return drgDict;
+}
+
+// Loads the ICD-10-PCS → MS-DRG crosswalk index (data/icd10pcs-drg-index.json),
+// built offline by scripts/build-icd10pcs-drg-index.mjs. Unlike loadCptDict/
+// loadDrgDict, this has no live queryable CMS API behind it — the ICD-10-PCS
+// Order File and the MS-DRG Definitions Manual are static annual/semi-annual
+// reference files, not a paginated dataset-api endpoint. So there's no
+// pagination loop and no truncation concept: the shipped file is complete as
+// of its last build, or it isn't (in which case a code is simply absent — see
+// resolveIcd10PcsToDrgs()'s 'unknown' status, not a partial-index warning).
+//
+// NOT run through readDictCache/writeDictCache: the real built file is ~9MB
+// (56,000+ codes — ICD-10-PCS is heavily combinatorial), well past what
+// localStorage can reliably hold (~5-10MB per origin in most browsers)
+// alongside the CPT/DRG dictionaries already cached there. Re-stringifying an
+// ~9MB object into localStorage on every load would likely hit the quota and
+// silently fall back anyway, for no real benefit — the static file itself is
+// already well suited to the browser's native HTTP cache (same-origin,
+// unchanging between rebuilds), so this only memoizes in memory per session.
+async function loadIcd10PcsIndex(progress) {
+  if (icd10PcsIndex) return icd10PcsIndex;
+  if (progress) progress('Loading ICD-10-PCS → MS-DRG crosswalk...');
+  const res = await fetch(ICD10PCS_INDEX_URL);
+  if (!res.ok) throw new Error(`Could not load the ICD-10-PCS → MS-DRG crosswalk (HTTP ${res.status}).`);
+  const index = await res.json();
+  if (!index || !index.codes || !Object.keys(index.codes).length) {
+    throw new Error('The ICD-10-PCS → MS-DRG crosswalk file is empty or malformed.');
+  }
+  icd10PcsIndex = index;
+  return icd10PcsIndex;
+}
+
+// Memoized array-of-{code,desc} view for searchDict(), built once per index load.
+function icd10PcsAsArray() {
+  if (icd10PcsArray) return icd10PcsArray;
+  if (!icd10PcsIndex) return [];
+  icd10PcsArray = Object.keys(icd10PcsIndex.codes).map(code => ({
+    code, desc: icd10PcsIndex.codes[code].desc || ''
+  }));
+  return icd10PcsArray;
 }
 
 // ─── DIRECT API LOOKUP (truncation workaround) ───
@@ -4306,23 +4410,42 @@ async function executeLookupSearch() {
   progress('Loading code dictionaries...');
   // Fail-soft: one vocabulary failing must not take down the whole lookup. A
   // transient DRG-dataset error shouldn't stop a CPT or Level II search.
-  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress)]);
+  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress), loadIcd10PcsIndex(progress)]);
   const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
   const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
+  const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
   const dictErrors = [];
   if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
   if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
-  if (dictErrors.length === 2) {
+  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
+  if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
     throw new Error('Could not build either code index from the CMS API — please try again.');
   }
 
   let cptMatches, drgMatches;
+  let icd10PcsMatches = null; // null = panel hidden (browse-all-DRGs, or a DRG/CPT-shaped query — no reverse lookup)
   let crossNote = '';
+  let icd10Note = ''; // separate from crossNote: this one IS an official crosswalk, not a description-match guess
   let usedDirect = false;
   let dme = null;           // { status, matches, scope?, reason?, family? } — Level II panel
   let dmeReferrers = null;  // { referrers, year } for an exact Level II code
 
-  if (/^\d{1,3}$/.test(q)) {
+  if (/^[A-Za-z0-9]{7}$/.test(q) && icd10PcsLoaded) {
+    // Looks like an ICD-10-PCS code (always exactly 7 chars — never overlaps
+    // the 1-3 digit DRG shape or the 4-5 char CPT/HCPCS shape below).
+    const code = q.toUpperCase();
+    const resolved = resolveIcd10PcsToDrgs(icd10PcsLoaded, code);
+    icd10PcsMatches = [resolved];
+    cptMatches = searchDict(cpt, q);
+    if (resolved.status === 'ok') {
+      // Real crosswalk mappings, not a heuristic — pull each resolved DRG's
+      // actual description/volume straight from the already-loaded DRG dict.
+      drgMatches = resolved.drgs.map(d => drg.find(x => x.code === d)).filter(Boolean);
+      icd10Note = `MS-DRG panel shows ${code}'s real MS-DRG mappings, resolved from CMS's own Procedure Code/MS-DRG Index (Appendix E) — not a description-match guess.`;
+    } else {
+      drgMatches = searchDict(drg, q);
+    }
+  } else if (/^\d{1,3}$/.test(q)) {
     // Looks like an MS-DRG code
     const code = q.padStart(3, '0');
     let exact = drg.filter(d => d.code === code);
@@ -4381,13 +4504,18 @@ async function executeLookupSearch() {
       const direct = await lookupCptKeywordDirect(q);
       if (direct.length) { cptMatches = direct; usedDirect = true; }
     }
+    // Keywords also search the ICD-10-PCS vocabulary, resolving each match to
+    // its real MS-DRG mappings (not just returning a bare code/desc pair).
+    if (icd10PcsLoaded) {
+      icd10PcsMatches = searchDict(icd10PcsAsArray(), q).map(m => resolveIcd10PcsToDrgs(icd10PcsLoaded, m.code));
+    }
     // Keywords also search the supplier (Level II) vocabulary — "prosthetic",
     // "knee brace" etc. live there, not in the physician data.
     progress('Searching supplier (DMEPOS) codes…');
     dme = await lookupDmeKeyword(q);
   }
 
-  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors);
+  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note);
 }
 
 async function browseAllDrgs() {
@@ -4416,16 +4544,36 @@ async function browseAllDrgs() {
 // Append a code to a search field (no tab switch — results stay on screen).
 function addToField(fieldId, code, btnEl) {
   const el = document.getElementById(fieldId);
-  const parsed = fieldId === 'tamDrgs' ? parseDrgs(el.value) : parseCodes(el.value);
+  const parsed = fieldId === 'tamDrgs' ? parseDrgs(el.value)
+    : fieldId === 'tamIcd10Pcs' ? parseIcd10Pcs(el.value)
+    : parseCodes(el.value);
   if (!parsed.codes.includes(code)) {
     el.value = el.value.trim() ? el.value.trim().replace(/[,\s]+$/, '') + ', ' + code : code;
   }
-  if (btnEl) {
-    const orig = btnEl.textContent;
-    btnEl.textContent = '✓ Added';
-    btnEl.classList.add('added');
-    setTimeout(() => { btnEl.textContent = orig; btnEl.classList.remove('added'); }, 1400);
+  flashAdded(btnEl);
+}
+
+// Same as addToField, but for a resolved ICD-10-PCS code's whole DRG set at
+// once (e.g. "+ TAM DRG(s)" — adds every candidate MS-DRG in one click).
+// csvCodes is a plain comma-joined string (not JSON) so it drops cleanly into
+// an inline onclick="" attribute without quoting hazards.
+function addAllToField(fieldId, csvCodes, btnEl) {
+  const el = document.getElementById(fieldId);
+  const toAdd = csvCodes.split(',').filter(Boolean);
+  const existing = new Set(parseDrgs(el.value).codes);
+  const fresh = toAdd.filter(c => !existing.has(c));
+  if (fresh.length) {
+    el.value = el.value.trim() ? el.value.trim().replace(/[,\s]+$/, '') + ', ' + fresh.join(', ') : fresh.join(', ');
   }
+  flashAdded(btnEl);
+}
+
+function flashAdded(btnEl) {
+  if (!btnEl) return;
+  const orig = btnEl.textContent;
+  btnEl.textContent = '✓ Added';
+  btnEl.classList.add('added');
+  setTimeout(() => { btnEl.textContent = orig; btnEl.classList.remove('added'); }, 1400);
 }
 
 function lookupRowHtml(item, kind) {
@@ -4445,6 +4593,34 @@ function lookupRowHtml(item, kind) {
       <div class="proc-desc" title="${escapeHtml(item.desc)}">${escapeHtml(item.desc || '—')}${level}</div>
       <div class="lookup-metric">${metric}</div>
       <div style="display:flex;gap:4px;">${actions}</div>
+    </div>
+  `;
+}
+
+// Row template for a resolved ICD-10-PCS code — structurally its own template
+// (not lookupRowHtml) because it needs to show a *set* of resolved MS-DRGs
+// inline, not a single volume/payment metric, and its own OR/non-OR badge.
+function icd10PcsRowHtml(resolved) {
+  const orBadge = resolved.status !== 'unknown'
+    ? ` <span class="match-score" title="${resolved.or ? 'Operating room procedure' : 'Non-OR procedure that still affects MS-DRG assignment'}">${resolved.or ? 'OR' : 'Non-OR'}</span>`
+    : '';
+  let metric;
+  let action = '';
+  if (resolved.status === 'ok') {
+    metric = `${resolved.drgs.length} MS-DRG${resolved.drgs.length !== 1 ? 's' : ''}: ${resolved.drgs.join(', ')}`;
+    action = `<button class="mini-btn" onclick="addAllToField('tamDrgs','${resolved.drgs.join(',')}',this)">+ TAM DRG(s)</button>`;
+  } else if (resolved.status === 'no-drg') {
+    metric = 'Does not independently determine MS-DRG assignment';
+  } else {
+    metric = 'Not recognized — check the code or the crosswalk may need refreshing';
+  }
+  const desc = resolved.desc || (resolved.status === 'unknown' ? '' : '(description unavailable)');
+  return `
+    <div class="lookup-row">
+      <div class="proc-code">${escapeHtml(resolved.code)}${orBadge}</div>
+      <div class="proc-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</div>
+      <div class="lookup-metric">${escapeHtml(metric)}</div>
+      <div style="display:flex;gap:4px;">${action}</div>
     </div>
   `;
 }
@@ -4554,7 +4730,7 @@ function dmePanelHtml(dme, dmeReferrers, query) {
   </div>`;
 }
 
-function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect, dme, dmeReferrers, dictErrors) {
+function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOverride, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note) {
   document.getElementById('emptyState').style.display = 'none';
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
@@ -4575,6 +4751,7 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
     ${(dictErrors && dictErrors.length) ? `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ ${escapeHtml(dictErrors.join('; '))} — results below come from the vocabularies that did load. Retry to rebuild.</div>` : ''}
     ${usedDirect ? `<div class="year-note" style="margin:0 0 12px;color:var(--green);">✓ Found by querying CMS directly — this code/term was missing from the local index (which is capped), so the index alone would have reported "not found".</div>` : ''}
     ${crossNote ? `<div class="year-note" style="margin:0 0 12px;">≈ ${escapeHtml(crossNote)} There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — treat cross-matches as leads to verify against a coding guide.</div>` : ''}
+    ${icd10Note ? `<div class="year-note" style="margin:0 0 12px;color:var(--green);">✓ ${escapeHtml(icd10Note)}</div>` : ''}
   `;
 
   if (cptMatches !== null) {
@@ -4595,6 +4772,20 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
         : `<div class="year-note" style="margin:0;">No DRG matches for this query.${drgDictTruncated ? ' ⚠ The DRG index was truncated this session; a direct API check was attempted for exact DRG codes.' : ''}</div>`}
     </div>
   `;
+
+  // ICD-10-PCS panel — shown for an exact ICD-10-PCS match or a keyword search
+  // (not for the "browse all DRGs" listing, and not for a DRG/CPT-shaped exact
+  // query — there's no reverse DRG/CPT → ICD-10-PCS lookup in this version).
+  if (!titleOverride && icd10PcsMatches !== null) {
+    const icdYear = icd10PcsIndex ? icd10PcsIndex.version : 'latest';
+    html += `
+    <div class="result-card" id="lookupIcd10PcsPanel" style="margin-top:16px;">
+      <div class="provider-name" style="margin-bottom:8px;">ICD-10-PCS <span style="color:var(--text-3);font-size:12px;">· ${icd10PcsMatches.length} match${icd10PcsMatches.length !== 1 ? 'es' : ''} · ${escapeHtml(icdYear)}</span></div>
+      ${icd10PcsMatches.length
+        ? icd10PcsMatches.map(m => icd10PcsRowHtml(m)).join('')
+        : `<div class="year-note" style="margin:0;">No ICD-10-PCS matches for “${escapeHtml(query)}”. This vocabulary is scoped to codes that affect MS-DRG assignment (the ones useful for a billing estimate) — a code that's valid but has no DRG relevance may not appear.</div>`}
+    </div>`;
+  }
 
   // Level II / DMEPOS panel — shown for code and keyword searches (not for the
   // "browse all DRGs" listing, which passes a titleOverride).

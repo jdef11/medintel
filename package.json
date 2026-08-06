@@ -5,7 +5,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node scripts/live-smoke.mjs"
+    "smoke": "node scripts/live-smoke.mjs",
+    "build:icd10pcs": "node scripts/build-icd10pcs-drg-index.mjs"
   },
   "devDependencies": {
     "vitest": "^2.0.0"
