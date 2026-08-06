@@ -3836,10 +3836,13 @@ function renderTamResults() {
   const heroTrendClause = heroChange
     ? `, ${heroChange.pct >= 0 ? 'growing' : 'down'} ${Math.abs(Math.round(heroChange.pct))}% since CY ${heroChange.firstYear}`
     : '';
+  // Leads with total FFS services for the latest year rather than repeating
+  // the $ figure that's already the big headline number just below it.
+  const heroYearClause = mixedYears ? ` (CY ${minYear}–${baseYear})` : baseYear ? ` in CY ${baseYear}` : '';
   const heroThesis = !codes.length
     ? ''
     : estTAM
-      ? `A ${fmtCurrency(estTAM)} market${heroTrendClause}.`
+      ? `${fmtNumber(totalFFS)} FFS procedures${heroYearClause}${heroTrendClause}.`
       : totalFFS
         ? `${fmtNumber(totalFFS)} Medicare FFS procedures${heroTrendClause} — enter a device ASP for a market-size figure.`
         : `No Medicare FFS volume found for these codes yet.`;
