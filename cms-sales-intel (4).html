@@ -1370,6 +1370,7 @@ let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
 let tamResults = null;        // Market TAM tab results ({codes, trends, surgeons, descMap})
+let lookupResults = null;     // Code Lookup tab results ({cptMatches, drgMatches, icd10PcsMatches, dme}), for CSV export
 // Args for the DRG hospital trend chart, deferred until its collapsed detail
 // section is actually opened — that section starts display:none, so
 // rendering the chart eagerly would measure a zero-width container (see
@@ -4630,6 +4631,29 @@ async function executeLookupSearch() {
   renderLookupResults(terms.join(', '), cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note);
 }
 
+// One combined CSV across all four vocabularies currently on screen — a
+// 'Vocabulary' column distinguishes row type (mirrors exportTamCSV's
+// CPT/MS-DRG row-type column), each row leaving blank whatever fields don't
+// apply to its vocabulary rather than forcing a lookalike shape on all four.
+function exportLookupCSV() {
+  if (!lookupResults) return;
+  const { cptMatches, drgMatches, icd10PcsMatches, dme } = lookupResults;
+  const today = new Date().toISOString().slice(0, 10);
+  const headers = ['Vocabulary', 'Code', 'Description', 'Services/Yr (National)', 'Discharges (National)', 'Avg Paid/Stay', 'Supplier Payment', 'Related MS-DRG(s)', 'Date Exported'];
+
+  const rows = [];
+  (cptMatches || []).forEach(m => rows.push(['CPT/HCPCS Level I', m.code, m.desc || '', m.services ?? '', '', '', '', '', today]));
+  (drgMatches || []).forEach(m => rows.push(['MS-DRG', m.code, m.desc || '', '', m.discharges ?? '', m.avgPaid != null ? m.avgPaid.toFixed(2) : '', '', '', today]));
+  (icd10PcsMatches || []).forEach(m => {
+    const related = m.status === 'ok' ? m.drgs.join('; ') : m.status === 'no-drg' ? 'no MS-DRG relevance' : 'not recognized';
+    rows.push(['ICD-10-PCS', m.code, m.desc || '', '', '', '', '', related, today]);
+  });
+  ((dme && dme.matches) || []).forEach(m => rows.push(['HCPCS Level II (DMEPOS)', m.code, m.desc || '', m.services ?? '', '', '', m.payment != null ? m.payment.toFixed(2) : '', '', today]));
+
+  if (!rows.length) return;
+  triggerCsvDownload(headers, rows, `medintel_code_lookup_${today}.csv`);
+}
+
 async function browseAllDrgs() {
   if (isLoading) return;
   isLoading = true;
@@ -4847,6 +4871,10 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
 
+  // Retained for exportLookupCSV() — the render params are the source of
+  // truth, so export always matches exactly what's on screen.
+  lookupResults = { cptMatches, drgMatches, icd10PcsMatches, dme };
+
   const cptYear = datasetVersions.geography.length ? `CY ${datasetVersions.geography[0].year}` : 'latest year';
   const drgYear = datasetVersions.inpGeo.length ? `CY ${datasetVersions.inpGeo[0].year}` : 'latest year';
 
@@ -4858,6 +4886,10 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
       </div>
       <div style="display:flex;gap:8px;">
         ${shareBtnHtml()}
+        <button class="export-btn" onclick="exportLookupCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
       </div>
     </div>
     ${(dictErrors && dictErrors.length) ? `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ ${escapeHtml(dictErrors.join('; '))} — results below come from the vocabularies that did load. Retry to rebuild.</div>` : ''}

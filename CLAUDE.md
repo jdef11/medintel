@@ -230,6 +230,7 @@ Everything above is a live, filterable `data.cms.gov` dataset the app queries at
 | `toggleProcedures(npi)` | Expands/collapses procedure detail table for a card |
 | `exportCSV()` | Downloads grouped provider data as CSV |
 | `exportNpiCSV()` | Downloads NPI results as CSV |
+| `exportLookupCSV()` | Downloads Code Lookup's on-screen results as one CSV across all four vocabularies, a `Vocabulary` column distinguishing row type (mirrors `exportTamCSV`'s CPT/MS-DRG row-type column) — reads from `lookupResults`, a module-level snapshot `renderLookupResults()` sets on every render so export always matches what's on screen |
 | `f(row, fieldName)` | Field accessor handling CMS API name variations |
 | `getPayment(row)` | Extracts payment (falls back to avg × services) |
 | `getProviderName(row)` | Handles individual vs. organization name fields |
