@@ -17,7 +17,7 @@
 /
 ├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
 ├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
-├── medintel-core.test.js         # Vitest suite for medintel-core.js (244 tests)
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (254 tests)
 ├── data/icd10pcs-drg-index.json  # Static ICD-10-PCS → MS-DRG crosswalk + descriptions (~56k codes, ~9MB) — fetched at runtime, not embedded; rebuilt by the script below
 ├── scripts/live-smoke.mjs        # Manual live-CMS verification script (npm run smoke)
 ├── scripts/build-icd10pcs-drg-index.mjs  # Manual, ~annual rebuild of data/icd10pcs-drg-index.json (npm run build:icd10pcs) — scrapes CMS's MS-DRG Definitions Manual + ICD-10-PCS Order File; NOT run by CI
@@ -113,7 +113,9 @@ The nav is three peer destinations plus a demoted utility strip — **not** arou
 - **Utility strip** (`.utility-strip`, always visible, demoted below the nav row) — two helpers, reachable directly or via inline "Look it up" links next to the HCPCS field in Find by Code and Size a Market:
   | Utility (`currentTab`) | API | Key Inputs | Query Parameter |
   |-----|-----|-----------|----------------|
-  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets + local ICD-10-PCS index | Keyword / CPT / HCPCS / MS-DRG / **ICD-10-PCS** | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; **ICD-10-PCS codes resolve via `loadIcd10PcsIndex`/`resolveIcd10PcsToDrgs` — a real crosswalk, not a `crossSuggest` heuristic**; rows push codes into other destinations via `addToField`/`addAllToField` |
+  | `lookup` (Look up a code) | CMS national datasets (cached dictionaries) + DMEPOS datasets + local ICD-10-PCS index | Keyword(s) / CPT / HCPCS / MS-DRG / **ICD-10-PCS**, **one or many** (bulk paste, max `MAX_BULK_CODES`) | `loadCptDict`/`loadDrgDict` + `searchDict`/`crossSuggest`; Level II codes resolve via `lookupDmeCode`/`lookupDmeReferrers`; **ICD-10-PCS codes resolve via `loadIcd10PcsIndex`/`resolveIcd10PcsToDrgs` — a real crosswalk, not a `crossSuggest` heuristic**; rows push codes into other destinations via `addToField`/`addAllToField` |
+
+  `lookupQuery` is a bulk-paste `<textarea>`, split into independent search terms by `splitLookupTerms()` (pure, in medintel-core.js) rather than treated as one combined phrase — commas/semicolons/newlines always separate terms, and plain whitespace only separates when every resulting word independently looks like a code (has a digit and matches one of the three code shapes), so a multi-word keyword phrase like "knee replacement" stays one AND-matched term while "62140 62141" (space-separated, no commas) still splits into two. `executeLookupSearch()` runs `lookupOneTerm()` (the exact/keyword dispatch, factored out per-term) across all terms in parallel via `Promise.all`, then `dedupeMatchesByCode()` merges each vocabulary's matches across terms (each term's own exact match first, new codes from later terms appended, no duplicates). The single-term "why this Level II family isn't in DMEPOS" explainer only renders verbatim for exactly one term — multiple terms merge DME matches into the normal panel instead of trying to explain several families at once.
   | `npi` (NPI Look Up) | NPPES Registry | First/last name, state, city, taxonomy | Direct query params. A "View on NPPES ↗" link on each result card opens that provider's public profile (`npiregistry.cms.hhs.gov/provider-view/{npi}`); the sidebar also links to the registry's own search UI directly |
 
 ### Navigation vs. internal tab ids
@@ -287,7 +289,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 244 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 254 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
 - **`npm run build:icd10pcs`** (`node scripts/build-icd10pcs-drg-index.mjs`; run manually, network required, ~5-10 min) rebuilds `data/icd10pcs-drg-index.json` — run whenever CMS ships a new MS-DRG grouper version or ICD-10-PCS code set (roughly annually/semi-annually), not on every change.

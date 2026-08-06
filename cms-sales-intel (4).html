@@ -1122,13 +1122,14 @@
       <!-- Code Lookup -->
       <div id="lookupFields" style="display:none;">
         <div class="field">
-          <label class="field-label" for="lookupQuery">Code or keyword</label>
-          <input type="text" id="lookupQuery" placeholder="e.g. cranioplasty, 62140, J1885, 025, 0016070">
+          <label class="field-label" for="lookupQuery">Code(s) or keyword(s)</label>
+          <textarea id="lookupQuery" rows="2" aria-describedby="lookupQueryHint" placeholder="e.g. cranioplasty, 62140, J1885, 025, 0016070 — one or many"></textarea>
+          <div id="lookupQueryHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line · Separate multiple codes or keyword phrases with commas, semicolons, or one per line</div>
         </div>
         <button class="btn btn-secondary" onclick="browseAllDrgs()" style="margin-bottom:4px;">Browse all MS-DRGs</button>
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:8px;">
           <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
-            <strong style="color:var(--accent);">One search, four vocabularies</strong> — keywords match CPT/HCPCS, MS-DRG, and ICD-10-PCS descriptions side by side (plus supplier-billed HCPCS Level II). Entering a CPT or MS-DRG code shows its record plus description-matched suggestions in the other system — there's no official CPT↔DRG crosswalk, so those cross-matches are leads to verify. Entering a 7-character ICD-10-PCS code is different: it resolves to its <em>real</em> MS-DRG mapping(s) from CMS's own Procedure Code/MS-DRG Index, ready to feed straight into Size a Market.
+            <strong style="color:var(--accent);">One search, four vocabularies</strong> — keywords match CPT/HCPCS, MS-DRG, and ICD-10-PCS descriptions side by side (plus supplier-billed HCPCS Level II). Entering a CPT or MS-DRG code shows its record plus description-matched suggestions in the other system — there's no official CPT↔DRG crosswalk, so those cross-matches are leads to verify. Entering a 7-character ICD-10-PCS code is different: it resolves to its <em>real</em> MS-DRG mapping(s) from CMS's own Procedure Code/MS-DRG Index, ready to feed straight into Size a Market. Paste multiple codes or keyword phrases at once — each is searched independently, not as one combined phrase.
           </div>
         </div>
       </div>
@@ -1438,7 +1439,7 @@ function init() {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
   });
   // Bulk-code textareas: Enter searches, Shift+Enter inserts a newline
-  ['hcpcsCode', 'tamCodes', 'tamIcd10Pcs'].forEach(id => {
+  ['hcpcsCode', 'tamCodes', 'tamIcd10Pcs', 'lookupQuery'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); executeSearch(); }
     });
@@ -4449,34 +4450,21 @@ async function lookupDmeReferrers(code) {
   }
 }
 
-async function executeLookupSearch() {
-  const q = document.getElementById('lookupQuery').value.trim();
-  if (!q) { showError('Enter a code or keyword to look up.'); return; }
-
-  const btn = document.getElementById('searchBtn');
-  const progress = msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; };
-  progress('Loading code dictionaries...');
-  // Fail-soft: one vocabulary failing must not take down the whole lookup. A
-  // transient DRG-dataset error shouldn't stop a CPT or Level II search.
-  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress), loadIcd10PcsIndex(progress)]);
-  const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
-  const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
-  const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
-  const dictErrors = [];
-  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
-  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
-  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
-  if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
-    throw new Error('Could not build either code index from the CMS API — please try again.');
-  }
-
+// Runs the full per-term dispatch (exact DRG/CPT/ICD-10-PCS code shape, or
+// keyword search across all vocabularies) for exactly ONE search term.
+// Factored out of executeLookupSearch() so a multi-term paste can run this
+// once per term and merge the results, instead of treating the whole pasted
+// list as one (unmatchable) combined phrase.
+async function lookupOneTerm(q, ctx) {
+  const { cpt, drg, icd10PcsLoaded, progress, multi } = ctx;
   let cptMatches, drgMatches;
-  let icd10PcsMatches = null; // null = panel hidden (browse-all-DRGs, or a DRG/CPT-shaped query — no reverse lookup)
+  let icd10PcsMatches = null;
   let crossNote = '';
-  let icd10Note = ''; // separate from crossNote: this one IS an official crosswalk, not a description-match guess
+  let icd10Note = '';
   let usedDirect = false;
-  let dme = null;           // { status, matches, scope?, reason?, family? } — Level II panel
-  let dmeReferrers = null;  // { referrers, year } for an exact Level II code
+  let dme = null;
+  let dmeReferrers = null;
+  const tag = multi ? ` for "${q}"` : ''; // disambiguate progress messages across terms
 
   if (/^[A-Za-z0-9]{7}$/.test(q) && icd10PcsLoaded) {
     // Looks like an ICD-10-PCS code (always exactly 7 chars — never overlaps
@@ -4500,7 +4488,7 @@ async function executeLookupSearch() {
     if (!exact.length) {
       // Not in the local index — ask the API directly rather than concluding
       // the DRG doesn't exist (the index may be truncated).
-      progress(`Checking CMS directly for DRG ${code}…`);
+      progress(`Checking CMS directly for DRG ${code}${tag}…`);
       const direct = await lookupDrgCodeDirect(code);
       if (direct) { exact = [direct]; usedDirect = true; }
     }
@@ -4512,7 +4500,7 @@ async function executeLookupSearch() {
     const code = q.toUpperCase();
     let exact = cpt.filter(c => c.code === code);
     if (!exact.length) {
-      progress(`Checking CMS directly for ${code}…`);
+      progress(`Checking CMS directly for ${code}${tag}…`);
       const direct = await lookupCptCodeDirect(code);
       if (direct) { exact = [direct]; usedDirect = true; }
     }
@@ -4528,7 +4516,7 @@ async function executeLookupSearch() {
     if (family && family.inDmepos === false) {
       dme = { status: 'not-applicable', matches: [], family };
     } else if (family) {
-      progress(`Checking supplier (DMEPOS) data for ${code}…`);
+      progress(`Checking supplier (DMEPOS) data for ${code}${tag}…`);
       const hit = await lookupDmeCode(code);
       dme = {
         status: hit.status,
@@ -4538,7 +4526,7 @@ async function executeLookupSearch() {
         family,
       };
       if (hit.status === 'ok') {
-        progress(`Finding physicians who order ${code}…`);
+        progress(`Finding physicians who order ${code}${tag}…`);
         dmeReferrers = await lookupDmeReferrers(code);
       }
     }
@@ -4548,7 +4536,7 @@ async function executeLookupSearch() {
     // A keyword that finds nothing locally is only trustworthy if the index is
     // complete; when it isn't, re-ask the API against the description column.
     if (!cptMatches.length && cptDictTruncated) {
-      progress('Index incomplete — searching CMS directly…');
+      progress(`Index incomplete — searching CMS directly${tag}…`);
       const direct = await lookupCptKeywordDirect(q);
       if (direct.length) { cptMatches = direct; usedDirect = true; }
     }
@@ -4559,11 +4547,87 @@ async function executeLookupSearch() {
     }
     // Keywords also search the supplier (Level II) vocabulary — "prosthetic",
     // "knee brace" etc. live there, not in the physician data.
-    progress('Searching supplier (DMEPOS) codes…');
+    progress(`Searching supplier (DMEPOS) codes${tag}…`);
     dme = await lookupDmeKeyword(q);
   }
 
-  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note);
+  return { term: q, cptMatches, drgMatches, icd10PcsMatches, crossNote, icd10Note, usedDirect, dme, dmeReferrers };
+}
+
+// Merges an array's worth of per-term match lists into one, deduped by code,
+// preserving each term's own ordering (its exact match first, if any) and
+// appending any new codes contributed by later terms.
+function dedupeMatchesByCode(perTermArrays) {
+  const seen = new Set();
+  const out = [];
+  perTermArrays.forEach(arr => (arr || []).forEach(m => {
+    if (m && m.code && !seen.has(m.code)) { seen.add(m.code); out.push(m); }
+  }));
+  return out;
+}
+
+async function executeLookupSearch() {
+  const raw = document.getElementById('lookupQuery').value.trim();
+  if (!raw) { showError('Enter a code or keyword to look up.'); return; }
+  const terms = splitLookupTerms(raw);
+  if (!terms.length) { showError('Enter a code or keyword to look up.'); return; }
+  if (terms.length > MAX_BULK_CODES) {
+    showError(`Too many terms (${terms.length}) — the bulk lookup limit is ${MAX_BULK_CODES} per search. Split the list and run it in batches.`);
+    return;
+  }
+
+  const btn = document.getElementById('searchBtn');
+  const progress = msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; };
+  progress('Loading code dictionaries...');
+  // Fail-soft: one vocabulary failing must not take down the whole lookup. A
+  // transient DRG-dataset error shouldn't stop a CPT or Level II search.
+  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress), loadIcd10PcsIndex(progress)]);
+  const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
+  const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
+  const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
+  const dictErrors = [];
+  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
+  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
+  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
+  if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
+    throw new Error('Could not build either code index from the CMS API — please try again.');
+  }
+
+  const multi = terms.length > 1;
+  const perTerm = await Promise.all(terms.map(term => lookupOneTerm(term, { cpt, drg, icd10PcsLoaded, progress, multi })));
+
+  const cptMatches = dedupeMatchesByCode(perTerm.map(t => t.cptMatches));
+  const drgMatches = dedupeMatchesByCode(perTerm.map(t => t.drgMatches));
+  const icd10PcsMatches = icd10PcsLoaded ? dedupeMatchesByCode(perTerm.map(t => t.icd10PcsMatches)) : null;
+  const usedDirect = perTerm.some(t => t.usedDirect);
+  const crossNote = [...new Set(perTerm.map(t => t.crossNote).filter(Boolean))].join(' ');
+  const icd10Note = [...new Set(perTerm.map(t => t.icd10Note).filter(Boolean))].join(' ');
+
+  // The single-term "why this Level II family isn't in DMEPOS" explainer only
+  // makes sense for one code at a time — preserve it verbatim when there's
+  // exactly one term. For multiple terms, merge matches into the normal
+  // panel instead of trying to explain several different families at once.
+  let dme, dmeReferrers;
+  if (!multi) {
+    dme = perTerm[0].dme;
+    dmeReferrers = perTerm[0].dmeReferrers;
+  } else {
+    const dmeMatches = dedupeMatchesByCode(perTerm.map(t => t.dme && t.dme.matches));
+    const anyUnavailable = perTerm.some(t => t.dme && t.dme.status === 'unavailable');
+    dme = { status: dmeMatches.length ? 'ok' : (anyUnavailable ? 'unavailable' : 'none'), matches: dmeMatches };
+    const seenNpi = new Set();
+    const referrers = [];
+    let referrerYear = null;
+    perTerm.forEach(t => {
+      if (t.dmeReferrers && t.dmeReferrers.referrers) {
+        if (!referrerYear) referrerYear = t.dmeReferrers.year;
+        t.dmeReferrers.referrers.forEach(r => { if (!seenNpi.has(r.npi)) { seenNpi.add(r.npi); referrers.push(r); } });
+      }
+    });
+    dmeReferrers = referrers.length ? { referrers, year: referrerYear } : null;
+  }
+
+  renderLookupResults(terms.join(', '), cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note);
 }
 
 async function browseAllDrgs() {

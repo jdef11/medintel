@@ -9,7 +9,7 @@ const {
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
-  parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs
+  parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -798,6 +798,51 @@ describe('parseDrgs()', () => {
 
   it('returns empty results for empty input', () => {
     expect(parseDrgs('')).toEqual({ codes: [], invalid: [] });
+  });
+});
+
+// ─── splitLookupTerms() ──────────────────────────────────────────────────────
+
+describe('splitLookupTerms()', () => {
+  it('splits comma-separated codes into independent terms', () => {
+    expect(splitLookupTerms('62140, 62141, 27447')).toEqual(['62140', '62141', '27447']);
+  });
+
+  it('splits newline/semicolon-separated codes into independent terms', () => {
+    expect(splitLookupTerms('62140\n62141;27447')).toEqual(['62140', '62141', '27447']);
+  });
+
+  it('splits space-separated codes when every token looks like a code', () => {
+    expect(splitLookupTerms('62140 62141 27447')).toEqual(['62140', '62141', '27447']);
+  });
+
+  it('keeps a multi-word keyword phrase as one term (no digits, not code-shaped)', () => {
+    expect(splitLookupTerms('knee replacement')).toEqual(['knee replacement']);
+  });
+
+  it('splits multiple keyword phrases on commas without breaking each phrase', () => {
+    expect(splitLookupTerms('knee replacement, hip revision')).toEqual(['knee replacement', 'hip revision']);
+  });
+
+  it('mixes codes and keyword phrases separated by commas', () => {
+    expect(splitLookupTerms('62140, knee replacement, 025')).toEqual(['62140', 'knee replacement', '025']);
+  });
+
+  it('dedupes identical terms', () => {
+    expect(splitLookupTerms('62140, 62140, 62140')).toEqual(['62140']);
+  });
+
+  it('returns an empty array for empty input', () => {
+    expect(splitLookupTerms('')).toEqual([]);
+    expect(splitLookupTerms('   ')).toEqual([]);
+  });
+
+  it('treats a single code as one term', () => {
+    expect(splitLookupTerms('0016070')).toEqual(['0016070']);
+  });
+
+  it('treats a single DRG-shaped number as one term', () => {
+    expect(splitLookupTerms('025')).toEqual(['025']);
   });
 });
 

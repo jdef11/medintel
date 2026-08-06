@@ -539,6 +539,33 @@ function parseIcd10Pcs(input) {
   return { codes, invalid };
 }
 
+// ─── CODE LOOKUP TERM SPLITTING ───
+// Splits Code Lookup's free-text input into independent search terms, so a
+// pasted list of codes/keywords is searched as N separate lookups instead of
+// one combined phrase (which would never match anything). Commas,
+// semicolons, and newlines are always separators — a real keyword phrase
+// never contains one. Plain whitespace is trickier: "knee replacement" must
+// stay one two-word AND-matched phrase, but "62140 62141" (space-separated
+// codes, no commas) should split into two lookups. Resolved by only treating
+// whitespace as a separator when EVERY resulting word independently looks
+// like a code (has a digit, and matches one of the three shapes this app's
+// vocabularies use) — plain English words essentially never contain digits,
+// so this rarely misfires on a genuine keyword phrase.
+function splitLookupTerms(input) {
+  const looksLikeCode = w => /\d/.test(w) && (/^\d{1,3}$/.test(w) || /^[A-Za-z0-9]{4,5}$/.test(w) || /^[A-Za-z0-9]{7}$/.test(w));
+  const chunks = String(input || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+  const terms = [];
+  chunks.forEach(chunk => {
+    const words = chunk.split(/\s+/).filter(Boolean);
+    if (words.length > 1 && words.every(looksLikeCode)) {
+      terms.push(...words);
+    } else {
+      terms.push(chunk);
+    }
+  });
+  return [...new Set(terms)];
+}
+
 // ─── ICD-10-PCS → MS-DRG CROSSWALK ───
 // Expands a CMS-published DRG range string ("031-033") into individual
 // 3-digit MS-DRG codes (["031","032","033"]); a single DRG ("955") expands to
@@ -1044,5 +1071,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms };
 }
