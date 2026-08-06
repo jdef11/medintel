@@ -622,9 +622,17 @@
   .proc-code { color: var(--amber); font-weight: 600; }
   .proc-desc { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proc-num { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  /* Hospital billing detail table only — adds a 6th "Related ICD-10-PCS"
+     column, so it's a scoped modifier rather than a change to the shared
+     .proc-row (used by several other tables with a fixed 5-column layout). */
+  .proc-row.proc-row-icd10 { grid-template-columns: 70px 1fr 130px 90px 90px 90px; }
+  .proc-icd10 { color: var(--text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @media (max-width: 900px) {
     .proc-row { grid-template-columns: 70px 1fr 70px 70px; }
     .proc-row > :nth-child(5) { display: none; }
+    .proc-row.proc-row-icd10 { grid-template-columns: 70px 1fr 90px 90px; }
+    .proc-row.proc-row-icd10 > :nth-child(3),
+    .proc-row.proc-row-icd10 > :nth-child(6) { display: none; }
   }
 
   /* ─── PAGINATION ─── */
@@ -3810,6 +3818,17 @@ function renderTamResults() {
   const drgCombined = Object.values(drgByYear).sort((a, b) => a.year - b.year);
   const hasHospital = drgs.length > 0 && perDrg.some(d => d.year);
 
+  // Reverse index for the per-DRG table: which entered ICD-10-PCS code(s), if
+  // any, resolved to each DRG — a DRG the user typed directly has none.
+  const drgToIcd10 = {};
+  icd10Resolutions.forEach(r => {
+    if (r.status !== 'ok') return;
+    r.drgs.forEach(d => {
+      if (!drgToIcd10[d]) drgToIcd10[d] = [];
+      drgToIcd10[d].push(r.code);
+    });
+  });
+
   // The hero's thesis line — one sentence stating the argument, not a metrics
   // dump. Built from the same combined series that feeds the hero's trend
   // chart below, so the growth clause and the chart always agree.
@@ -3904,18 +3923,19 @@ function renderTamResults() {
           “Billed” is chargemaster charges; “Paid” is what hospitals actually received per DRG stay (Medicare + beneficiary + other payers), device cost included but not itemized.
           <strong>MS-DRGs bundle every procedure in the group</strong> — e.g. craniotomy DRGs include far more than your code family — so treat these as the facility-side ceiling and use the per-CPT volume above for procedure-level math.
         </div>
-        <div class="proc-row proc-row-header">
-          <div>DRG</div><div>Description</div><div>Discharges</div><div>Billed</div><div>Paid</div>
+        <div class="proc-row proc-row-header${icd10Resolutions.length ? ' proc-row-icd10' : ''}">
+          <div>DRG</div><div>Description</div>${icd10Resolutions.length ? '<div>Related ICD-10-PCS</div>' : ''}<div>Discharges</div><div>Billed</div><div>Paid</div>
         </div>
         ${perDrg.map(d => d.year ? `
-          <div class="proc-row">
+          <div class="proc-row${icd10Resolutions.length ? ' proc-row-icd10' : ''}">
             <div class="proc-code">${escapeHtml(d.code)}</div>
             <div class="proc-desc" title="${escapeHtml(d.desc)}">${escapeHtml(d.desc || '—')}${d.year !== drgYear ? ` <span style="color:var(--text-3);">(CY ${d.year})</span>` : ''}</div>
+            ${icd10Resolutions.length ? `<div class="proc-icd10" title="${escapeHtml((drgToIcd10[d.code] || []).join(', '))}">${escapeHtml((drgToIcd10[d.code] || []).join(', ') || '—')}</div>` : ''}
             <div class="proc-num">${fmtNumber(Math.round(d.discharges))}</div>
             <div class="proc-num">${fmtCurrency(d.billed)}</div>
             <div class="proc-num">${fmtCurrency(d.paid)}</div>
           </div>` : `
-          <div class="proc-row">
+          <div class="proc-row${icd10Resolutions.length ? ' proc-row-icd10' : ''}">
             <div class="proc-code">${escapeHtml(d.code)}</div>
             <div class="proc-desc" style="grid-column:2/-1;color:var(--text-3);">no data found${d.error ? ` — ${escapeHtml(d.error)}` : ''}</div>
           </div>`).join('')}
