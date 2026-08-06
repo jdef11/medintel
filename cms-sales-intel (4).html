@@ -3349,9 +3349,18 @@ async function fetchTrend(code, stateOverride = null) {
       url += `&filter[Rndrng_Prvdr_Geo_Lvl]=National`;
     }
     const rows = await corsFetch(url);
-    let services = 0, payment = 0;
-    rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
-    return { services, payment };
+    let services = 0, payment = 0, desc = '';
+    rows.forEach(r => {
+      services += getServices(r);
+      payment += getPayment(r);
+      if (!desc) desc = f(r, 'HCPCS_Desc') || '';
+    });
+    // Geography rows aren't subject to the ≤10-beneficiary suppression that
+    // provider-level rows are, so this description is available even for a
+    // code where every individual surgeon is suppressed (see descMap in
+    // executeTamSearch, which falls back to this when the surgeon fetch found
+    // nothing to describe it from).
+    return { services, payment, desc };
   });
 }
 
@@ -3592,6 +3601,16 @@ async function executeTamSearch(codes) {
   rows.forEach(r => {
     const c = (f(r, 'HCPCS_Cd') || '').toUpperCase();
     if (!descMap[c]) descMap[c] = f(r, 'HCPCS_Desc') || '';
+  });
+  // Fall back to the geography trend's description for any code with no
+  // surgeon-level rows at all — happens when every individual surgeon
+  // billing that code is under CMS's ≤10-beneficiary reporting floor, so the
+  // code has real volume (from the unsuppressed geography aggregate) but zero
+  // provider rows to pull a description from.
+  trends.forEach(t => {
+    if (descMap[t.code]) return;
+    const withDesc = (t.trend || []).find(y => y.desc);
+    if (withDesc) descMap[t.code] = withDesc.desc;
   });
 
   const surgeons = groupByProvider(rows).sort((a, b) => b.totalServices - a.totalServices);
