@@ -39,6 +39,7 @@ npm install          # one-time — installs vitest only, nothing runtime-relate
 npm test              # run the full medintel-core.test.js suite once (vitest run)
 npm run test:watch    # vitest in watch mode while iterating
 npm run smoke          # node scripts/live-smoke.mjs — hits the REAL CMS API (network + Node 18+ required)
+npm run build:icd10pcs # node scripts/build-icd10pcs-drg-index.mjs — rebuilds data/icd10pcs-drg-index.json (manual, ~annual, network required)
 npx serve .            # serve the repo locally, then open http://localhost:3000/cms-sales-intel%20(4).html
 ```
 
@@ -207,7 +208,7 @@ Powers Find Customers' "Group by practice" toggle (see Search Modes above) — t
 |----------|---------|
 | `init()` | Page load setup — populates state dropdowns, adds Enter key listeners |
 | `switchTab(tab)` | Shows/hides field groups, updates tab styling |
-| `executeSearch(offset)` | Main search orchestrator — validates, fetches, renders |
+| `executeSearch()` | Main search orchestrator — validates, fetches, renders. CMS-tab pagination is client-side (`displayPage`/`prevPage`/`nextPage`), so this takes no offset param — contrast with `executeNpiSearch(offset)` below |
 | `executeNpiSearch(offset)` | NPI-specific search via NPPES API |
 | `getSearchCriteria()` | Declarative `[{path, op, value}]` for the active tab — single source of truth for both the API filter and client-side enforcement |
 | `buildApiUrl(offset)` | Constructs CMS API query URL from `getSearchCriteria()` via `buildFilterParams` |
@@ -225,7 +226,8 @@ Powers Find Customers' "Group by practice" toggle (see Search Modes above) — t
 | `fetchProviderTrend(npi)` / `toggleProviderTrend(npi)` | Multi-year per-NPI totals via the Provider & Service dataset versions |
 | `renderTrendChart(box, captionHtml, trend)` | **Real SVG line/area chart** (not a bar-in-a-table-row) — one implementation shared by the Procedure tab's per-code trend, the per-provider volume trend, and both Market TAM trend panels. Coordinate/path math is `trendSvgPath()` (pure, in medintel-core.js); the growth callout ("Grew X% since CY——") is `pctChangeAcrossYears()` (same file). Measures `box.clientWidth` to size the chart, so the box must already be visible (`display` other than `none`) when called — see `toggleTamDrgDetail()` for the deferred-render pattern this requires when a chart lives inside a collapsed section |
 | `renderProcedureResults()` | Renders procedure-grouped cards (procedure tab); the top-providers sub-table's Tier badges come from `executeSearch()`'s second `assignScoresAndTiers(groupByProvider(allRows))` pass, not from `groupByProcedure` itself |
-| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab. Renders a hero card first (`.tam-hero` — thesis line, TAM $ figure, trend chart into `#tam-hero-trend`) since that figure is the one thing a rep screenshots into a business case; supporting detail (hospital billing, top hospitals, per-code breakdown, top surgeons) renders as collapsed-by-default sections via `toggleDetail(id)`/`toggleTamDrgDetail()`. Assumptions re-render live. Before reading `tamDrgs`, resolves any `tamIcd10Pcs` codes to their MS-DRG(s) and unions them in — see `resolveIcd10PcsToDrgs` below |
+| `executeTamSearch(codes)` / `renderTamResults()` | Market TAM tab. Renders a hero card first (`.tam-hero` — thesis line, TAM $ figure, trend chart into `#tam-hero-trend`) since that figure is the one thing a rep screenshots into a business case; supporting detail (hospital billing, top hospitals, per-code breakdown, top surgeons) renders as collapsed-by-default sections via `toggleDetail(id)`/`toggleTamDrgDetail()`. Assumptions re-render live via `computeTamModel(perCode, opts)` (pure, in medintel-core.js — the actual volume × ASP TAM math). Before reading `tamDrgs`, resolves any `tamIcd10Pcs` codes to their MS-DRG(s) and unions them in — see `resolveIcd10PcsToDrgs` below |
+| `aggregateDrgRows(rows)` | (pure, in medintel-core.js) Sums per-DRG hospital billing/payment/discharge rows fetched across data years into the totals `renderTamResults()` displays |
 | `toggleDetail(id)` / `toggleTamDrgDetail()` | Generic collapse/expand for Market TAM's page-level (not per-row) detail sections — `id` matching `detail-btn-${id}`/`detail-${id}`. The DRG variant additionally lazy-renders `#tam-drg-trend` on first open (via the module-level `tamDrgTrendArgs`, set at the end of `renderTamResults()`) since that chart's container starts `display:none` |
 | `parseDrgs(input)` / `fetchDrgTrend(drg)` / `fetchDrgHospitals(drgs)` | MS-DRG parsing + inpatient hospital billing/payment totals and top hospitals (Inpatient Hospitals datasets) |
 | `parseIcd10Pcs(input)` / `expandDrgRange(range)` / `resolveIcd10PcsToDrgs(index, code)` | (pure, in medintel-core.js) ICD-10-PCS code parsing (always exactly 7 chars); `"031-033"` → `["031","032","033"]` range expansion; and the code → real MS-DRG(s) resolution itself, returning a three-way status (`'ok'` / `'no-drg'` / `'unknown'`) so a code with no DRG relevance or an unrecognized code is never a silent empty result |
