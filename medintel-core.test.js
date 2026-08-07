@@ -10,7 +10,7 @@ const {
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
   parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms,
-  resolveOneAffiliation, groupProvidersByPractice
+  resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -533,6 +533,79 @@ describe('groupProvidersByPractice()', () => {
     };
     const result = groupProvidersByPractice([provA, provB], affMap);
     expect(result[0].anyDisambiguated).toBe(true);
+  });
+});
+
+// ─── groupProvidersByHospital() ──────────────────────────────────────────────
+
+describe('groupProvidersByHospital()', () => {
+  const provA = {
+    npi: '1111111111', name: 'Alice Jones', city: 'Bethesda', state: 'MD', zip: '20817',
+    totalServices: 30, totalPayment: 3000, totalBeneficiaries: 25,
+    procedures: [{ code: '99213', desc: 'Office visit', services: 30, payment: 3000, avgCharge: 150, place: 'Office' }],
+  };
+  const provB = {
+    npi: '2222222222', name: 'Bob Smith', city: 'Bethesda', state: 'MD', zip: '20817',
+    totalServices: 20, totalPayment: 2000, totalBeneficiaries: 15,
+    procedures: [{ code: '99213', desc: 'Office visit', services: 20, payment: 2000, avgCharge: 150, place: 'Office' }],
+  };
+  const provSolo = {
+    npi: '3333333333', name: 'Carol Lee', city: 'Dallas', state: 'TX', zip: '75201',
+    totalServices: 10, totalPayment: 5000, totalBeneficiaries: 8,
+    procedures: [{ code: '27447', desc: 'Knee replacement', services: 10, payment: 5000, avgCharge: 800, place: 'Facility' }],
+  };
+  const hospitalInfo = { CCN1: { name: 'General Hospital', city: 'Bethesda', state: 'MD', rating: 4 } };
+
+  it('merges providers sharing the same hospital CCN into one card', () => {
+    const hospitalsByNpi = { '1111111111': ['CCN1'], '2222222222': ['CCN1'] };
+    const result = groupProvidersByHospital([provA, provB], hospitalsByNpi, hospitalInfo);
+    expect(result).toHaveLength(1);
+    expect(result[0].memberCount).toBe(2);
+    expect(result[0].hospitalName).toBe('General Hospital');
+    expect(result[0].totalServices).toBe(50);
+    expect(result[0].totalPayment).toBe(5000);
+  });
+
+  it('aggregates a shared procedure code into one entry, not two (breadth-inflation check)', () => {
+    const hospitalsByNpi = { '1111111111': ['CCN1'], '2222222222': ['CCN1'] };
+    const result = groupProvidersByHospital([provA, provB], hospitalsByNpi, hospitalInfo);
+    expect(result[0].procedures).toHaveLength(1);
+    expect(result[0].procedures[0].services).toBe(50);
+    expect(result[0].procedures[0].payment).toBe(5000);
+  });
+
+  it('treats a provider with no hospital affiliation on file as their own solo card', () => {
+    const result = groupProvidersByHospital([provSolo], {}, {});
+    expect(result).toHaveLength(1);
+    expect(result[0].memberCount).toBe(1);
+    expect(result[0].hospitalName).toBe('Carol Lee');
+    expect(result[0].ccn).toBeNull();
+  });
+
+  it('puts a provider affiliated with two hospitals under BOTH cards (real one-to-many relationship)', () => {
+    const hospitalsByNpi = { '1111111111': ['CCN1', 'CCN2'] };
+    const info = { CCN1: { name: 'General Hospital' }, CCN2: { name: 'University Medical Center' } };
+    const result = groupProvidersByHospital([provA], hospitalsByNpi, info);
+    expect(result).toHaveLength(2);
+    expect(result.map(g => g.hospitalName).sort()).toEqual(['General Hospital', 'University Medical Center']);
+    // Both cards carry the provider's full totals — intentionally not split/divided.
+    expect(result[0].totalServices).toBe(30);
+    expect(result[1].totalServices).toBe(30);
+  });
+
+  it('falls back to the raw CCN-keyed group even when hospital info lookup failed', () => {
+    const hospitalsByNpi = { '1111111111': ['CCN1'] };
+    const result = groupProvidersByHospital([provA], hospitalsByNpi, {});
+    expect(result[0].ccn).toBe('CCN1');
+    expect(result[0].hospitalName).toBe(provA.name); // no info row — falls back to the member's own name
+  });
+
+  it('partitions a mix of shared-hospital and solo providers correctly', () => {
+    const hospitalsByNpi = { '1111111111': ['CCN1'], '2222222222': ['CCN1'] };
+    const result = groupProvidersByHospital([provA, provB, provSolo], hospitalsByNpi, hospitalInfo);
+    expect(result).toHaveLength(2);
+    expect(result.some(g => g.memberCount === 2)).toBe(true);
+    expect(result.some(g => g.memberCount === 1)).toBe(true);
   });
 });
 

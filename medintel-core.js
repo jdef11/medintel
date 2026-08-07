@@ -307,6 +307,41 @@ function resolveOneAffiliation(candidates, provider) {
   return { ...largest, disambiguated: true };
 }
 
+// Shared by groupProvidersByPractice/groupProvidersByHospital: folds one
+// provider's totals and procedures into a rollup group `g` (mutates g).
+// Procedures aggregate by (code, place) rather than concatenating — two
+// members billing the same code must sum into one entry, or a group's
+// procedure "breadth" (and therefore its complexity score) would inflate
+// purely as a function of headcount rather than real variety of work.
+function accumulateGroupMember(g, p) {
+  g.members.push(p);
+  g.totalServices += p.totalServices;
+  g.totalPayment += p.totalPayment;
+  g.totalBeneficiaries += p.totalBeneficiaries;
+  (p.procedures || []).forEach(proc => {
+    const pk = `${proc.code}|${proc.place}`;
+    if (!g.procMap[pk]) {
+      g.procMap[pk] = { code: proc.code, desc: proc.desc, place: proc.place, services: 0, payment: 0, chargeWeighted: 0 };
+    }
+    const entry = g.procMap[pk];
+    entry.services += proc.services;
+    entry.payment += proc.payment;
+    entry.chargeWeighted += (proc.avgCharge || 0) * (proc.services || 0);
+  });
+}
+
+// Shared by groupProvidersByPractice/groupProvidersByHospital: turns a
+// group's accumulated procMap into the sorted procedures[] array callers expect.
+function finalizeGroupProcedures(procMap) {
+  return Object.values(procMap)
+    .map(e => ({
+      code: e.code, desc: e.desc, place: e.place,
+      services: e.services, payment: e.payment,
+      avgCharge: e.services ? e.chargeWeighted / e.services : 0,
+    }))
+    .sort((a, b) => b.payment - a.payment);
+}
+
 // ─── GROUP BY PRACTICE ───
 // Optional rollup of groupByProvider()'s output into shared practices, keyed
 // by CMS's own org_pac_id (from the National Downloadable File enrollment
@@ -338,47 +373,80 @@ function groupProvidersByPractice(providers, affiliationByNpi) {
     }
     const g = map[key];
     if (aff && aff.disambiguated) g.anyDisambiguated = true;
-    g.members.push(p);
-    g.totalServices += p.totalServices;
-    g.totalPayment += p.totalPayment;
-    g.totalBeneficiaries += p.totalBeneficiaries;
-    // Aggregate by (code, place) rather than concatenating — two members
-    // billing the same code must sum into one entry, or a practice's
-    // procedure "breadth" (and therefore its complexity score) would inflate
-    // purely as a function of headcount rather than real variety of work.
-    (p.procedures || []).forEach(proc => {
-      const pk = `${proc.code}|${proc.place}`;
-      if (!g.procMap[pk]) {
-        g.procMap[pk] = { code: proc.code, desc: proc.desc, place: proc.place, services: 0, payment: 0, chargeWeighted: 0 };
+    accumulateGroupMember(g, p);
+  });
+  return Object.values(map).map(g => ({
+    practiceKey: g.practiceKey,
+    orgPacId: g.orgPacId,
+    facilityName: g.facilityName,
+    numOrgMembers: g.numOrgMembers,
+    anyDisambiguated: g.anyDisambiguated,
+    members: g.members.sort((a, b) => b.totalServices - a.totalServices),
+    memberCount: g.members.length,
+    procedures: finalizeGroupProcedures(g.procMap),
+    totalServices: g.totalServices,
+    totalPayment: g.totalPayment,
+    totalBeneficiaries: g.totalBeneficiaries,
+  })).sort((a, b) => b.totalPayment - a.totalPayment);
+}
+
+// ─── GROUP BY HOSPITAL ───
+// A parallel rollup to groupProvidersByPractice, but keyed by real hospital
+// facility affiliation (CMS's Facility Affiliation Data, matched by CCN) —
+// a clinical fact, not the billing-group entity org_pac_id represents.
+// Verified live against the real API: this relationship is genuinely
+// one-to-many, and unlike practice grouping (which picks exactly ONE
+// affiliation per provider via resolveOneAffiliation), there's no reason to
+// arbitrarily pick one hospital — a provider affiliated with 2 hospitals
+// intentionally appears under BOTH hospital cards. That means summing totals
+// across every hospital card overstates the true provider-level total; each
+// card's own numbers are still accurate on their own. `hospitalsByNpi` is
+// { npi: [ccn, ...] | undefined }; `hospitalInfoByCcn` is
+// { ccn: {name, city, state, rating} | undefined }. A provider with no
+// hospital affiliation on file becomes its own solo card, exactly like
+// practice grouping's solo bucket.
+function groupProvidersByHospital(providers, hospitalsByNpi, hospitalInfoByCcn) {
+  const hMap = hospitalsByNpi || {};
+  const infoMap = hospitalInfoByCcn || {};
+  const map = {};
+  (providers || []).forEach(p => {
+    const ccns = hMap[p.npi];
+    const keys = (ccns && ccns.length) ? ccns.map(ccn => `hosp:${ccn}`) : [`solo:${p.npi}`];
+    keys.forEach(key => {
+      if (!map[key]) {
+        const ccn = key.startsWith('hosp:') ? key.slice(5) : null;
+        const info = ccn ? infoMap[ccn] : null;
+        map[key] = {
+          hospitalKey: key,
+          ccn,
+          hospitalName: info ? info.name : p.name,
+          city: info ? info.city : p.city,
+          state: info ? info.state : p.state,
+          rating: info ? info.rating : null,
+          members: [],
+          procMap: {},
+          totalServices: 0,
+          totalPayment: 0,
+          totalBeneficiaries: 0,
+        };
       }
-      const entry = g.procMap[pk];
-      entry.services += proc.services;
-      entry.payment += proc.payment;
-      entry.chargeWeighted += (proc.avgCharge || 0) * (proc.services || 0);
+      accumulateGroupMember(map[key], p);
     });
   });
-  return Object.values(map).map(g => {
-    const procedures = Object.values(g.procMap)
-      .map(e => ({
-        code: e.code, desc: e.desc, place: e.place,
-        services: e.services, payment: e.payment,
-        avgCharge: e.services ? e.chargeWeighted / e.services : 0,
-      }))
-      .sort((a, b) => b.payment - a.payment);
-    return {
-      practiceKey: g.practiceKey,
-      orgPacId: g.orgPacId,
-      facilityName: g.facilityName,
-      numOrgMembers: g.numOrgMembers,
-      anyDisambiguated: g.anyDisambiguated,
-      members: g.members.sort((a, b) => b.totalServices - a.totalServices),
-      memberCount: g.members.length,
-      procedures,
-      totalServices: g.totalServices,
-      totalPayment: g.totalPayment,
-      totalBeneficiaries: g.totalBeneficiaries,
-    };
-  }).sort((a, b) => b.totalPayment - a.totalPayment);
+  return Object.values(map).map(g => ({
+    hospitalKey: g.hospitalKey,
+    ccn: g.ccn,
+    hospitalName: g.hospitalName,
+    city: g.city,
+    state: g.state,
+    rating: g.rating,
+    members: g.members.sort((a, b) => b.totalServices - a.totalServices),
+    memberCount: g.members.length,
+    procedures: finalizeGroupProcedures(g.procMap),
+    totalServices: g.totalServices,
+    totalPayment: g.totalPayment,
+    totalBeneficiaries: g.totalBeneficiaries,
+  })).sort((a, b) => b.totalPayment - a.totalPayment);
 }
 
 // ─── GROUP BY PROCEDURE ───
@@ -1180,5 +1248,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
 }
