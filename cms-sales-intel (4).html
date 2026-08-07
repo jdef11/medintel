@@ -1702,44 +1702,69 @@ async function fetchProviderBenes(npis) {
 // provider-to-practice crosswalk (org_pac_id) rather than an inferred address
 // match. No CORS headers on this host (verified live) — goes through
 // corsFetch()'s proxy-fallback chain like every other external call here.
+//
+// This endpoint has a genuinely slow, roughly FLAT ~13-15s backend query cost
+// per request — verified live: a 1-NPI query and a 100-NPI query both took
+// ~13-15s, so it's almost certainly a full scan of its ~3.4M rows rather than
+// an indexed point lookup, meaning the cost doesn't scale with how much is
+// asked for. That makes fewer, bigger requests the fix, not more concurrent
+// small ones: firing one request per NPI (the original design) turned a
+// 400-provider search into 400 separate ~15s round trips, which also
+// overwhelmed the free CORS proxies this endpoint requires (verified live:
+// 15 concurrent single-NPI requests through one proxy mostly failed with
+// 500/408/522 errors). Batching via the datastore API's "in" operator turns
+// that into ~8 requests instead.
 const PROVIDER_DATA_API_BASE = 'https://data.cms.gov/provider-data/api/1/datastore/query/mj5m-pzi6/0';
-// npi -> array of raw candidate affiliation rows, or null if the lookup itself
-// failed (distinct from [] = confirmed no group affiliation at all).
+// npi -> array of raw candidate affiliation rows (empty = confirmed no group
+// affiliation), or null if the lookup itself failed for that NPI.
 const practiceAffiliationCache = {};
 
-// One NPI can carry several enrollment records (verified live: NPI
-// 1548269731 has three, at two different addresses, two of them sharing one
-// address) — always returns the full candidate list; resolveOneAffiliation
-// (medintel-core.js) picks the one relevant to a specific search result.
-async function fetchPracticeAffiliation(npi) {
-  if (practiceAffiliationCache[npi] !== undefined) return practiceAffiliationCache[npi];
-  try {
-    const url = `${PROVIDER_DATA_API_BASE}?conditions[0][property]=npi&conditions[0][value]=${encodeURIComponent(npi)}&conditions[0][operator]==`;
-    const rows = await corsFetch(url, { extract: data => (data && Array.isArray(data.results)) ? data.results : (() => { throw new Error('no results array'); })() });
-    const candidates = rows
-      .filter(r => r.org_pac_id) // blank org_pac_id = not reassigned to any group
-      .map(r => ({
-        orgPacId: r.org_pac_id,
-        facilityName: r.facility_name || '',
-        numOrgMembers: parseInt(r.num_org_mem, 10) || 0,
-        city: r.citytown || '',
-        state: r.state || '',
-        zip: r.zip_code || '',
-      }));
-    practiceAffiliationCache[npi] = candidates;
-    return candidates;
-  } catch (e) {
-    practiceAffiliationCache[npi] = null;
-    return null;
-  }
+const PRACTICE_BATCH_SIZE = 50; // verified live: 1, 3, 20, and 100 NPIs per request all cost about the same ~13-15s, so batch generously
+const PRACTICE_BATCH_CONCURRENCY = 3; // each batch is itself a slow, heavy request — unlike a typical bulk fetch, this app does NOT want dozens in flight at once
+const PRACTICE_FETCH_TIMEOUT_MS = 60000; // this endpoint alone can take ~15s+ on a good day; give it real headroom, especially with a CORS proxy's own latency on top
+
+// Queries a whole batch of NPIs in ONE request. The "in" operator's value
+// must be submitted as repeated array-style params (value[]=A&value[]=B) —
+// both a comma-joined string and a JSON-encoded array silently return zero
+// rows, verified live. Returns { npi: [...candidate rows] } — an NPI with no
+// group affiliation (or that CMS has no record of at all) is simply absent
+// from the map, not an error.
+async function fetchPracticeAffiliationsBatch(npis) {
+  const params = new URLSearchParams();
+  params.set('conditions[0][property]', 'npi');
+  npis.forEach(n => params.append('conditions[0][value][]', n));
+  params.set('conditions[0][operator]', 'in');
+  const url = `${PROVIDER_DATA_API_BASE}?${params.toString()}`;
+  const rows = await corsFetch(url, {
+    extract: data => (data && Array.isArray(data.results)) ? data.results : (() => { throw new Error('no results array'); })(),
+    directTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,
+    proxyTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,
+  });
+  const byNpi = {};
+  rows.forEach(r => {
+    if (!r.org_pac_id) return; // blank org_pac_id = not reassigned to any group
+    if (!byNpi[r.npi]) byNpi[r.npi] = [];
+    byNpi[r.npi].push({
+      orgPacId: r.org_pac_id,
+      facilityName: r.facility_name || '',
+      numOrgMembers: parseInt(r.num_org_mem, 10) || 0,
+      city: r.citytown || '',
+      state: r.state || '',
+      zip: r.zip_code || '',
+    });
+  });
+  return byNpi;
+}
+
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
 // Runs `worker` over every item with at most `cap` in flight at once (a
-// simple worker-pool loop — no dependency, nothing like this exists elsewhere
-// in the app yet since every other bulk fetch here is small enough to just
-// Promise.all in one shot; practice-affiliation resolution can run over
-// hundreds of providers, where firing them all at once risks proxy/rate-limit
-// trouble). `onProgress(completed, total)` fires after each item settles.
+// simple worker-pool loop — no dependency). `onProgress(completed, total)`
+// fires after each item settles.
 async function runWithConcurrencyCap(items, worker, cap, onProgress) {
   let completed = 0;
   let nextIndex = 0;
@@ -1757,20 +1782,32 @@ async function runWithConcurrencyCap(items, worker, cap, onProgress) {
 
 // Resolves practice affiliation for every provider in `providers` (the FULL
 // result set, not just the current display page — a practice's members can
-// land on different pages of the per-provider sorted list), capped at
-// PRACTICE_LOOKUP_CONCURRENCY in flight, with a progress callback. A failed
-// lookup for a given NPI resolves to null (treated as solo downstream) —
-// never blocks the rest, never throws.
-const PRACTICE_LOOKUP_CONCURRENCY = 20;
+// land on different pages of the per-provider sorted list). Only fetches NPIs
+// not already in practiceAffiliationCache, batched PRACTICE_BATCH_SIZE at a
+// time. A failed batch degrades every NPI in it to solo (never blocks the
+// rest, never throws) rather than failing the whole resolution.
 async function resolvePracticeAffiliations(providers, progress) {
+  const uncached = providers.filter(p => practiceAffiliationCache[p.npi] === undefined);
+  const batches = chunkArray(uncached, PRACTICE_BATCH_SIZE);
+  let done = 0;
+  await runWithConcurrencyCap(batches, async batch => {
+    const npis = batch.map(p => p.npi);
+    try {
+      const byNpi = await fetchPracticeAffiliationsBatch(npis);
+      npis.forEach(npi => { practiceAffiliationCache[npi] = byNpi[npi] || []; });
+    } catch (e) {
+      npis.forEach(npi => { practiceAffiliationCache[npi] = null; }); // lookup failed — treated as solo downstream
+    }
+    done += batch.length;
+    if (progress) progress(`Resolving practice affiliations — ${done}/${uncached.length}...`);
+  }, PRACTICE_BATCH_CONCURRENCY);
+
   const affiliationByNpi = {};
-  await runWithConcurrencyCap(providers, async provider => {
-    const candidates = await fetchPracticeAffiliation(provider.npi);
+  providers.forEach(provider => {
+    const candidates = practiceAffiliationCache[provider.npi];
     affiliationByNpi[provider.npi] = (candidates && candidates.length)
       ? resolveOneAffiliation(candidates, provider)
       : null;
-  }, PRACTICE_LOOKUP_CONCURRENCY, (done, total) => {
-    if (progress) progress(`Resolving practice affiliations — ${done}/${total}...`);
   });
   return affiliationByNpi;
 }
@@ -2254,11 +2291,18 @@ async function corsFetch(url, opts = {}) {
     if (Array.isArray(data)) return data;
     throw new Error('not a data array');
   });
+  // A couple of endpoints (the Provider Data Catalog's practice-affiliation
+  // lookup) have a genuinely slow, ~flat ~15s backend query cost regardless of
+  // how much is asked for in one request — overridable per call so that one
+  // slow endpoint doesn't force a longer timeout on every other (fast) call
+  // site sharing this function.
+  const directTimeoutMs = opts.directTimeoutMs || DIRECT_TIMEOUT_MS;
+  const proxyTimeoutMs = opts.proxyTimeoutMs || PROXY_TIMEOUT_MS;
   const attempts = []; // diagnostic trail — included in the error so failures are never silent
 
   // First, try the direct request (works if hosted on a server with CORS headers)
   try {
-    const directResp = await fetchWithTimeout(url, DIRECT_TIMEOUT_MS);
+    const directResp = await fetchWithTimeout(url, directTimeoutMs);
     const text = await directResp.text();
     if (directResp.ok) {
       const data = JSON.parse(text);
@@ -2295,7 +2339,7 @@ async function corsFetch(url, opts = {}) {
     let moveOn = false;
     for (let attempt = 0; attempt <= 2 && !moveOn; attempt++) {
       try {
-        const resp = await fetchWithTimeout(proxyUrl, PROXY_TIMEOUT_MS);
+        const resp = await fetchWithTimeout(proxyUrl, proxyTimeoutMs);
         const text = await resp.text();
         if (!resp.ok) {
           if ((resp.status === 429 || resp.status >= 500) && attempt < 2) {
