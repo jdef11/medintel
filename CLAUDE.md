@@ -17,7 +17,7 @@
 /
 ├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
 ├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
-├── medintel-core.test.js         # Vitest suite for medintel-core.js (254 tests)
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (266 tests)
 ├── data/icd10pcs-drg-index.json  # Static ICD-10-PCS → MS-DRG crosswalk + descriptions (~56k codes, ~9MB) — fetched at runtime, not embedded; rebuilt by the script below
 ├── scripts/live-smoke.mjs        # Manual live-CMS verification script (npm run smoke)
 ├── scripts/build-icd10pcs-drg-index.mjs  # Manual, ~annual rebuild of data/icd10pcs-drg-index.json (npm run build:icd10pcs) — scrapes CMS's MS-DRG Definitions Manual + ICD-10-PCS Order File; NOT run by CI
@@ -106,6 +106,8 @@ The nav is three peer destinations plus a demoted utility strip — **not** arou
 - **Find Customers** (`data-tab="provider"`) — CMS Medicare | First name (optional, individuals only) + last name **or** organization name (separate fields), NPI, specialty (searchable dropdown, see below), state, city — fill in whichever apply | `Rndrng_Prvdr_Last_Org_Name` CONTAINS + entity-type disambiguation (`Rndrng_Prvdr_Ent_Cd`): last/first name excludes `'O'` client-side, organization requires `'O'`, mutually exclusive and validated up front; `Rndrng_Prvdr_First_Name` CONTAINS (lenient) for first name; `Rndrng_Prvdr_Type` CONTAINS for specialty; `Rndrng_Prvdr_State_Abrvtn`/`Rndrng_Prvdr_City` for state/city.
 
   The Specialty field (`specialtyInput`) is a free-text input bound to a `<datalist id="specialtyList">` (native browser autocomplete/combobox — no custom JS widget, no dependency). `PROVIDER_SPECIALTIES` (near `US_STATES` in the HTML) is a 90-entry list of real `Rndrng_Prvdr_Type` values harvested from the live CMS API across every state — a search-assist, not an enforced enum: the field still submits whatever text is typed, so a specialty not in the list, or a partial term like "Cardio", works exactly as before via the existing CONTAINS match. `init()` populates the `<datalist>`'s `<option>`s at page load, the same way it populates the state `<select>`s from `US_STATES`.
+
+  **Group by practice** (`groupByPracticeToggle`, filter-bar checkbox — off by default) rolls multiple providers at the same practice into one card. Unlike an address-matching guess, this uses a **real CMS crosswalk**: the "Doctors and Clinicians National Downloadable File" (CMS Provider Data Catalog, dataset `mj5m-pzi6` — a different host/API than the `data-api` claims datasets, see External APIs below), sourced from PECOS Medicare enrollment records. `fetchPracticeAffiliation(npi)` returns every enrollment record CMS has for that NPI — **a provider can have more than one** (verified live: NPI `1548269731` has three, two of them at the identical address) — and `resolveOneAffiliation()` (medintel-core.js, pure) picks the one whose (city, state, zip) uniquely matches the provider's own claims-derived address; if none match uniquely (including the same-address-different-org case), it falls back to the largest group by membership and marks the pick `disambiguated: true` rather than presenting a guess as certain (surfaced in the UI as a "≈" marker on the practice card). `groupProvidersByPractice()` (medintel-core.js, pure) then rolls providers up by `org_pac_id`, merging procedures by `(code, place)` — not concatenating them — so a code two members both bill doesn't inflate the practice's `computeComplexityScore` breadth purely from headcount. `applyPracticeGrouping()` resolves affiliations for the **entire** result set (not just the current page, since a practice's members can land on different pages) once per search, batched via `runWithConcurrencyCap` (20 in flight), then caches the tiered result in `practiceGroupedResults` — toggling off and back on re-renders instantly with no re-fetch. `getFilteredSorted()` picks `practiceGroupedResults` or `allGroupedResults` as its base depending on the toggle, so the existing volume filter/sort/pagination pipeline needs no duplication. A multi-member practice card skips the true-unique-beneficiary fetch (`patchProviderBenes`) and hides the per-provider trend-chart affordance entirely — neither is obtainable/practical at the practice level (see `providerCardHtml`/`practiceCardHtml`); a solo practice (`memberCount === 1`) renders identically to the ordinary per-provider card. `exportCSV()` and `exportSharePointCSV()` — two independent export paths — both branch on `groupByPractice` to emit practice-level rows instead of per-provider ones.
 - **Find by Code** (`data-tab="procedure"`) — CMS Medicare | HCPCS code(s) — bulk paste supported (`parseCodes`, max 30), state | `filter[HCPCS_Cd]` — results grouped **by procedure** (`groupByProcedure`), with per-code multi-year volume trends. The "top providers for this code" sub-table carries Tier 1/2/3 badges via a second `assignScoresAndTiers(groupByProvider(allRows))` pass in `executeSearch()`, so ranking reads the same as Find Customers regardless of entry point. Stays a separate destination from Find Customers because it returns a genuinely different view (one card per *procedure*, not per person) — this is the one true code-search destination; Find Customers has no code field.
 - **Size a Market** (`id="navSizeMarket"`, `data-tab="tam"`) — CMS Medicare (Physician Geography/Provider + Inpatient Hospital Geography/Provider datasets) | HCPCS code family (bulk), MS-DRG codes (`parseDrgs`), **ICD-10-PCS code(s) (`parseIcd10Pcs`) — auto-resolved to their real MS-DRG(s)**, FFS-share %, addressable %, device ASP | Per-code `fetchTrend` volume, per-DRG `fetchDrgTrend` hospital billing/payments, `fetchDrgHospitals` top hospitals, `groupByProvider` top surgeons; TAM modeled client-side.
 
@@ -184,6 +186,17 @@ Everything above is a live, filterable `data.cms.gov` dataset the app queries at
 
 `scripts/build-icd10pcs-drg-index.mjs` combines both into `data/icd10pcs-drg-index.json`, scoped to the ~56k codes that actually appear in the crosswalk (not the full ~79k code space — a code with no DRG relevance isn't useful for this feature, and shipping the full set would risk exceeding typical `localStorage` quotas for no benefit). Includes a minimal pure-Node ZIP reader (End of Central Directory → central directory → `zlib.inflateRawSync`) rather than adding a dependency just to unzip one build-time file. Run manually via `npm run build:icd10pcs` whenever CMS ships a new version — **not run by CI**, same reasoning as `scripts/live-smoke.mjs` (no route to `cms.gov` from CI/sandbox, and it's a deliberate multi-minute scrape that shouldn't run on every push). The two source URLs are hardcoded to a specific fiscal-year vintage and will need re-resolving on each rebuild (they rotate per CMS release) — see the constants at the top of the script.
 
+### Provider → practice crosswalk (a THIRD host, live but not `data-api`)
+
+```
+GET https://data.cms.gov/provider-data/api/1/datastore/query/mj5m-pzi6/0
+    ?conditions[0][property]=npi&conditions[0][value]={npi}&conditions[0][operator]==
+```
+
+The "Doctors and Clinicians National Downloadable File" (CMS **Provider Data Catalog**, dataset `mj5m-pzi6`) — sourced from PECOS Medicare enrollment records, updated roughly monthly. This is a *live* queryable REST API (unlike the two static ICD-10-PCS sources above), but on a **third distinct host/path shape** from everything else in this app (`data.cms.gov/provider-data/api/1/datastore/query/...`, not `data.cms.gov/data-api/v1/dataset/...`) — it wraps rows in `{results: [...], count, schema}` rather than returning a bare array, so `corsFetch()` takes an optional `opts.extract(parsedJson)` callback (defaulting to the original bare-array check, so every other call site is unaffected) to unwrap this shape. No CORS headers (verified live) — goes through the same proxy-fallback chain as everything else.
+
+Powers Find Customers' "Group by practice" toggle (see Search Modes above) — the one place in this app with a **real** provider-to-organization crosswalk (`org_pac_id`), rather than an inferred address match.
+
 ---
 
 ## Key Functions Reference
@@ -198,7 +211,7 @@ Everything above is a live, filterable `data.cms.gov` dataset the app queries at
 | `buildApiUrl(offset)` | Constructs CMS API query URL from `getSearchCriteria()` via `buildFilterParams` |
 | `buildFilterParams(criteria)` | Emits CMS filter params. **2+ conditions get an explicit `group][conjunction]=AND` with `memberOf`** — a bare condition list is combined as OR by the API |
 | `rowMatchesCriteria(row, criteria)` | Client-side AND enforcement (case-insensitive), so displayed rows always satisfy every criterion regardless of API conjunction behavior. Ops: `CONTAINS`, `=`, `!=`. Criterion flags: `clientOnly` (never sent to the API), `lenient` (passes when the column is absent in that dataset year) |
-| `corsFetch(url)` | CORS-aware fetch — tries direct then cycles proxies |
+| `corsFetch(url, opts?)` | CORS-aware fetch — tries direct then cycles proxies. Every call site expects a bare row array by default; `opts.extract(parsedJson)` lets a caller consume a different shape (e.g. the Provider Data Catalog's `{results: [...]}` wrapper for `fetchPracticeAffiliation`) — must return an array or throw, and is a strict superset of the default behavior, so every existing single-argument call site is unaffected |
 | `fetchWithTimeout(url, ms)` | Fetch wrapper with configurable timeout |
 | `groupByProvider(rows)` | Aggregates raw rows by NPI, sorts by total payment |
 | `groupByProcedure(rows)` | Aggregates raw rows by HCPCS code (procedure tab), sorts by total services |
@@ -225,10 +238,12 @@ Everything above is a live, filterable `data.cms.gov` dataset the app queries at
 | `getGeoLevel` / `pickNationalRows` | Name-tolerant geo-level accessor + National-row scoping (pure). Returns `scope: 'national'\|'state-sum'\|'unscoped'\|'none'`; `state-sum` is surfaced in the UI as approximate |
 | `hcpcsLevelIIFamily(code)` / `HCPCS_LEVEL_II_FAMILIES` / `dmeFamilyPanelHtml` | **Level II is not one set** — the leading letter says who bills the code and therefore which dataset holds it. `A/B/E/K/L/J/Q/V` → DMEPOS; `C` → hospital outpatient OPPS pass-through (no per-code public data — the outpatient files aggregate to APC); `G/M/P/R` → practitioner Part B (already in the CPT panel); `S/T/H` → not Medicare. Non-DMEPOS families skip the supplier query and render a family-specific explanation |
 | `getSupplierServices` / `getSupplierBenes` / `getSupplierPayment` / `getSupplierCount` / `getReferringName` / `groupByReferrer` | DMEPOS field accessors + referrer aggregation (pure, in medintel-core.js). DMEPOS uses `Tot_Suplr_*` / `Rfrg_Prvdr_*` column prefixes, not `Rndrng_*` |
-| `renderResults()` | Renders Medicare provider cards to DOM |
+| `renderResults()` | Renders Medicare provider cards to DOM. Branches per card into `providerCardHtml()` (per-provider, or a solo practice) or `practiceCardHtml()` (a real multi-member practice) depending on `groupByPractice` |
 | `renderNpiResults()` | Renders NPPES lookup cards to DOM |
 | `toggleProcedures(npi)` | Expands/collapses procedure detail table for a card |
-| `exportCSV()` | Downloads grouped provider data as CSV |
+| `resolveOneAffiliation(candidates, provider)` / `groupProvidersByPractice(providers, affiliationByNpi)` | (pure, in medintel-core.js) Practice-rollup logic for Find Customers' "Group by practice" toggle — see Search Modes above |
+| `fetchPracticeAffiliation(npi)` / `resolvePracticeAffiliations(providers, progress)` / `applyPracticeGrouping(checked)` | CMS Provider Data Catalog crosswalk lookup, batch resolution (capped concurrency via `runWithConcurrencyCap`), and the toggle handler — see Search Modes above |
+| `exportCSV()` | Downloads grouped provider data as CSV — practice-mode rows when `groupByPractice` |
 | `exportNpiCSV()` | Downloads NPI results as CSV |
 | `exportLookupCSV()` | Downloads Code Lookup's on-screen results as one CSV across all four vocabularies, a `Vocabulary` column distinguishing row type (mirrors `exportTamCSV`'s CPT/MS-DRG row-type column) — reads from `lookupResults`, a module-level snapshot `renderLookupResults()` sets on every render so export always matches what's on screen |
 | `f(row, fieldName)` | Field accessor handling CMS API name variations |
@@ -290,7 +305,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 254 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 266 tests). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; run manually, network + Node 18+ required) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`), DRG code padding, and catalog shape.
 - **`npm run build:icd10pcs`** (`node scripts/build-icd10pcs-drg-index.mjs`; run manually, network required, ~5-10 min) rebuilds `data/icd10pcs-drg-index.json` — run whenever CMS ships a new MS-DRG grouper version or ICD-10-PCS code set (roughly annually/semi-annually), not on every change.
