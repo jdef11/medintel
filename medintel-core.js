@@ -272,6 +272,115 @@ function groupByProvider(rows) {
   return Object.values(map).sort((a, b) => b.totalPayment - a.totalPayment);
 }
 
+// ─── PRACTICE AFFILIATION RESOLUTION ───
+// A single NPI can carry more than one enrollment record in CMS's "Doctors and
+// Clinicians National Downloadable File" (verified live: NPI 1548269731 has
+// three — a physician can be enrolled under several groups at once, sometimes
+// even at the identical address). This picks the one most relevant to a
+// specific search result: prefer whichever candidate's (city, state, zip)
+// matches the provider's own claims-derived address (where the Medicare
+// services actually being displayed were billed) when that match is unique;
+// otherwise fall back to the largest group by membership, and say so
+// (`disambiguated: true`) rather than silently presenting a guess as certain.
+function resolveOneAffiliation(candidates, provider) {
+  if (!candidates || !candidates.length) return null;
+  // Only one enrollment exists at all — nothing was actually disambiguated,
+  // regardless of whether its address happens to match the claims record
+  // (a mismatch here is ordinary data messiness, not a sign of a wrong pick).
+  if (candidates.length === 1) return { ...candidates[0], disambiguated: false };
+
+  const norm = s => String(s || '').trim().toUpperCase();
+  const pCity = norm(provider && provider.city);
+  const pState = norm(provider && provider.state);
+  const pZip = String((provider && provider.zip) || '').trim().slice(0, 5);
+
+  const addressMatches = candidates.filter(c =>
+    norm(c.city) === pCity && norm(c.state) === pState && String(c.zip || '').trim().slice(0, 5) === pZip
+  );
+  if (addressMatches.length === 1) {
+    return { ...addressMatches[0], disambiguated: false };
+  }
+  // No unique address match: if several candidates tied on address, pick the
+  // largest among that tied set; if none matched at all, pick the largest overall.
+  const pool = addressMatches.length > 1 ? addressMatches : candidates;
+  const largest = pool.reduce((best, c) => (c.numOrgMembers || 0) > (best.numOrgMembers || 0) ? c : best, pool[0]);
+  return { ...largest, disambiguated: true };
+}
+
+// ─── GROUP BY PRACTICE ───
+// Optional rollup of groupByProvider()'s output into shared practices, keyed
+// by CMS's own org_pac_id (from the National Downloadable File enrollment
+// data, resolved per-provider by resolveOneAffiliation) rather than an
+// inferred address match. `affiliationByNpi` is a plain
+// { npi: {orgPacId, facilityName, numOrgMembers, disambiguated} | undefined }
+// map; a provider absent from it (no group affiliation, or a failed lookup)
+// becomes its own solo practice — never a separate "ungrouped" bucket, so
+// toggling this view only visibly changes actual multi-member practices.
+function groupProvidersByPractice(providers, affiliationByNpi) {
+  const affMap = affiliationByNpi || {};
+  const map = {};
+  (providers || []).forEach(p => {
+    const aff = affMap[p.npi];
+    const key = aff && aff.orgPacId ? `org:${aff.orgPacId}` : `solo:${p.npi}`;
+    if (!map[key]) {
+      map[key] = {
+        practiceKey: key,
+        orgPacId: aff ? aff.orgPacId : null,
+        facilityName: aff ? aff.facilityName : p.name,
+        numOrgMembers: aff ? aff.numOrgMembers : 1,
+        anyDisambiguated: false,
+        members: [],
+        procMap: {},
+        totalServices: 0,
+        totalPayment: 0,
+        totalBeneficiaries: 0,
+      };
+    }
+    const g = map[key];
+    if (aff && aff.disambiguated) g.anyDisambiguated = true;
+    g.members.push(p);
+    g.totalServices += p.totalServices;
+    g.totalPayment += p.totalPayment;
+    g.totalBeneficiaries += p.totalBeneficiaries;
+    // Aggregate by (code, place) rather than concatenating — two members
+    // billing the same code must sum into one entry, or a practice's
+    // procedure "breadth" (and therefore its complexity score) would inflate
+    // purely as a function of headcount rather than real variety of work.
+    (p.procedures || []).forEach(proc => {
+      const pk = `${proc.code}|${proc.place}`;
+      if (!g.procMap[pk]) {
+        g.procMap[pk] = { code: proc.code, desc: proc.desc, place: proc.place, services: 0, payment: 0, chargeWeighted: 0 };
+      }
+      const entry = g.procMap[pk];
+      entry.services += proc.services;
+      entry.payment += proc.payment;
+      entry.chargeWeighted += (proc.avgCharge || 0) * (proc.services || 0);
+    });
+  });
+  return Object.values(map).map(g => {
+    const procedures = Object.values(g.procMap)
+      .map(e => ({
+        code: e.code, desc: e.desc, place: e.place,
+        services: e.services, payment: e.payment,
+        avgCharge: e.services ? e.chargeWeighted / e.services : 0,
+      }))
+      .sort((a, b) => b.payment - a.payment);
+    return {
+      practiceKey: g.practiceKey,
+      orgPacId: g.orgPacId,
+      facilityName: g.facilityName,
+      numOrgMembers: g.numOrgMembers,
+      anyDisambiguated: g.anyDisambiguated,
+      members: g.members.sort((a, b) => b.totalServices - a.totalServices),
+      memberCount: g.members.length,
+      procedures,
+      totalServices: g.totalServices,
+      totalPayment: g.totalPayment,
+      totalBeneficiaries: g.totalBeneficiaries,
+    };
+  }).sort((a, b) => b.totalPayment - a.totalPayment);
+}
+
 // ─── GROUP BY PROCEDURE ───
 // Groups raw CMS rows by HCPCS code (one card per procedure, not per physician).
 // Each group aggregates total services, payment, and beneficiaries across all
@@ -537,6 +646,33 @@ function parseIcd10Pcs(input) {
     }
   });
   return { codes, invalid };
+}
+
+// ─── CODE LOOKUP TERM SPLITTING ───
+// Splits Code Lookup's free-text input into independent search terms, so a
+// pasted list of codes/keywords is searched as N separate lookups instead of
+// one combined phrase (which would never match anything). Commas,
+// semicolons, and newlines are always separators — a real keyword phrase
+// never contains one. Plain whitespace is trickier: "knee replacement" must
+// stay one two-word AND-matched phrase, but "62140 62141" (space-separated
+// codes, no commas) should split into two lookups. Resolved by only treating
+// whitespace as a separator when EVERY resulting word independently looks
+// like a code (has a digit, and matches one of the three shapes this app's
+// vocabularies use) — plain English words essentially never contain digits,
+// so this rarely misfires on a genuine keyword phrase.
+function splitLookupTerms(input) {
+  const looksLikeCode = w => /\d/.test(w) && (/^\d{1,3}$/.test(w) || /^[A-Za-z0-9]{4,5}$/.test(w) || /^[A-Za-z0-9]{7}$/.test(w));
+  const chunks = String(input || '').split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+  const terms = [];
+  chunks.forEach(chunk => {
+    const words = chunk.split(/\s+/).filter(Boolean);
+    if (words.length > 1 && words.every(looksLikeCode)) {
+      terms.push(...words);
+    } else {
+      terms.push(chunk);
+    }
+  });
+  return [...new Set(terms)];
 }
 
 // ─── ICD-10-PCS → MS-DRG CROSSWALK ───
@@ -1044,5 +1180,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice };
 }

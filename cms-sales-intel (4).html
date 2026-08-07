@@ -756,6 +756,14 @@
     color: var(--text-2);
     white-space: nowrap;
   }
+  /* First checkbox in the app (Find Customers' "Group by practice" toggle) —
+     accent-color themes the native control for the dark UI with no
+     custom-checkbox markup/hack needed. */
+  .filter-bar input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 14px;
+    height: 14px;
+  }
   .filter-bar input[type="number"] {
     width: 80px;
     padding: 5px 10px;
@@ -1122,13 +1130,14 @@
       <!-- Code Lookup -->
       <div id="lookupFields" style="display:none;">
         <div class="field">
-          <label class="field-label" for="lookupQuery">Code or keyword</label>
-          <input type="text" id="lookupQuery" placeholder="e.g. cranioplasty, 62140, J1885, 025, 0016070">
+          <label class="field-label" for="lookupQuery">Code(s) or keyword(s)</label>
+          <textarea id="lookupQuery" rows="2" aria-describedby="lookupQueryHint" placeholder="e.g. cranioplasty, 62140, J1885, 025, 0016070 — one or many"></textarea>
+          <div id="lookupQueryHint" class="year-note" style="margin-top:4px;">Enter to search · Shift+Enter for a new line · Separate multiple codes or keyword phrases with commas, semicolons, or one per line</div>
         </div>
         <button class="btn btn-secondary" onclick="browseAllDrgs()" style="margin-bottom:4px;">Browse all MS-DRGs</button>
         <div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px 12px;margin-top:8px;">
           <div style="font-size:11px;color:var(--text-3);line-height:1.5;">
-            <strong style="color:var(--accent);">One search, four vocabularies</strong> — keywords match CPT/HCPCS, MS-DRG, and ICD-10-PCS descriptions side by side (plus supplier-billed HCPCS Level II). Entering a CPT or MS-DRG code shows its record plus description-matched suggestions in the other system — there's no official CPT↔DRG crosswalk, so those cross-matches are leads to verify. Entering a 7-character ICD-10-PCS code is different: it resolves to its <em>real</em> MS-DRG mapping(s) from CMS's own Procedure Code/MS-DRG Index, ready to feed straight into Size a Market.
+            <strong style="color:var(--accent);">One search, four vocabularies</strong> — keywords match CPT/HCPCS, MS-DRG, and ICD-10-PCS descriptions side by side (plus supplier-billed HCPCS Level II). Entering a CPT or MS-DRG code shows its record plus description-matched suggestions in the other system — there's no official CPT↔DRG crosswalk, so those cross-matches are leads to verify. Entering a 7-character ICD-10-PCS code is different: it resolves to its <em>real</em> MS-DRG mapping(s) from CMS's own Procedure Code/MS-DRG Index, ready to feed straight into Size a Market. Paste multiple codes or keyword phrases at once — each is searched independently, not as one combined phrase.
           </div>
         </div>
       </div>
@@ -1367,8 +1376,12 @@ let activeProxyIndex = 0;
 let currentTab = 'provider';
 let currentResults = [];      // raw rows for NPI tab
 let allGroupedResults = [];   // grouped providers for CMS tabs (scored + tiered)
+let groupByPractice = false;       // Find Customers: optional "Group by practice" toggle
+let practiceGroupedResults = [];   // allGroupedResults rolled up into practices (computed once per search, on toggle-on)
+let resolvingAffiliations = false; // guards against a double-click firing two resolution passes
 let procedureGroups = [];     // procedure-grouped results for the Procedure tab
 let tamResults = null;        // Market TAM tab results ({codes, trends, surgeons, descMap})
+let lookupResults = null;     // Code Lookup tab results ({cptMatches, drgMatches, icd10PcsMatches, dme}), for CSV export
 // Args for the DRG hospital trend chart, deferred until its collapsed detail
 // section is actually opened — that section starts display:none, so
 // rendering the chart eagerly would measure a zero-width container (see
@@ -1438,7 +1451,7 @@ function init() {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') executeSearch(); });
   });
   // Bulk-code textareas: Enter searches, Shift+Enter inserts a newline
-  ['hcpcsCode', 'tamCodes', 'tamIcd10Pcs'].forEach(id => {
+  ['hcpcsCode', 'tamCodes', 'tamIcd10Pcs', 'lookupQuery'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); executeSearch(); }
     });
@@ -1679,6 +1692,124 @@ async function fetchProviderBenes(npis) {
     }
   }));
   return out;
+}
+
+// ─── PRACTICE AFFILIATION (Group by Practice) ───
+// A SEPARATE CMS host from the data-api claims datasets used everywhere else
+// in this app: the "Doctors and Clinicians National Downloadable File"
+// (CMS Provider Data Catalog, dataset mj5m-pzi6), sourced from PECOS Medicare
+// enrollment records. This is the ONLY source in this app for a real
+// provider-to-practice crosswalk (org_pac_id) rather than an inferred address
+// match. No CORS headers on this host (verified live) — goes through
+// corsFetch()'s proxy-fallback chain like every other external call here.
+//
+// This endpoint has a genuinely slow, roughly FLAT ~13-15s backend query cost
+// per request — verified live: a 1-NPI query and a 100-NPI query both took
+// ~13-15s, so it's almost certainly a full scan of its ~3.4M rows rather than
+// an indexed point lookup, meaning the cost doesn't scale with how much is
+// asked for. That makes fewer, bigger requests the fix, not more concurrent
+// small ones: firing one request per NPI (the original design) turned a
+// 400-provider search into 400 separate ~15s round trips, which also
+// overwhelmed the free CORS proxies this endpoint requires (verified live:
+// 15 concurrent single-NPI requests through one proxy mostly failed with
+// 500/408/522 errors). Batching via the datastore API's "in" operator turns
+// that into ~8 requests instead.
+const PROVIDER_DATA_API_BASE = 'https://data.cms.gov/provider-data/api/1/datastore/query/mj5m-pzi6/0';
+// npi -> array of raw candidate affiliation rows (empty = confirmed no group
+// affiliation), or null if the lookup itself failed for that NPI.
+const practiceAffiliationCache = {};
+
+const PRACTICE_BATCH_SIZE = 50; // verified live: 1, 3, 20, and 100 NPIs per request all cost about the same ~13-15s, so batch generously
+const PRACTICE_BATCH_CONCURRENCY = 3; // each batch is itself a slow, heavy request — unlike a typical bulk fetch, this app does NOT want dozens in flight at once
+const PRACTICE_FETCH_TIMEOUT_MS = 60000; // this endpoint alone can take ~15s+ on a good day; give it real headroom, especially with a CORS proxy's own latency on top
+
+// Queries a whole batch of NPIs in ONE request. The "in" operator's value
+// must be submitted as repeated array-style params (value[]=A&value[]=B) —
+// both a comma-joined string and a JSON-encoded array silently return zero
+// rows, verified live. Returns { npi: [...candidate rows] } — an NPI with no
+// group affiliation (or that CMS has no record of at all) is simply absent
+// from the map, not an error.
+async function fetchPracticeAffiliationsBatch(npis) {
+  const params = new URLSearchParams();
+  params.set('conditions[0][property]', 'npi');
+  npis.forEach(n => params.append('conditions[0][value][]', n));
+  params.set('conditions[0][operator]', 'in');
+  const url = `${PROVIDER_DATA_API_BASE}?${params.toString()}`;
+  const rows = await corsFetch(url, {
+    extract: data => (data && Array.isArray(data.results)) ? data.results : (() => { throw new Error('no results array'); })(),
+    directTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,
+    proxyTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,
+  });
+  const byNpi = {};
+  rows.forEach(r => {
+    if (!r.org_pac_id) return; // blank org_pac_id = not reassigned to any group
+    if (!byNpi[r.npi]) byNpi[r.npi] = [];
+    byNpi[r.npi].push({
+      orgPacId: r.org_pac_id,
+      facilityName: r.facility_name || '',
+      numOrgMembers: parseInt(r.num_org_mem, 10) || 0,
+      city: r.citytown || '',
+      state: r.state || '',
+      zip: r.zip_code || '',
+    });
+  });
+  return byNpi;
+}
+
+function chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Runs `worker` over every item with at most `cap` in flight at once (a
+// simple worker-pool loop — no dependency). `onProgress(completed, total)`
+// fires after each item settles.
+async function runWithConcurrencyCap(items, worker, cap, onProgress) {
+  let completed = 0;
+  let nextIndex = 0;
+  async function runOne() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      await worker(items[i], i);
+      completed++;
+      if (onProgress) onProgress(completed, items.length);
+    }
+  }
+  const poolSize = Math.min(cap, items.length) || 0;
+  await Promise.all(Array.from({ length: poolSize }, runOne));
+}
+
+// Resolves practice affiliation for every provider in `providers` (the FULL
+// result set, not just the current display page — a practice's members can
+// land on different pages of the per-provider sorted list). Only fetches NPIs
+// not already in practiceAffiliationCache, batched PRACTICE_BATCH_SIZE at a
+// time. A failed batch degrades every NPI in it to solo (never blocks the
+// rest, never throws) rather than failing the whole resolution.
+async function resolvePracticeAffiliations(providers, progress) {
+  const uncached = providers.filter(p => practiceAffiliationCache[p.npi] === undefined);
+  const batches = chunkArray(uncached, PRACTICE_BATCH_SIZE);
+  let done = 0;
+  await runWithConcurrencyCap(batches, async batch => {
+    const npis = batch.map(p => p.npi);
+    try {
+      const byNpi = await fetchPracticeAffiliationsBatch(npis);
+      npis.forEach(npi => { practiceAffiliationCache[npi] = byNpi[npi] || []; });
+    } catch (e) {
+      npis.forEach(npi => { practiceAffiliationCache[npi] = null; }); // lookup failed — treated as solo downstream
+    }
+    done += batch.length;
+    if (progress) progress(`Resolving practice affiliations — ${done}/${uncached.length}...`);
+  }, PRACTICE_BATCH_CONCURRENCY);
+
+  const affiliationByNpi = {};
+  providers.forEach(provider => {
+    const candidates = practiceAffiliationCache[provider.npi];
+    affiliationByNpi[provider.npi] = (candidates && candidates.length)
+      ? resolveOneAffiliation(candidates, provider)
+      : null;
+  });
+  return affiliationByNpi;
 }
 
 // Human-readable label of the data year the current results came from.
@@ -2150,22 +2281,41 @@ function describeApiBody(text) {
   }
 }
 
-async function corsFetch(url) {
+// `opts.extract(parsedJson)` lets a caller consume a response shape other than
+// the bare row-array every data-api endpoint returns — e.g. the CMS Provider
+// Data Catalog's datastore API (`fetchPracticeAffiliation`) wraps rows in
+// `{results: [...]}`. It must return an array or throw; omitted, behavior is
+// byte-for-byte the original array-only check every existing call site relies on.
+async function corsFetch(url, opts = {}) {
+  const extract = opts.extract || (data => {
+    if (Array.isArray(data)) return data;
+    throw new Error('not a data array');
+  });
+  // A couple of endpoints (the Provider Data Catalog's practice-affiliation
+  // lookup) have a genuinely slow, ~flat ~15s backend query cost regardless of
+  // how much is asked for in one request — overridable per call so that one
+  // slow endpoint doesn't force a longer timeout on every other (fast) call
+  // site sharing this function.
+  const directTimeoutMs = opts.directTimeoutMs || DIRECT_TIMEOUT_MS;
+  const proxyTimeoutMs = opts.proxyTimeoutMs || PROXY_TIMEOUT_MS;
   const attempts = []; // diagnostic trail — included in the error so failures are never silent
 
   // First, try the direct request (works if hosted on a server with CORS headers)
   try {
-    const directResp = await fetchWithTimeout(url, DIRECT_TIMEOUT_MS);
+    const directResp = await fetchWithTimeout(url, directTimeoutMs);
     const text = await directResp.text();
     if (directResp.ok) {
       const data = JSON.parse(text);
-      if (Array.isArray(data)) {
+      try {
+        const rows = extract(data);
         console.log('Direct fetch succeeded');
-        return data;
+        return rows;
+      } catch (extractErr) {
+        // The API answered but not with the shape we asked for. A proxy would
+        // get the same answer, so surface it immediately instead of masking
+        // it as "no results".
+        throw new Error(`CMS API responded HTTP ${directResp.status} but returned an error instead of data: ${describeApiBody(text)}`);
       }
-      // The API answered but with an error object, not row data. A proxy would get
-      // the same answer, so surface it immediately instead of masking it as "no results".
-      throw new Error(`CMS API responded HTTP ${directResp.status} but returned an error instead of data: ${describeApiBody(text)}`);
     }
     // Got a real HTTP response (CORS works) with an error status — report it directly.
     throw new Error(`CMS API request failed with HTTP ${directResp.status} ${directResp.statusText}: ${describeApiBody(text)}`);
@@ -2189,7 +2339,7 @@ async function corsFetch(url) {
     let moveOn = false;
     for (let attempt = 0; attempt <= 2 && !moveOn; attempt++) {
       try {
-        const resp = await fetchWithTimeout(proxyUrl, PROXY_TIMEOUT_MS);
+        const resp = await fetchWithTimeout(proxyUrl, proxyTimeoutMs);
         const text = await resp.text();
         if (!resp.ok) {
           if ((resp.status === 429 || resp.status >= 500) && attempt < 2) {
@@ -2203,13 +2353,15 @@ async function corsFetch(url) {
         }
         // Validate it's actual JSON (some proxies return HTML error pages)
         const data = JSON.parse(text);
-        if (Array.isArray(data)) {
+        try {
+          const rows = extract(data);
           activeProxyIndex = idx; // remember which proxy worked
-          console.log(`Proxy ${idx} succeeded, got ${data.length} results`);
-          return data;
+          console.log(`Proxy ${idx} succeeded, got ${rows.length} results`);
+          return rows;
+        } catch (extractErr) {
+          attempts.push(`proxy ${idx}: HTTP 200 but not a data array — ${describeApiBody(text)}`);
+          moveOn = true;
         }
-        attempts.push(`proxy ${idx}: HTTP 200 but not a data array — ${describeApiBody(text)}`);
-        moveOn = true;
       } catch(e) {
         attempts.push(`proxy ${idx}: ${e.message}`);
         console.log(`Proxy ${idx} failed:`, e.message);
@@ -2377,6 +2529,12 @@ async function executeSearch() {
   resultsCapped = false;
   searchFailedCodes = [];
   searchAndMismatch = 0;
+  groupByPractice = false;
+  practiceGroupedResults = [];
+  // practiceAffiliationCache is intentionally NOT cleared here — like
+  // benesCache, it's a pure per-NPI fact cache (a provider's real-world
+  // practice affiliation doesn't change between searches), so keeping it warm
+  // across searches avoids re-fetching the same provider more than once.
   // Generation token: results/renders from a superseded search (user switched
   // tab or searched again mid-fetch) are discarded instead of painting into the
   // wrong context. Snapshot the tab too.
@@ -2806,7 +2964,8 @@ function toggleTamDrgDetail() {
 
 // ─── FILTER + SORT HELPERS ───
 function getFilteredSorted() {
-  let results = allGroupedResults.filter(g => g.totalServices >= minVolumeFilter);
+  const base = groupByPractice ? practiceGroupedResults : allGroupedResults;
+  let results = base.filter(g => g.totalServices >= minVolumeFilter);
   if (currentSortOrder === 'payment') {
     results = [...results].sort((a, b) => b.totalPayment - a.totalPayment);
   }
@@ -2844,6 +3003,38 @@ function applyVolumeFilter(val) {
 
 function applySort(order) {
   currentSortOrder = order;
+  displayPage = 0;
+  renderActiveResults();
+}
+
+// Toggles Find Customers between the per-provider view and a rollup by real
+// practice affiliation (CMS enrollment records, not an address guess — see
+// resolvePracticeAffiliations/groupProvidersByPractice). Resolution runs over
+// the FULL result set once per search (not per page), then is cached in
+// practiceGroupedResults for the rest of the session — flipping the toggle
+// off and back on again re-renders instantly with no re-fetch.
+async function applyPracticeGrouping(checked) {
+  groupByPractice = checked;
+  if (checked && !practiceGroupedResults.length && allGroupedResults.length && !resolvingAffiliations) {
+    resolvingAffiliations = true;
+    const btn = document.getElementById('searchBtn');
+    btn.disabled = true;
+    try {
+      const affiliationByNpi = await resolvePracticeAffiliations(
+        allGroupedResults,
+        msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; }
+      );
+      practiceGroupedResults = assignScoresAndTiers(groupProvidersByPractice(allGroupedResults, affiliationByNpi));
+    } catch (e) {
+      showError(`Could not resolve practice affiliations: ${e.message}`);
+      groupByPractice = false;
+      const toggle = document.getElementById('groupByPracticeToggle');
+      if (toggle) toggle.checked = false;
+    } finally {
+      resolvingAffiliations = false;
+      resetSearchButton();
+    }
+  }
   displayPage = 0;
   renderActiveResults();
 }
@@ -2923,7 +3114,7 @@ function renderResults() {
     <div class="results-header">
       <div class="results-count" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <span>
-          <strong>${filtered.length}</strong> provider${filtered.length !== 1 ? 's' : ''}
+          <strong>${filtered.length}</strong> ${groupByPractice ? `practice${filtered.length !== 1 ? 's' : ''}` : `provider${filtered.length !== 1 ? 's' : ''}`}
           ${hiddenCount > 0 ? `<span style="color:var(--text-3)"> (${hiddenCount} below volume threshold)</span>` : ''}
           ${totalPages > 1 ? `<span style="color:var(--text-3)"> · page ${displayPage + 1} of ${totalPages}</span>` : ''}
         </span>
@@ -2951,22 +3142,69 @@ function renderResults() {
         <option value="score" ${currentSortOrder === 'score' ? 'selected' : ''}>Complexity Score</option>
         <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
       </select>
+      <label style="display:flex;align-items:center;gap:6px;margin-left:8px;cursor:pointer;">
+        <input type="checkbox" id="groupByPracticeToggle" ${groupByPractice ? 'checked' : ''} onchange="applyPracticeGrouping(this.checked)">
+        Group by practice
+      </label>
       <div class="filter-count">
         <span style="color:var(--amber);">■</span> Tier 1 &nbsp;
         <span style="color:var(--text-3);">■</span> Tier 2 &nbsp;
         <span style="color:var(--border);">■</span> Tier 3
       </div>
     </div>
+    ${groupByPractice ? `<div class="year-note" style="margin:0 0 12px;">Grouped by CMS Medicare enrollment records (PECOS group-practice ID) — a real practice affiliation, not a guess. A provider who doesn't reassign billing to any group appears as their own single-provider practice. Some providers are enrolled under more than one group; where CMS's own address for a group didn't uniquely identify this provider's billing location, the largest group is shown and flagged (see any card marked "≈"). A group's nationally reported member count may be larger than how many of its members appear in this specific search.</div>` : ''}
     ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}
     <div class="results-grid">
   `;
 
   pageProviders.forEach(g => {
-    const topProcs = g.procedures.slice(0, 3).map(p =>
-      `<span class="code">${escapeHtml(p.code)}</span>`
-    ).join(' ');
+    const isPractice = groupByPractice && g.memberCount > 1;
+    if (isPractice) {
+      html += practiceCardHtml(g);
+    } else {
+      // Not grouping, or a solo "practice" (memberCount === 1): render exactly
+      // today's per-provider card. In practice mode, the practice's own
+      // recomputed tier/score apply (percentile rank is relative to whatever
+      // population assignScoresAndTiers ran over — practices, not raw
+      // providers), so those two fields come from the practice wrapper even
+      // though everything else is the one member's own data.
+      const provider = groupByPractice ? { ...g.members[0], tier: g.tier, score: g.score } : g;
+      html += providerCardHtml(provider);
+    }
+  });
 
-    html += `
+  html += `</div>`;
+  html += `<div class="year-note" id="beneNote" style="margin:10px 0 0;display:none;"></div>`;
+  html += `
+    <div class="pagination">
+      <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
+      <span class="page-info">Page ${displayPage + 1} of ${totalPages || 1}</span>
+      <button class="page-btn" onclick="nextPage()" ${!hasNext ? 'disabled' : ''}>Next →</button>
+    </div>
+  `;
+
+  resultsArea.innerHTML = html;
+  document.querySelector('.main').scrollTop = 0;
+  // Only solo cards (real single providers, or practice mode's memberCount===1
+  // entries) have a true-unique-beneficiary fetch available — a multi-member
+  // practice's beneficiary count can only ever be the summed, caveated total
+  // (see practiceCardHtml), since no public CMS dataset gives a practice-level
+  // unique count.
+  const soloNpis = groupByPractice
+    ? pageProviders.filter(g => g.memberCount === 1).map(g => g.members[0].npi)
+    : pageProviders.map(g => g.npi);
+  patchProviderBenes(soloNpis.map(npi => ({ npi })));
+}
+
+// The per-provider result card — used both outside practice mode and for a
+// solo "practice" (memberCount === 1) inside it, so toggling the feature only
+// visibly changes actual multi-member practices.
+function providerCardHtml(g) {
+  const topProcs = g.procedures.slice(0, 3).map(p =>
+    `<span class="code">${escapeHtml(p.code)}</span>`
+  ).join(' ');
+
+  return `
       <div class="result-card">
         <div class="card-top">
           <div class="provider-info">
@@ -3027,21 +3265,93 @@ function renderResults() {
         </div>
       </div>
     `;
-  });
+}
 
-  html += `</div>`;
-  html += `<div class="year-note" id="beneNote" style="margin:10px 0 0;display:none;"></div>`;
-  html += `
-    <div class="pagination">
-      <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
-      <span class="page-info">Page ${displayPage + 1} of ${totalPages || 1}</span>
-      <button class="page-btn" onclick="nextPage()" ${!hasNext ? 'disabled' : ''}>Next →</button>
-    </div>
-  `;
+// A multi-member practice card — address/facility replaces a single NPI as
+// the header, totals are summed across members (procedures already merged by
+// (code, place) in groupProvidersByPractice, not concatenated), and members
+// are listed in a collapsible section rather than one card each.
+function practiceCardHtml(g) {
+  const topProcs = g.procedures.slice(0, 3).map(p =>
+    `<span class="code">${escapeHtml(p.code)}</span>`
+  ).join(' ');
+  const disambigMark = g.anyDisambiguated
+    ? ` <span class="match-score" title="One or more members' group affiliation was picked from several CMS enrollment records — see the note above.">≈</span>`
+    : '';
 
-  resultsArea.innerHTML = html;
-  document.querySelector('.main').scrollTop = 0;
-  patchProviderBenes(pageProviders);
+  return `
+      <div class="result-card">
+        <div class="card-top">
+          <div class="provider-info">
+            <div class="provider-name">
+              ${escapeHtml(g.facilityName || 'Unnamed Practice')}${disambigMark}
+              <span class="npi-tag">${g.memberCount} of ${fmtNumber(g.numOrgMembers || g.memberCount)} nationally reported members</span>
+              ${tierBadgeHtml(g.tier)}
+            </div>
+            <div class="provider-specialty">Practice · ${g.procedures.length} distinct procedure code${g.procedures.length !== 1 ? 's' : ''}</div>
+          </div>
+          <div class="payment-badge">
+            <div class="payment-amount">${fmtCurrency(g.totalPayment)}</div>
+            <div class="payment-label">Total Medicare Payment · ${escapeHtml(dataYearShort())}</div>
+            <div class="score-pill" style="margin-top:6px;justify-content:flex-end;">
+              Score <span>${g.score}</span>/100
+            </div>
+          </div>
+        </div>
+        <div class="card-metrics">
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.totalServices)}</div>
+            <div class="metric-label">Total Services · ${escapeHtml(dataYearShort())}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
+            <div class="metric-label" title="Summed across every member's own per-procedure counts — the same patient seen by two members, or twice by one, is counted more than once. No public CMS dataset gives a true practice-level unique count.">Beneficiary-Count Sum †</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${g.procedures.length}</div>
+            <div class="metric-label">Procedure Codes</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
+            <div class="metric-label">Avg Payment / Service</div>
+          </div>
+        </div>
+        <button class="procedures-toggle" id="detail-btn-${g.practiceKey}" onclick="toggleDetail('${g.practiceKey}')">
+          <span class="arrow">▼</span> ${g.memberCount} member${g.memberCount !== 1 ? 's' : ''} in this search
+        </button>
+        <div class="procedures-list" id="detail-${g.practiceKey}">
+          <div class="proc-row proc-row-header">
+            <div>NPI</div><div>Name</div><div>Services</div><div>Payment</div><div>Tier</div>
+          </div>
+          ${g.members.map(m => `
+            <div class="proc-row">
+              <div class="proc-code">${escapeHtml(m.npi)}</div>
+              <div class="proc-desc" title="${escapeHtml(m.specialty)}">${escapeHtml(m.name)}</div>
+              <div class="proc-num">${fmtNumber(m.totalServices)}</div>
+              <div class="proc-num">${fmtCurrency(m.totalPayment)}</div>
+              <div class="proc-num">${tierBadgeHtml(m.tier)}</div>
+            </div>
+          `).join('')}
+        </div>
+        <button class="procedures-toggle" id="proc-btn-${g.practiceKey}" onclick="toggleProcedures('${g.practiceKey}')">
+          <span class="arrow">▼</span> ${g.procedures.length} procedure${g.procedures.length !== 1 ? 's' : ''} — top: ${topProcs || 'n/a'}
+        </button>
+        <div class="procedures-list" id="proc-list-${g.practiceKey}">
+          <div class="proc-row proc-row-header">
+            <div>Code</div><div>Description</div><div>Services</div><div>Payment</div><div>Avg Charge</div>
+          </div>
+          ${g.procedures.map(p => `
+            <div class="proc-row">
+              <div class="proc-code">${escapeHtml(p.code)}</div>
+              <div class="proc-desc" title="${escapeHtml(p.desc)}">${escapeHtml(p.desc)}</div>
+              <div class="proc-num">${fmtNumber(p.services)}</div>
+              <div class="proc-num">${fmtCurrency(p.payment)}</div>
+              <div class="proc-num">${fmtCurrency(p.avgCharge)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
 }
 
 // Replace each visible provider card's "Unique Beneficiaries" placeholder with
@@ -3615,9 +3925,15 @@ async function executeTamSearch(codes) {
   // billing that code is under CMS's ≤10-beneficiary reporting floor, so the
   // code has real volume (from the unsuppressed geography aggregate) but zero
   // provider rows to pull a description from.
+  // Search from the LATEST year backward, not oldest-first: CMS periodically
+  // revises HCPCS description text (e.g. 25446 was literally "Removal of
+  // forearm bone at wrist" in CY2013, "Arthroplasty or replacement of the
+  // entire wrist joint" by CY2024) — trend[] is sorted ascending, so a plain
+  // .find() would silently surface the oldest available wording instead of
+  // the current one, disagreeing with Code Lookup's latest-year dictionary.
   trends.forEach(t => {
     if (descMap[t.code]) return;
-    const withDesc = (t.trend || []).find(y => y.desc);
+    const withDesc = [...(t.trend || [])].reverse().find(y => y.desc);
     if (withDesc) descMap[t.code] = withDesc.desc;
   });
 
@@ -4443,34 +4759,21 @@ async function lookupDmeReferrers(code) {
   }
 }
 
-async function executeLookupSearch() {
-  const q = document.getElementById('lookupQuery').value.trim();
-  if (!q) { showError('Enter a code or keyword to look up.'); return; }
-
-  const btn = document.getElementById('searchBtn');
-  const progress = msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; };
-  progress('Loading code dictionaries...');
-  // Fail-soft: one vocabulary failing must not take down the whole lookup. A
-  // transient DRG-dataset error shouldn't stop a CPT or Level II search.
-  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress), loadIcd10PcsIndex(progress)]);
-  const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
-  const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
-  const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
-  const dictErrors = [];
-  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
-  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
-  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
-  if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
-    throw new Error('Could not build either code index from the CMS API — please try again.');
-  }
-
+// Runs the full per-term dispatch (exact DRG/CPT/ICD-10-PCS code shape, or
+// keyword search across all vocabularies) for exactly ONE search term.
+// Factored out of executeLookupSearch() so a multi-term paste can run this
+// once per term and merge the results, instead of treating the whole pasted
+// list as one (unmatchable) combined phrase.
+async function lookupOneTerm(q, ctx) {
+  const { cpt, drg, icd10PcsLoaded, progress, multi } = ctx;
   let cptMatches, drgMatches;
-  let icd10PcsMatches = null; // null = panel hidden (browse-all-DRGs, or a DRG/CPT-shaped query — no reverse lookup)
+  let icd10PcsMatches = null;
   let crossNote = '';
-  let icd10Note = ''; // separate from crossNote: this one IS an official crosswalk, not a description-match guess
+  let icd10Note = '';
   let usedDirect = false;
-  let dme = null;           // { status, matches, scope?, reason?, family? } — Level II panel
-  let dmeReferrers = null;  // { referrers, year } for an exact Level II code
+  let dme = null;
+  let dmeReferrers = null;
+  const tag = multi ? ` for "${q}"` : ''; // disambiguate progress messages across terms
 
   if (/^[A-Za-z0-9]{7}$/.test(q) && icd10PcsLoaded) {
     // Looks like an ICD-10-PCS code (always exactly 7 chars — never overlaps
@@ -4494,7 +4797,7 @@ async function executeLookupSearch() {
     if (!exact.length) {
       // Not in the local index — ask the API directly rather than concluding
       // the DRG doesn't exist (the index may be truncated).
-      progress(`Checking CMS directly for DRG ${code}…`);
+      progress(`Checking CMS directly for DRG ${code}${tag}…`);
       const direct = await lookupDrgCodeDirect(code);
       if (direct) { exact = [direct]; usedDirect = true; }
     }
@@ -4506,7 +4809,7 @@ async function executeLookupSearch() {
     const code = q.toUpperCase();
     let exact = cpt.filter(c => c.code === code);
     if (!exact.length) {
-      progress(`Checking CMS directly for ${code}…`);
+      progress(`Checking CMS directly for ${code}${tag}…`);
       const direct = await lookupCptCodeDirect(code);
       if (direct) { exact = [direct]; usedDirect = true; }
     }
@@ -4522,7 +4825,7 @@ async function executeLookupSearch() {
     if (family && family.inDmepos === false) {
       dme = { status: 'not-applicable', matches: [], family };
     } else if (family) {
-      progress(`Checking supplier (DMEPOS) data for ${code}…`);
+      progress(`Checking supplier (DMEPOS) data for ${code}${tag}…`);
       const hit = await lookupDmeCode(code);
       dme = {
         status: hit.status,
@@ -4532,7 +4835,7 @@ async function executeLookupSearch() {
         family,
       };
       if (hit.status === 'ok') {
-        progress(`Finding physicians who order ${code}…`);
+        progress(`Finding physicians who order ${code}${tag}…`);
         dmeReferrers = await lookupDmeReferrers(code);
       }
     }
@@ -4542,7 +4845,7 @@ async function executeLookupSearch() {
     // A keyword that finds nothing locally is only trustworthy if the index is
     // complete; when it isn't, re-ask the API against the description column.
     if (!cptMatches.length && cptDictTruncated) {
-      progress('Index incomplete — searching CMS directly…');
+      progress(`Index incomplete — searching CMS directly${tag}…`);
       const direct = await lookupCptKeywordDirect(q);
       if (direct.length) { cptMatches = direct; usedDirect = true; }
     }
@@ -4553,11 +4856,110 @@ async function executeLookupSearch() {
     }
     // Keywords also search the supplier (Level II) vocabulary — "prosthetic",
     // "knee brace" etc. live there, not in the physician data.
-    progress('Searching supplier (DMEPOS) codes…');
+    progress(`Searching supplier (DMEPOS) codes${tag}…`);
     dme = await lookupDmeKeyword(q);
   }
 
-  renderLookupResults(q, cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note);
+  return { term: q, cptMatches, drgMatches, icd10PcsMatches, crossNote, icd10Note, usedDirect, dme, dmeReferrers };
+}
+
+// Merges an array's worth of per-term match lists into one, deduped by code,
+// preserving each term's own ordering (its exact match first, if any) and
+// appending any new codes contributed by later terms.
+function dedupeMatchesByCode(perTermArrays) {
+  const seen = new Set();
+  const out = [];
+  perTermArrays.forEach(arr => (arr || []).forEach(m => {
+    if (m && m.code && !seen.has(m.code)) { seen.add(m.code); out.push(m); }
+  }));
+  return out;
+}
+
+async function executeLookupSearch() {
+  const raw = document.getElementById('lookupQuery').value.trim();
+  if (!raw) { showError('Enter a code or keyword to look up.'); return; }
+  const terms = splitLookupTerms(raw);
+  if (!terms.length) { showError('Enter a code or keyword to look up.'); return; }
+  if (terms.length > MAX_BULK_CODES) {
+    showError(`Too many terms (${terms.length}) — the bulk lookup limit is ${MAX_BULK_CODES} per search. Split the list and run it in batches.`);
+    return;
+  }
+
+  const btn = document.getElementById('searchBtn');
+  const progress = msg => { btn.innerHTML = `<div class="spinner"></div> ${msg}`; };
+  progress('Loading code dictionaries...');
+  // Fail-soft: one vocabulary failing must not take down the whole lookup. A
+  // transient DRG-dataset error shouldn't stop a CPT or Level II search.
+  const settled = await Promise.allSettled([loadCptDict(progress), loadDrgDict(progress), loadIcd10PcsIndex(progress)]);
+  const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
+  const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
+  const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
+  const dictErrors = [];
+  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
+  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
+  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
+  if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
+    throw new Error('Could not build either code index from the CMS API — please try again.');
+  }
+
+  const multi = terms.length > 1;
+  const perTerm = await Promise.all(terms.map(term => lookupOneTerm(term, { cpt, drg, icd10PcsLoaded, progress, multi })));
+
+  const cptMatches = dedupeMatchesByCode(perTerm.map(t => t.cptMatches));
+  const drgMatches = dedupeMatchesByCode(perTerm.map(t => t.drgMatches));
+  const icd10PcsMatches = icd10PcsLoaded ? dedupeMatchesByCode(perTerm.map(t => t.icd10PcsMatches)) : null;
+  const usedDirect = perTerm.some(t => t.usedDirect);
+  const crossNote = [...new Set(perTerm.map(t => t.crossNote).filter(Boolean))].join(' ');
+  const icd10Note = [...new Set(perTerm.map(t => t.icd10Note).filter(Boolean))].join(' ');
+
+  // The single-term "why this Level II family isn't in DMEPOS" explainer only
+  // makes sense for one code at a time — preserve it verbatim when there's
+  // exactly one term. For multiple terms, merge matches into the normal
+  // panel instead of trying to explain several different families at once.
+  let dme, dmeReferrers;
+  if (!multi) {
+    dme = perTerm[0].dme;
+    dmeReferrers = perTerm[0].dmeReferrers;
+  } else {
+    const dmeMatches = dedupeMatchesByCode(perTerm.map(t => t.dme && t.dme.matches));
+    const anyUnavailable = perTerm.some(t => t.dme && t.dme.status === 'unavailable');
+    dme = { status: dmeMatches.length ? 'ok' : (anyUnavailable ? 'unavailable' : 'none'), matches: dmeMatches };
+    const seenNpi = new Set();
+    const referrers = [];
+    let referrerYear = null;
+    perTerm.forEach(t => {
+      if (t.dmeReferrers && t.dmeReferrers.referrers) {
+        if (!referrerYear) referrerYear = t.dmeReferrers.year;
+        t.dmeReferrers.referrers.forEach(r => { if (!seenNpi.has(r.npi)) { seenNpi.add(r.npi); referrers.push(r); } });
+      }
+    });
+    dmeReferrers = referrers.length ? { referrers, year: referrerYear } : null;
+  }
+
+  renderLookupResults(terms.join(', '), cptMatches, drgMatches, crossNote, null, usedDirect, dme, dmeReferrers, dictErrors, icd10PcsMatches, icd10Note);
+}
+
+// One combined CSV across all four vocabularies currently on screen — a
+// 'Vocabulary' column distinguishes row type (mirrors exportTamCSV's
+// CPT/MS-DRG row-type column), each row leaving blank whatever fields don't
+// apply to its vocabulary rather than forcing a lookalike shape on all four.
+function exportLookupCSV() {
+  if (!lookupResults) return;
+  const { cptMatches, drgMatches, icd10PcsMatches, dme } = lookupResults;
+  const today = new Date().toISOString().slice(0, 10);
+  const headers = ['Vocabulary', 'Code', 'Description', 'Services/Yr (National)', 'Discharges (National)', 'Avg Paid/Stay', 'Supplier Payment', 'Related MS-DRG(s)', 'Date Exported'];
+
+  const rows = [];
+  (cptMatches || []).forEach(m => rows.push(['CPT/HCPCS Level I', m.code, m.desc || '', m.services ?? '', '', '', '', '', today]));
+  (drgMatches || []).forEach(m => rows.push(['MS-DRG', m.code, m.desc || '', '', m.discharges ?? '', m.avgPaid != null ? m.avgPaid.toFixed(2) : '', '', '', today]));
+  (icd10PcsMatches || []).forEach(m => {
+    const related = m.status === 'ok' ? m.drgs.join('; ') : m.status === 'no-drg' ? 'no MS-DRG relevance' : 'not recognized';
+    rows.push(['ICD-10-PCS', m.code, m.desc || '', '', '', '', '', related, today]);
+  });
+  ((dme && dme.matches) || []).forEach(m => rows.push(['HCPCS Level II (DMEPOS)', m.code, m.desc || '', m.services ?? '', '', '', m.payment != null ? m.payment.toFixed(2) : '', '', today]));
+
+  if (!rows.length) return;
+  triggerCsvDownload(headers, rows, `medintel_code_lookup_${today}.csv`);
 }
 
 async function browseAllDrgs() {
@@ -4777,6 +5179,10 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
   const resultsArea = document.getElementById('resultsArea');
   resultsArea.style.display = 'block';
 
+  // Retained for exportLookupCSV() — the render params are the source of
+  // truth, so export always matches exactly what's on screen.
+  lookupResults = { cptMatches, drgMatches, icd10PcsMatches, dme };
+
   const cptYear = datasetVersions.geography.length ? `CY ${datasetVersions.geography[0].year}` : 'latest year';
   const drgYear = datasetVersions.inpGeo.length ? `CY ${datasetVersions.inpGeo[0].year}` : 'latest year';
 
@@ -4788,6 +5194,10 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
       </div>
       <div style="display:flex;gap:8px;">
         ${shareBtnHtml()}
+        <button class="export-btn" onclick="exportLookupCSV()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Export CSV
+        </button>
       </div>
     </div>
     ${(dictErrors && dictErrors.length) ? `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ ${escapeHtml(dictErrors.join('; '))} — results below come from the vocabularies that did load. Retry to rebuild.</div>` : ''}
@@ -4869,6 +5279,40 @@ function exportProcedureCSV() {
 function exportCSV() {
   if (!allGroupedResults.length) return;
   const data = getFilteredSorted();
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (groupByPractice) {
+    const headers = [
+      'Facility Name', 'Org PAC ID', 'Nationally Reported Members', 'Members In This Search', 'Member NPIs',
+      'Tier', 'Complexity Score',
+      'Total Procedure Codes', 'Total Services', 'Beneficiary-Count Sum (overstates unique patients)', 'Total Medicare Payment',
+      'Avg Payment Per Service', 'Date Exported'
+    ];
+    const rows = data.map(g => {
+      const npis = g.members.map(m => m.npi);
+      const npiField = npis.length > 20
+        ? npis.slice(0, 20).join('; ') + ` (+${npis.length - 20} more)`
+        : npis.join('; ');
+      return [
+        g.facilityName || '',
+        g.orgPacId || '',
+        g.numOrgMembers || g.memberCount,
+        g.memberCount,
+        npiField,
+        `Tier ${g.tier}`,
+        g.score,
+        g.procedures.length,
+        g.totalServices,
+        g.totalBeneficiaries,
+        g.totalPayment.toFixed(2),
+        g.totalServices ? (g.totalPayment / g.totalServices).toFixed(2) : '',
+        today
+      ];
+    });
+    triggerCsvDownload(headers, rows, `cms_medintel_practices_${today}.csv`);
+    return;
+  }
+
   const headers = [
     'Data Year','NPI','Provider Name','Credentials','Specialty','Entity Type',
     'Street','City','State','Zip',
@@ -4876,7 +5320,6 @@ function exportCSV() {
     'Total Procedure Codes','Total Services','Beneficiary-Count Sum (overstates unique patients)','Total Medicare Payment',
     'Avg Payment Per Service','Revision Procedure Types','Date Exported'
   ];
-  const today = new Date().toISOString().slice(0, 10);
   const rows = data.map(g => [
     dataYearValue(),
     g.npi,
@@ -4985,7 +5428,32 @@ function exportSharePointCSV(mapping) {
 
   const headers = SP_FIELDS.map(f => mapping[f.key] || f.default);
 
+  // Practice-mode rows have no single NPI/credentials/specialty/address — the
+  // same SP_FIELDS columns are reused (so a saved field-name mapping still
+  // applies), but substituted with practice-level equivalents where one
+  // exists, and left blank rather than inventing a value where none does.
   const rows = data.map(g => SP_FIELDS.map(field => {
+    if (groupByPractice) {
+      const npis = g.members.map(m => m.npi);
+      const npiField = npis.length > 20 ? npis.slice(0, 20).join('; ') + ` (+${npis.length - 20} more)` : npis.join('; ');
+      switch (field.key) {
+        case 'dataYear':       return dataYearValue();
+        case 'npi':            return npiField;
+        case 'name':           return g.facilityName || '';
+        case 'credentials':    return '';
+        case 'specialty':      return '';
+        case 'entityType':     return 'Practice';
+        case 'street': case 'city': case 'state': case 'zip': return '';
+        case 'tier':           return `Tier ${g.tier}`;
+        case 'score':          return g.score;
+        case 'totalServices':  return g.totalServices;
+        case 'totalBeneficiaries': return g.totalBeneficiaries;
+        case 'totalPayment':   return g.totalPayment.toFixed(2);
+        case 'procedureCodes': return g.procedures.slice(0,10).map(p => p.code).join('; ');
+        case 'dateAdded':      return today;
+        default: return '';
+      }
+    }
     switch (field.key) {
       case 'dataYear':       return dataYearValue();
       case 'npi':            return g.npi;
@@ -5040,6 +5508,8 @@ function clearSearch() {
   document.querySelectorAll('#searchFields select').forEach(s => s.value = '');
   currentResults = [];
   allGroupedResults = [];
+  groupByPractice = false;
+  practiceGroupedResults = [];
   procedureGroups = [];
   tamResults = null;
   tamDrgTrendArgs = null;

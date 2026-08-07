@@ -9,7 +9,8 @@ const {
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
   extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
-  parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs
+  parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms,
+  resolveOneAffiliation, groupProvidersByPractice
 } = require('./medintel-core.js');
 
 // ─── f() — field accessor ───────────────────────────────────────────────────
@@ -393,6 +394,145 @@ describe('groupByProvider()', () => {
   it('correctly identifies individual entity type', () => {
     const result = groupByProvider([row1]);
     expect(result[0].entityType).toBe('Individual');
+  });
+});
+
+// ─── resolveOneAffiliation() ─────────────────────────────────────────────────
+
+describe('resolveOneAffiliation()', () => {
+  const provider = { city: 'Bethesda', state: 'MD', zip: '20817' };
+
+  it('returns null for no candidates', () => {
+    expect(resolveOneAffiliation([], provider)).toBeNull();
+    expect(resolveOneAffiliation(null, provider)).toBeNull();
+  });
+
+  it('returns the single candidate unambiguously when there is only one', () => {
+    const candidates = [{ orgPacId: '123', facilityName: 'Solo Group', numOrgMembers: 5, city: 'Elsewhere', state: 'TX', zip: '75201' }];
+    const result = resolveOneAffiliation(candidates, provider);
+    expect(result.orgPacId).toBe('123');
+    expect(result.disambiguated).toBe(false);
+  });
+
+  it('picks the candidate whose address uniquely matches the provider', () => {
+    const candidates = [
+      { orgPacId: 'A', facilityName: 'Group A', numOrgMembers: 900, city: 'Elsewhere', state: 'TX', zip: '75201' },
+      { orgPacId: 'B', facilityName: 'Group B', numOrgMembers: 5, city: 'Bethesda', state: 'MD', zip: '20817' },
+    ];
+    const result = resolveOneAffiliation(candidates, provider);
+    expect(result.orgPacId).toBe('B'); // smaller group, but its address matches
+    expect(result.disambiguated).toBe(false);
+  });
+
+  it('falls back to the largest group, flagged, when no candidate matches the address', () => {
+    const candidates = [
+      { orgPacId: 'A', facilityName: 'Small', numOrgMembers: 5, city: 'Elsewhere', state: 'TX', zip: '75201' },
+      { orgPacId: 'B', facilityName: 'Big', numOrgMembers: 900, city: 'Nowhere', state: 'CA', zip: '90001' },
+    ];
+    const result = resolveOneAffiliation(candidates, provider);
+    expect(result.orgPacId).toBe('B');
+    expect(result.disambiguated).toBe(true);
+  });
+
+  it('falls back to the largest group, flagged, when multiple candidates tie on the same address (real case: NPI 1548269731)', () => {
+    // MedStar Medical Group II LLC and MGMC LLC share the identical address
+    // (3800 Reservoir Rd NW, Washington DC) but are different groups —
+    // verified live against the real CMS National Downloadable File.
+    const candidates = [
+      { orgPacId: 'MEDSTAR', facilityName: 'MEDSTAR MEDICAL GROUP II LLC', numOrgMembers: 3729, city: 'WASHINGTON', state: 'DC', zip: '200072113' },
+      { orgPacId: 'MGMC', facilityName: 'MGMC LLC', numOrgMembers: 359, city: 'WASHINGTON', state: 'DC', zip: '200072113' },
+      { orgPacId: 'SUBURBAN', facilityName: 'SUBURBAN/NRH MEDICAL REHABILITATION INC', numOrgMembers: 907, city: 'BETHESDA', state: 'MD', zip: '208171844' },
+    ];
+    const unrelatedProvider = { city: 'Somewhere Else', state: 'VA', zip: '22201' };
+    const result = resolveOneAffiliation(candidates, unrelatedProvider);
+    expect(result.orgPacId).toBe('MEDSTAR'); // largest by membership
+    expect(result.disambiguated).toBe(true);
+  });
+});
+
+// ─── groupProvidersByPractice() ──────────────────────────────────────────────
+
+describe('groupProvidersByPractice()', () => {
+  const provA = {
+    npi: '1111111111', name: 'Alice Jones', city: 'Bethesda', state: 'MD', zip: '20817',
+    totalServices: 30, totalPayment: 3000, totalBeneficiaries: 25,
+    procedures: [{ code: '99213', desc: 'Office visit', services: 30, payment: 3000, avgCharge: 150, place: 'Office' }],
+  };
+  const provB = {
+    npi: '2222222222', name: 'Bob Smith', city: 'Bethesda', state: 'MD', zip: '20817',
+    totalServices: 20, totalPayment: 2000, totalBeneficiaries: 15,
+    procedures: [{ code: '99213', desc: 'Office visit', services: 20, payment: 2000, avgCharge: 150, place: 'Office' }],
+  };
+  const provSolo = {
+    npi: '3333333333', name: 'Carol Lee', city: 'Dallas', state: 'TX', zip: '75201',
+    totalServices: 10, totalPayment: 5000, totalBeneficiaries: 8,
+    procedures: [{ code: '27447', desc: 'Knee replacement', services: 10, payment: 5000, avgCharge: 800, place: 'Facility' }],
+  };
+
+  it('merges providers sharing the same orgPacId into one practice', () => {
+    const affMap = {
+      '1111111111': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 },
+      '2222222222': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 },
+    };
+    const result = groupProvidersByPractice([provA, provB], affMap);
+    expect(result).toHaveLength(1);
+    expect(result[0].memberCount).toBe(2);
+    expect(result[0].facilityName).toBe('Big Ortho Group');
+    expect(result[0].totalServices).toBe(50);
+    expect(result[0].totalPayment).toBe(5000);
+  });
+
+  it('aggregates a shared procedure code into one entry, not two (breadth-inflation check)', () => {
+    const affMap = {
+      '1111111111': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 },
+      '2222222222': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 },
+    };
+    const result = groupProvidersByPractice([provA, provB], affMap);
+    expect(result[0].procedures).toHaveLength(1);
+    expect(result[0].procedures[0].services).toBe(50);
+    expect(result[0].procedures[0].payment).toBe(5000);
+  });
+
+  it('treats a provider with no affiliation as their own solo practice', () => {
+    const result = groupProvidersByPractice([provSolo], {});
+    expect(result).toHaveLength(1);
+    expect(result[0].memberCount).toBe(1);
+    expect(result[0].facilityName).toBe('Carol Lee');
+    expect(result[0].orgPacId).toBeNull();
+  });
+
+  it('treats a provider missing from the affiliation map (failed lookup) as solo, not dropped', () => {
+    const result = groupProvidersByPractice([provA, provSolo], { '1111111111': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 } });
+    expect(result).toHaveLength(2);
+    const solo = result.find(g => g.memberCount === 1);
+    expect(solo.members[0].npi).toBe('3333333333');
+  });
+
+  it('produces a solo practice that is a no-op transform of its one member', () => {
+    const result = groupProvidersByPractice([provSolo], {});
+    expect(result[0].totalServices).toBe(provSolo.totalServices);
+    expect(result[0].totalPayment).toBe(provSolo.totalPayment);
+    expect(result[0].procedures[0].code).toBe('27447');
+  });
+
+  it('partitions a mix of grouped and solo providers correctly', () => {
+    const affMap = {
+      '1111111111': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 },
+      '2222222222': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50 },
+    };
+    const result = groupProvidersByPractice([provA, provB, provSolo], affMap);
+    expect(result).toHaveLength(2);
+    expect(result.some(g => g.memberCount === 2)).toBe(true);
+    expect(result.some(g => g.memberCount === 1)).toBe(true);
+  });
+
+  it('sets anyDisambiguated true when at least one members affiliation pick was disambiguated', () => {
+    const affMap = {
+      '1111111111': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50, disambiguated: true },
+      '2222222222': { orgPacId: 'GRP1', facilityName: 'Big Ortho Group', numOrgMembers: 50, disambiguated: false },
+    };
+    const result = groupProvidersByPractice([provA, provB], affMap);
+    expect(result[0].anyDisambiguated).toBe(true);
   });
 });
 
@@ -798,6 +938,51 @@ describe('parseDrgs()', () => {
 
   it('returns empty results for empty input', () => {
     expect(parseDrgs('')).toEqual({ codes: [], invalid: [] });
+  });
+});
+
+// ─── splitLookupTerms() ──────────────────────────────────────────────────────
+
+describe('splitLookupTerms()', () => {
+  it('splits comma-separated codes into independent terms', () => {
+    expect(splitLookupTerms('62140, 62141, 27447')).toEqual(['62140', '62141', '27447']);
+  });
+
+  it('splits newline/semicolon-separated codes into independent terms', () => {
+    expect(splitLookupTerms('62140\n62141;27447')).toEqual(['62140', '62141', '27447']);
+  });
+
+  it('splits space-separated codes when every token looks like a code', () => {
+    expect(splitLookupTerms('62140 62141 27447')).toEqual(['62140', '62141', '27447']);
+  });
+
+  it('keeps a multi-word keyword phrase as one term (no digits, not code-shaped)', () => {
+    expect(splitLookupTerms('knee replacement')).toEqual(['knee replacement']);
+  });
+
+  it('splits multiple keyword phrases on commas without breaking each phrase', () => {
+    expect(splitLookupTerms('knee replacement, hip revision')).toEqual(['knee replacement', 'hip revision']);
+  });
+
+  it('mixes codes and keyword phrases separated by commas', () => {
+    expect(splitLookupTerms('62140, knee replacement, 025')).toEqual(['62140', 'knee replacement', '025']);
+  });
+
+  it('dedupes identical terms', () => {
+    expect(splitLookupTerms('62140, 62140, 62140')).toEqual(['62140']);
+  });
+
+  it('returns an empty array for empty input', () => {
+    expect(splitLookupTerms('')).toEqual([]);
+    expect(splitLookupTerms('   ')).toEqual([]);
+  });
+
+  it('treats a single code as one term', () => {
+    expect(splitLookupTerms('0016070')).toEqual(['0016070']);
+  });
+
+  it('treats a single DRG-shaped number as one term', () => {
+    expect(splitLookupTerms('025')).toEqual(['025']);
   });
 });
 
