@@ -1,0 +1,204 @@
+name: ICD-10-PCS crosswalk rebuild
+
+# Rebuilds data/icd10pcs-drg-index.json when CMS publishes a new MS-DRG fiscal
+# year (final-rule files usually appear in August; the new version takes effect
+# Oct 1). The build script derives that year's URLs, discovers anything that
+# moved, and refuses to write an index that fails its sanity checks.
+#
+#   schedule / manual run on main → opens a PR (branch auto/icd10pcs-fy<FY>)
+#   push to a non-main branch that touches the script or this workflow
+#                                   → commits the rebuilt index to that branch
+#
+# Problems are reported as one GitHub issue (label: icd10pcs-rebuild), closed
+# automatically by the next successful run. Before Oct 1, "files not published
+# yet" is expected and stays quiet; from Oct 1 on, it's an issue.
+
+on:
+  schedule:
+    - cron: '41 14 * * 1' # Mondays 14:41 UTC
+  workflow_dispatch:
+    inputs:
+      fy:
+        description: 'Fiscal year to build (blank = automatic)'
+        required: false
+      force:
+        description: 'Rebuild even if the index is already for that year'
+        type: boolean
+        default: false
+      appendix_e_base:
+        description: 'Override: Definitions Manual base URL, e.g. https://www.cms.gov/icd10m/FY2027-fr-v44-fullcode-cms/fullcode_cms/'
+        required: false
+      start_page:
+        description: 'Override: first page of the Procedure Code/MS-DRG Index, e.g. P0398.html'
+        required: false
+      order_zip_url:
+        description: 'Override: ICD-10-PCS order file (long and abbreviated titles) ZIP URL'
+        required: false
+  push:
+    branches-ignore: [main]
+    paths:
+      - scripts/build-icd10pcs-drg-index.mjs
+      - .github/workflows/icd10pcs-rebuild.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: icd10pcs-rebuild-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Decide which fiscal year to build
+        id: plan
+        env:
+          INPUT_FY: ${{ inputs.fy }}
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const now = new Date();
+            const y = now.getUTCFullYear(), m = now.getUTCMonth(); // 0-based
+            const currentFy = m >= 9 ? y + 1 : y;
+            // From August, look for next FY'"'"'s final-rule files ahead of Oct 1.
+            const target = process.env.INPUT_FY ? parseInt(process.env.INPUT_FY, 10) : (m >= 7 ? y + 1 : y);
+            const idx = JSON.parse(fs.readFileSync("data/icd10pcs-drg-index.json", "utf8"));
+            const haveFy = parseInt((String(idx.version).match(/FY\s*(\d{4})/) || [])[1] || "0", 10);
+            const out = `target=${target}\nhave=${haveFy}\nstale=${haveFy < currentFy}\nversion=${idx.version}\n`;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, out);
+            console.log(out);
+          '
+
+      - name: Build the crosswalk
+        id: build
+        env:
+          ICD10PCS_APPENDIX_E_BASE: ${{ inputs.appendix_e_base }}
+          ICD10PCS_START_PAGE: ${{ inputs.start_page }}
+          ICD10PCS_ORDER_ZIP_URL: ${{ inputs.order_zip_url }}
+        run: |
+          set +e
+          args="--fy ${{ steps.plan.outputs.target }}"
+          if [ "${{ inputs.force }}" = "true" ]; then args="$args --force"; fi
+          node scripts/build-icd10pcs-drg-index.mjs $args 2>&1 | tee build-output.txt
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- data/icd10pcs-drg-index.json; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          exit 0
+
+      - name: Run the test suite against the new index
+        if: steps.build.outputs.exit_code == '0' && steps.build.outputs.changed == 'true'
+        run: |
+          npm ci
+          npm test
+
+      - name: Commit to this branch
+        if: steps.build.outputs.exit_code == '0' && steps.build.outputs.changed == 'true' && github.event_name == 'push'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          version=$(node -e 'console.log(require("./data/icd10pcs-drg-index.json").version)')
+          git add data/icd10pcs-drg-index.json
+          git commit -m "Rebuild ICD-10-PCS → MS-DRG crosswalk: $version" -m "Built by the icd10pcs-rebuild workflow from CMS's published files."
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Open a pull request
+        id: pr
+        if: steps.build.outputs.exit_code == '0' && steps.build.outputs.changed == 'true' && github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          fy=${{ steps.plan.outputs.target }}
+          branch="auto/icd10pcs-fy${fy}"
+          version=$(node -e 'console.log(require("./data/icd10pcs-drg-index.json").version)')
+          codes=$(node -e 'console.log(Object.keys(require("./data/icd10pcs-drg-index.json").codes).length)')
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$branch"
+          git add data/icd10pcs-drg-index.json
+          git commit -m "Rebuild ICD-10-PCS → MS-DRG crosswalk: $version" -m "Built by the icd10pcs-rebuild workflow from CMS's published files."
+          git push -f origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if gh pr list --head "$branch" --state open --json number --jq '.[0].number' | grep -q .; then
+            echo "PR already open for $branch (updated by the push above)."
+            exit 0
+          fi
+          body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+            "Rebuilt \`data/icd10pcs-drg-index.json\` for **${version}** (${codes} codes), replacing ${{ steps.plan.outputs.version }}." \
+            "Built by the \`icd10pcs-rebuild\` workflow from CMS's MS-DRG Definitions Manual (Appendix E) and the ICD-10-PCS order file. The build passed its own sanity checks (code count vs. the previous index, descriptions present, MS-DRG range format, long-standing sentinel codes) and \`npm test\`." \
+            "Before merging, spot-check a code you know in Code Lookup on the PR's deploy or locally (\`npx serve .\`)." \
+            "Sources and build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          if ! gh pr create --base main --head "$branch" --title "Rebuild ICD-10-PCS crosswalk for ${version}" --body "$body"; then
+            echo "pr_failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report in an issue (open, update, or close)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          EXIT_CODE: ${{ steps.build.outputs.exit_code }}
+          CHANGED: ${{ steps.build.outputs.changed }}
+          STALE: ${{ steps.plan.outputs.stale }}
+          TARGET: ${{ steps.plan.outputs.target }}
+          HAVE: ${{ steps.plan.outputs.version }}
+          PR_FAILED: ${{ steps.pr.outputs.pr_failed }}
+          PR_BRANCH: ${{ steps.pr.outputs.branch }}
+          JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const fs = require('fs');
+            const label = 'icd10pcs-rebuild';
+            const env = process.env;
+            const code = env.EXIT_CODE === '' || env.EXIT_CODE === undefined ? -1 : Number(env.EXIT_CODE);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const footer = '\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_';
+            let log = '';
+            try { log = fs.readFileSync('build-output.txt', 'utf8'); } catch (e) {}
+            const tail = log.length > 50000 ? log.slice(-50000) : log;
+
+            let problem = null;
+            if (env.JOB_STATUS === 'failure' && code === 0) {
+              problem = 'The rebuild succeeded but a later step failed (the test suite against the new index, or committing/pushing). See the run log.';
+            } else if (code === 3) {
+              if (env.STALE === 'true') problem = `CMS's FY${env.TARGET} files weren't found, and the bundled index (${env.HAVE}) is past its fiscal year. Either CMS moved them (find the order-file ZIP and the Definitions Manual's Appendix E, then re-run this workflow from the Actions tab with the override inputs filled in) or they aren't published yet.`;
+            } else if (code === 4) {
+              problem = 'The rebuilt index failed its sanity checks, so nothing was committed. The log lists which check failed.';
+            } else if (code === 5) {
+              problem = "The build couldn't find the first page of Appendix E's Procedure Code/MS-DRG Index. Find it in a browser and re-run this workflow from the Actions tab with the start_page input (see the log).";
+            } else if (code !== 0) {
+              problem = 'The rebuild failed unexpectedly (network, CMS site change, or a script error). See the log.';
+            } else if (env.PR_FAILED === 'true') {
+              problem = `The new index is built and pushed to branch \`${env.PR_BRANCH}\`, but the workflow couldn't open a pull request — usually because "Allow GitHub Actions to create and approve pull requests" is off (Settings → Actions → General). Open it yourself: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/compare/main...${env.PR_BRANCH}`;
+            }
+
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: label, per_page: 1 });
+            const existing = open[0];
+
+            if (!problem) {
+              if (existing) {
+                await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number,
+                  body: `✅ Resolved by [this run](${runUrl}).${footer}` });
+                await github.rest.issues.update({ ...context.repo, issue_number: existing.number, state: 'closed', state_reason: 'completed' });
+              }
+              return;
+            }
+
+            const body = `${problem}\n\n**Run:** ${runUrl}\n\n<details><summary>Build output</summary>\n\n\`\`\`\n${tail || '(no output)'}\n\`\`\`\n</details>${footer}`;
+            if (existing) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
+            } else {
+              try { await github.rest.issues.getLabel({ ...context.repo, name: label }); }
+              catch (e) { await github.rest.issues.createLabel({ ...context.repo, name: label, color: 'fbca04', description: 'Opened by the ICD-10-PCS crosswalk rebuild workflow' }); }
+              await github.rest.issues.create({ ...context.repo, labels: [label], title: `ICD-10-PCS crosswalk needs attention (FY${env.TARGET})`, body });
+            }
+            core.setFailed('ICD-10-PCS rebuild needs attention');

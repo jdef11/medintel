@@ -1388,6 +1388,10 @@ const DME_GEO_DATASET_TITLE = 'Medicare Durable Medical Equipment, Devices & Sup
 const DME_REFERRING_DATASET_TITLE = 'Medicare Durable Medical Equipment, Devices & Supplies - by Referring Provider and Service';
 const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v4';
 const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog weekly
+// A cache where some dataset family came back empty (title drift, catalog format
+// change) is only trusted briefly — otherwise one bad discovery would disable
+// Code Lookup / trends / Size a Market for a full week, even after a fix ships.
+const PARTIAL_VERSIONS_CACHE_TTL_MS = 60 * 60 * 1000;
 
 // CORS proxies — we try multiple in order since free proxies can go down
 const CORS_PROXIES = [
@@ -1549,11 +1553,83 @@ function loadDatasetVersionsOnce() {
   return versionsPromise;
 }
 
+// 'unknown' until discovery runs; 'loaded' once a catalog (or cache) was read,
+// even if nothing in it matched; 'unreachable' if data.json couldn't be fetched.
+// Lets requireVersions() tell a network failure from a catalog it can't parse.
+let catalogStatus = 'unknown';
+
+// Families running on LATEST_DATASET_IDS (latest year only, no history) because
+// the catalog couldn't supply their year list. Drives the yearNote warning.
+let fallbackKinds = [];
+const FALLBACK_KIND_LABELS = {
+  provSummary: 'unique-beneficiary counts', geography: 'code volumes and trends',
+  inpProvider: 'top hospitals', inpGeo: 'MS-DRG volumes and trends',
+  dmeGeo: 'DMEPOS lookups', dmeReferring: 'DMEPOS lookups'
+};
+
+// Inline warning for result views that hide the sidebar's yearNote (Code
+// Lookup, Size a Market): which of `kinds` are running on the fallback.
+function fallbackNoticeHtml(kinds) {
+  const hit = kinds.filter(k => fallbackKinds.includes(k));
+  if (!hit.length) return '';
+  const labels = [...new Set(hit.map(k => FALLBACK_KIND_LABELS[k] || 'provider results'))].join(', ');
+  return `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ Couldn't read the data.cms.gov list of data years, so ${escapeHtml(labels)} use the latest published year only — no earlier years or multi-year trends for now. The figures shown are real CMS data.</div>`;
+}
+
+// Warning when the bundled ICD-10-PCS → MS-DRG crosswalk is past its fiscal
+// year (a new MS-DRG version takes effect every Oct 1). The data isn't wrong
+// for its year, but codes/assignments that changed since won't be reflected.
+function icd10StaleNoteHtml() {
+  if (!icd10PcsIndex) return '';
+  const st = icd10IndexStaleness(icd10PcsIndex.version);
+  if (!st || !st.stale) return '';
+  return `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ The ICD-10-PCS → MS-DRG crosswalk is ${escapeHtml(icd10PcsIndex.version)}, which ended ${escapeHtml(st.endsOn)}. Codes added or MS-DRG assignments changed in FY${st.fy + 1} aren't reflected until it's refreshed.</div>`;
+}
+
+// Which data year a dataset version currently serves, from /data-viewer's
+// source file name (see yearFromDataFileName). Small (~5-35KB with size=0),
+// CORS-enabled. null on any failure: a fallback with an unknown year is not
+// used, so the UI never labels data with a guessed year.
+async function fetchDatasetYear(id) {
+  try {
+    const [meta] = await corsFetch(`${DATA_API_ROOT}/${id}/data-viewer?size=0`, {
+      extract: j => { if (!j || !j.meta) throw new Error('no meta'); return [j.meta]; }
+    });
+    return yearFromDataFileName(meta.data_file_name);
+  } catch (e) {
+    console.log(`Could not read the data year for ${id}:`, e.message);
+    return null;
+  }
+}
+
+// For every family the catalog left empty, fall back to its "latest" alias so
+// the feature keeps working on the newest year instead of failing outright.
+// Never persisted to the versions cache — it's recomputed per page load, so a
+// fixed catalog takes over as soon as it parses again.
+async function applyLatestFallbacks() {
+  const missing = Object.keys(LATEST_DATASET_IDS).filter(k => !datasetVersions[k].length);
+  if (!missing.length) { fallbackKinds = []; return; }
+  const filled = await Promise.all(missing.map(async k => {
+    const id = LATEST_DATASET_IDS[k];
+    const year = await fetchDatasetYear(id);
+    if (!year) return null;
+    datasetVersions[k] = [{ year, id, fallback: true }];
+    return k;
+  }));
+  fallbackKinds = filled.filter(Boolean);
+  if (fallbackKinds.length) {
+    console.warn(`Dataset year list unavailable from the CMS catalog for: ${fallbackKinds.join(', ')} — using each family's latest-year alias.`);
+  }
+}
+
 async function loadDatasetVersions() {
   // Serve from cache when fresh
   try {
     const cached = JSON.parse(localStorage.getItem(VERSIONS_CACHE_KEY) || 'null');
-    if (cached && (Date.now() - cached.fetchedAt) < VERSIONS_CACHE_TTL_MS &&
+    const complete = cached && Object.keys(VERSION_KIND_TITLES)
+      .every(k => Array.isArray(cached[k]) && cached[k].length);
+    const ttl = complete ? VERSIONS_CACHE_TTL_MS : PARTIAL_VERSIONS_CACHE_TTL_MS;
+    if (cached && (Date.now() - cached.fetchedAt) < ttl &&
         Array.isArray(cached.provider) && cached.provider.length) {
       datasetVersions = {
         provider: sanitizeVersions(cached.provider),
@@ -1564,15 +1640,21 @@ async function loadDatasetVersions() {
         dmeGeo: sanitizeVersions(cached.dmeGeo),
         dmeReferring: sanitizeVersions(cached.dmeReferring)
       };
-      if (datasetVersions.provider.length) { populateYearSelect(); return; }
+      if (datasetVersions.provider.length) {
+        catalogStatus = 'loaded';
+        await applyLatestFallbacks(); // a partial cache can still be missing families
+        populateYearSelect();
+        return;
+      }
       // sanitization emptied the cache → fall through and refetch
     }
   } catch(e) { /* corrupt cache — refetch */ }
 
   const catalog = await fetchCatalog();
   if (!catalog) {
-    document.getElementById('yearNote').textContent =
-      'Could not reach the data.cms.gov catalog — searches will use the latest published data year. Reload the page to retry.';
+    catalogStatus = 'unreachable';
+    await applyLatestFallbacks();
+    populateYearSelect();
     return;
   }
   datasetVersions = {
@@ -1584,9 +1666,11 @@ async function loadDatasetVersions() {
     dmeGeo: extractDatasetVersions(catalog, DME_GEO_DATASET_TITLE),
     dmeReferring: extractDatasetVersions(catalog, DME_REFERRING_DATASET_TITLE)
   };
+  catalogStatus = 'loaded';
   try {
     localStorage.setItem(VERSIONS_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), ...datasetVersions }));
   } catch(e) { /* storage full/unavailable — fine, versions stay in memory */ }
+  await applyLatestFallbacks(); // after the cache write, so fallbacks are never persisted
   populateYearSelect();
 }
 
@@ -1594,7 +1678,9 @@ function populateYearSelect() {
   const years = datasetVersions.provider;
   const note = document.getElementById('yearNote');
   if (!years.length) {
-    note.textContent = 'No historical data years found in the CMS catalog — searches will use the latest published data year.';
+    note.textContent = catalogStatus === 'unreachable'
+      ? 'Could not reach the data.cms.gov catalog — searches will use the latest published data year. Reload the page to retry.'
+      : 'No historical data years found in the CMS catalog — searches will use the latest published data year.';
     return;
   }
   const sel = document.getElementById('dataYearSelect');
@@ -1606,6 +1692,17 @@ function populateYearSelect() {
     sel.value = String(selectedYear);
   }
   note.textContent = `Medicare claims data is annual — every search runs against a single calendar year. CY ${earliest}–CY ${latest} available.`;
+  if (fallbackKinds.length) {
+    // Shown, not hidden: results are still real, but trend charts collapse to
+    // one year and older years can't be selected until the catalog reads again.
+    const why = catalogStatus === 'unreachable' ? 'Could not reach' : 'Could not read';
+    if (fallbackKinds.includes('provider')) {
+      note.textContent = `⚠ ${why} the data.cms.gov list of data years — using the latest published year only (CY ${latest}). Trend charts show that single year; earlier years are unavailable for now.`;
+    } else {
+      const labels = [...new Set(fallbackKinds.map(k => FALLBACK_KIND_LABELS[k] || k))].join(', ');
+      note.textContent += ` ⚠ ${why} part of the data.cms.gov year list — ${labels} use the latest year only for now.`;
+    }
+  }
 }
 
 function onYearChange(val) {
@@ -4101,9 +4198,15 @@ async function requireVersions(kind) {
     // dataset families resolved) but has no entry under this family's title —
     // e.g. CMS renamed it. Saying "unreachable" for the second sends people
     // chasing a network problem that doesn't exist.
+    // A third: it loaded but NO family resolved — the catalog's structure
+    // changed (this happened when data.json moved to DCAT-US 3.0).
     const anyResolved = Object.values(datasetVersions).some(v => v.length);
     if (anyResolved) {
       throw new Error(`The data.cms.gov catalog loaded, but has no dataset titled "${VERSION_KIND_TITLES[kind] || kind}" — CMS may have renamed or retired it.`);
+    }
+    // (Reaching any of these means the latest-alias fallback failed too.)
+    if (catalogStatus === 'loaded') {
+      throw new Error('The data.cms.gov catalog loaded, but none of the expected Medicare datasets could be read from it — CMS may have changed the catalog format.');
     }
     throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
   }
@@ -4599,6 +4702,8 @@ function renderTamResults() {
       </div>
     </div>
 
+    ${fallbackNoticeHtml(['provider', 'geography', 'inpGeo', 'inpProvider'])}
+    ${icd10Resolutions.length ? icd10StaleNoteHtml() : ''}
     ${icd10Resolutions.length ? `<div class="year-note" style="margin:0 0 12px;">↳ ICD-10-PCS resolution: ${escapeHtml(icd10Resolutions.map(icd10ResolutionSummary).join('; '))}. Every candidate MS-DRG is auto-included above and below — the same procedure code can affect different MS-DRGs depending on principal diagnosis, so there's no single "right" one to pick.</div>` : ''}
 
     ${codes.length ? `
@@ -5171,8 +5276,12 @@ async function lookupDmeReferrers(code) {
   const g = dmeReferringBase();
   if (!g) return { referrers: [], year: null };
   try {
-    const raw = await corsFetch(`${g.base}?size=${FETCH_SIZE}&filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
-    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    // This dataset spells the column HCPCS_CD (capital D, verified live for
+    // CY2023/2024), unlike every other file's HCPCS_Cd. The API silently ignores
+    // a filter on a column that doesn't exist and returns unrelated codes, which
+    // the check below would then drop — an always-empty panel.
+    const raw = await corsFetch(`${g.base}?size=${FETCH_SIZE}&filter[HCPCS_CD]=${encodeURIComponent(code)}`);
+    const rows = (raw || []).filter(r => (f(r, 'HCPCS_CD') || f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
     return { referrers: groupByReferrer(rows), year: g.year };
   } catch (e) {
     console.log(`DME referrer lookup failed for ${code}:`, e.message);
@@ -5633,6 +5742,7 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
       </div>
     </div>
     ${(dictErrors && dictErrors.length) ? `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ ${escapeHtml(dictErrors.join('; '))} — results below come from the vocabularies that did load. Retry to rebuild.</div>` : ''}
+    ${fallbackNoticeHtml(['geography', 'inpGeo', 'dmeGeo', 'dmeReferring'])}
     ${usedDirect ? `<div class="year-note" style="margin:0 0 12px;color:var(--green);">✓ Found by querying CMS directly — this code/term was missing from the local index (which is capped), so the index alone would have reported "not found".</div>` : ''}
     ${crossNote ? `<div class="year-note" style="margin:0 0 12px;">≈ ${escapeHtml(crossNote)} There is no official CPT↔DRG crosswalk (DRGs are assigned from ICD-10-PCS + diagnoses) — treat cross-matches as leads to verify against a coding guide.</div>` : ''}
     ${icd10Note ? `<div class="year-note" style="margin:0 0 12px;color:var(--green);">✓ ${escapeHtml(icd10Note)}</div>` : ''}
@@ -5665,6 +5775,7 @@ function renderLookupResults(query, cptMatches, drgMatches, crossNote, titleOver
     html += `
     <div class="result-card" id="lookupIcd10PcsPanel" style="margin-top:16px;">
       <div class="provider-name" style="margin-bottom:8px;">ICD-10-PCS <span style="color:var(--text-3);font-size:12px;">· ${icd10PcsMatches.length} match${icd10PcsMatches.length !== 1 ? 'es' : ''} · ${escapeHtml(icdYear)}</span></div>
+      ${icd10StaleNoteHtml()}
       ${icd10PcsMatches.length
         ? icd10PcsMatches.map(m => icd10PcsRowHtml(m)).join('')
         : `<div class="year-note" style="margin:0;">No ICD-10-PCS matches for “${escapeHtml(query)}”. This vocabulary is scoped to codes that affect MS-DRG assignment (the ones useful for a billing estimate) — a code that's valid but has no DRG relevance may not appear.</div>`}

@@ -6,8 +6,11 @@
 // about the *live* data.cms.gov API (exact dataset titles, field spellings,
 // DRG code padding, catalog shape). This script hits the real API and asserts
 // each one, so a field-name drift on CMS's side is caught before it silently
-// breaks the deployed app. It has NO effect on the build and is not run in CI
-// (the sandbox/CI has no route to data.cms.gov).
+// breaks the deployed app. It has NO effect on the build or deploy. It runs
+// weekly via .github/workflows/live-smoke.yml, which turns a failure into a
+// GitHub issue. Exit codes: 0 pass, 1 a check failed, 2 data.cms.gov unreachable.
+
+import { createRequire } from 'module';
 
 // Needs Node 18+ (global fetch). Fail with a clear message on older runtimes.
 if (typeof fetch !== 'function') {
@@ -33,11 +36,11 @@ let failures = 0;
 const ok = (m) => console.log(`  ✓ ${m}`);
 const bad = (m) => { console.log(`  ✗ ${m}`); failures++; };
 
-const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-const uuidFromUrl = (u) => {
-  const m = String(u || '').match(/data-api\/v1\/dataset\/([0-9a-f-]{36})/i);
-  return m ? m[1] : null;
-};
+// Use the app's real catalog parser, so this checks what the app actually does
+// rather than a local copy that can drift from it.
+const require = createRequire(import.meta.url);
+const { extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness } = require('../medintel-core.js');
+const { readFileSync } = require('fs');
 
 async function getJson(url) {
   const r = await fetch(url);
@@ -45,20 +48,9 @@ async function getJson(url) {
   return r.json();
 }
 
-// Latest version UUID for a dataset title, from the catalog.
+// Latest version for a dataset title, as the app resolves it.
 function latestId(catalog, title) {
-  const want = norm(title);
-  const byYear = {};
-  (catalog.dataset || []).forEach((ds) => {
-    if (norm(ds.title) !== want) return;
-    (ds.distribution || []).forEach((d) => {
-      const id = uuidFromUrl(d.accessURL) || uuidFromUrl(d.downloadURL);
-      const ym = String(d.temporal || '').match(/(20\d{2})/);
-      if (id && ym) byYear[+ym[1]] = id;
-    });
-  });
-  const years = Object.keys(byYear).map(Number).sort((a, b) => b - a);
-  return years.length ? { year: years[0], id: byYear[years[0]] } : null;
+  return extractDatasetVersions(catalog, title)[0] || null;
 }
 
 async function main() {
@@ -81,7 +73,8 @@ async function main() {
   const resolved = {};
   for (const [key, title] of Object.entries(TITLES)) {
     const v = latestId(catalog, title);
-    if (v) { ok(`${key}: CY ${v.year} → ${v.id}`); resolved[key] = v; }
+    const n = extractDatasetVersions(catalog, title).length;
+    if (v) { ok(`${key}: ${n} data years, latest CY ${v.year} → ${v.id}`); resolved[key] = v; }
     else bad(`${key}: title not found or no API distribution — "${title}"`);
   }
 
@@ -194,7 +187,7 @@ async function main() {
   if (resolved.dmeGeo) await fieldCheck('dmeGeo', `${DATA_API_ROOT}/${resolved.dmeGeo.id}/data?size=1`,
     [['HCPCS_Cd'], ['HCPCS_Desc'], ['Tot_Suplr_Srvcs', 'Tot_Suplr_Srvcs_Cnt', 'Tot_Srvcs'], ['Tot_Suplr_Benes', 'Tot_Benes'], ['Avg_Suplr_Mdcr_Pymt_Amt', 'Tot_Suplr_Mdcr_Pymt_Amt', 'Avg_Mdcr_Pymt_Amt']]);
   if (resolved.dmeReferring) await fieldCheck('dmeReferring', `${DATA_API_ROOT}/${resolved.dmeReferring.id}/data?size=1`,
-    [['HCPCS_Cd'], ['Rfrg_NPI'], ['Rfrg_Prvdr_Last_Name_Org'], ['Tot_Suplr_Srvcs', 'Tot_Srvcs']]);
+    [['HCPCS_CD', 'HCPCS_Cd'], ['Rfrg_NPI'], ['Rfrg_Prvdr_Last_Name_Org'], ['Tot_Suplr_Srvcs', 'Tot_Srvcs']]);
 
   // Which column carries the geography level in the DMEPOS file? The physician
   // and inpatient files use Rndrng_Prvdr_Geo_Lvl; DMEPOS geography is the
@@ -216,18 +209,31 @@ async function main() {
     } catch (e) { bad(`DMEPOS geo-level check: ${e.message}`); }
   }
 
-  console.log('\n13. Does a real Level II code (L8699) resolve in DMEPOS but not in the physician data?');
+  // E0601 (CPAP) is supplier-billed and present in every DMEPOS year checked.
+  // (L8699 was used here before but has no DMEPOS rows in CY2021-2024 at all.)
+  console.log('\n13. Does a real Level II code (E0601) resolve in DMEPOS but not in the physician data?');
   if (resolved.dmeGeo && resolved.provider) {
     const count = async (id, extra) => {
-      try { return (await getJson(`${DATA_API_ROOT}/${id}/data?size=5&filter[HCPCS_Cd]=L8699${extra || ''}`)).length; }
+      try { return (await getJson(`${DATA_API_ROOT}/${id}/data?size=5&filter[HCPCS_Cd]=E0601${extra || ''}`)).length; }
       catch (e) { return -1; }
     };
     // Unfiltered by geography — that is exactly what the app now requests.
     const inDme = await count(resolved.dmeGeo.id);
     const inPhys = await count(resolved.geography ? resolved.geography.id : resolved.provider.id, '&filter[Rndrng_Prvdr_Geo_Lvl]=National');
-    console.log(`  L8699 → DMEPOS: ${inDme} row(s); physician data: ${inPhys} row(s)`);
+    console.log(`  E0601 → DMEPOS: ${inDme} row(s); physician data: ${inPhys} row(s)`);
     if (inDme > 0) ok('Level II code found in DMEPOS (this is what the panel queries)');
-    else bad('L8699 returned no DMEPOS rows even unfiltered — the panel will show "could not check"; verify the dataset title resolved');
+    else bad('E0601 returned no DMEPOS rows even unfiltered — the panel will show "could not check"; verify the dataset title resolved');
+  }
+
+  console.log('\n13b. DME Referring filter on HCPCS_CD returns only that code (the app filters on it)');
+  if (resolved.dmeReferring) {
+    try {
+      const rows = await getJson(`${DATA_API_ROOT}/${resolved.dmeReferring.id}/data?size=5&filter[HCPCS_CD]=E0601`);
+      const codes = rows.map((r) => r.HCPCS_CD || r.HCPCS_Cd);
+      console.log(`  filter[HCPCS_CD]=E0601 → ${JSON.stringify(codes)}`);
+      rows.length && codes.every((c) => c === 'E0601') ? ok('referrer filter is honored')
+        : bad('referrer filter ignored or empty — the ordering-physicians panel will be empty');
+    } catch (e) { bad(`referrer filter check: ${e.message}`); }
   }
 
   console.log('\n14. A C-code (C1889) should be absent everywhere — the app must explain, not show "0 matches"');
@@ -243,11 +249,38 @@ async function main() {
     else console.log('  ⚠ C1889 unexpectedly present — the app skips the DMEPOS query for C-codes, so revisit that assumption');
   }
 
+  // The app falls back to these when the catalog can't be read. They're only a
+  // safe fallback if CMS keeps them pointed at the newest year — this is where
+  // a stale or retired alias gets caught.
+  console.log('\n15. Latest-year fallback IDs (LATEST_DATASET_IDS) still serve the newest data year');
+  for (const [key, id] of Object.entries(LATEST_DATASET_IDS)) {
+    try {
+      const j = await getJson(`${DATA_API_ROOT}/${id}/data-viewer?size=0`);
+      const file = j && j.meta && j.meta.data_file_name;
+      const year = yearFromDataFileName(file);
+      const want = resolved[key] && resolved[key].year;
+      if (!year) bad(`${key}: alias ${id} — could not read a data year from "${file}"`);
+      else if (want && year !== want) bad(`${key}: alias serves CY ${year} but the catalog's newest is CY ${want} — update LATEST_DATASET_IDS in medintel-core.js from data.json's "latest" API distribution`);
+      else ok(`${key}: alias serves CY ${year}${want ? ' (= catalog newest)' : ' (catalog year unknown)'}`);
+    } catch (e) { bad(`${key}: alias ${id} — ${e.message}`); }
+  }
+
+  // Not a live-API check, but it's a yearly chore that otherwise only gets
+  // noticed by a user: MS-DRG versions change every Oct 1.
+  console.log('\n16. ICD-10-PCS → MS-DRG crosswalk (data/icd10pcs-drg-index.json) is for the current fiscal year');
+  try {
+    const idx = JSON.parse(readFileSync(new URL('../data/icd10pcs-drg-index.json', import.meta.url), 'utf8'));
+    const st = icd10IndexStaleness(idx.version);
+    if (!st) bad(`could not read a fiscal year from the index version "${idx.version}"`);
+    else if (st.stale) bad(`index is ${idx.version} (built ${idx.builtAt}), which ended ${st.endsOn} — rebuild for FY${st.fy + 1}: the icd10pcs-rebuild workflow does this weekly (check its issues), or run it from the Actions tab`);
+    else ok(`${idx.version} — current through ${st.endsOn}`);
+  } catch (e) { bad(`could not read the index: ${e.message}`); }
+
   finish();
 }
 
 function finish() {
-  console.log(`\n${failures === 0 ? '✅ All live checks passed.' : `❌ ${failures} check(s) failed — the deployed app may need a field/title fix.`}`);
+  console.log(`\n${failures === 0 ? '✅ All live checks passed.' : `❌ ${failures} check(s) failed — see the ✗ lines above for what needs updating.`}`);
   process.exit(failures === 0 ? 0 : 1);
 }
 

@@ -7,7 +7,7 @@ const {
   tokenizeMedical, searchDict, crossSuggest,
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
-  extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
+  extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
   parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms,
   resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital
@@ -16,6 +16,19 @@ const {
 // ─── f() — field accessor ───────────────────────────────────────────────────
 
 describe('f()', () => {
+  it('falls back to a case-insensitive match (DME Referring spells it HCPCS_CD)', () => {
+    expect(f({ HCPCS_CD: 'E0601' }, 'HCPCS_Cd')).toBe('E0601');
+    expect(f({ 'hcpcs cd': 'E0601' }, 'HCPCS_Cd')).toBe('E0601');
+  });
+
+  it('prefers an exact match over a case-insensitive one', () => {
+    expect(f({ HCPCS_CD: 'wrong', HCPCS_Cd: 'right' }, 'HCPCS_Cd')).toBe('right');
+  });
+
+  it('does not match a different field that merely shares a prefix', () => {
+    expect(f({ HCPCS_Cd_Extra: 'x' }, 'HCPCS_Cd')).toBeUndefined();
+  });
+
   it('returns value for an underscore-keyed field', () => {
     expect(f({ Rndrng_NPI: '1234567890' }, 'Rndrng_NPI')).toBe('1234567890');
   });
@@ -926,6 +939,61 @@ describe('extractDatasetVersions()', () => {
       ],
     }]};
     expect(extractDatasetVersions(catalog, TITLE).length).toBe(1);
+  });
+
+  // data.json moved to DCAT-US 3.0: one entry per year, "<title> : <release date>",
+  // temporal as [{startDate,endDate}], latest year has a "latest" alias + a pinned UUID.
+  describe('DCAT-US 3.0 catalog shape', () => {
+    const api = (id, description) => ({ '@type': 'Distribution', format: 'API', accessURL: `https://data.cms.gov/data-api/v1/dataset/${id}/data`, ...(description ? { description } : {}) });
+    const csv = { '@type': 'Distribution', format: 'CSV', downloadURL: 'https://data.cms.gov/sites/default/files/x.csv' };
+    const entry = (release, year, dists, extra = {}) => ({
+      '@type': 'Dataset',
+      title: `${TITLE} : ${release}`,
+      identifier: `https://data.cms.gov/data-api/v1/dataset/${uuid(99)}/data-viewer`,
+      temporal: [{ '@type': 'PeriodOfTime', startDate: `${year}-01-01`, endDate: `${year}-12-31` }],
+      distribution: dists,
+      ...extra,
+    });
+
+    it('matches per-year "<title> : <date>" entries and reads the year from temporal objects', () => {
+      const catalog = { dataset: [
+        entry('2022-12-02', 2022, [csv, api(uuid(22))]),
+        entry('2023-12-31', 2023, [csv, api(uuid(23))]),
+      ]};
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([
+        { year: 2023, id: uuid(23) },
+        { year: 2022, id: uuid(22) },
+      ]);
+    });
+
+    it('prefers the version-pinned API distribution over the "latest" alias', () => {
+      const catalog = { dataset: [entry('2024-12-01', 2024, [api(uuid(1), 'latest'), csv, api(uuid(2))])] };
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2024, id: uuid(2) }]);
+    });
+
+    it('falls back to the "latest" alias, then the identifier, when no pinned UUID exists', () => {
+      expect(extractDatasetVersions({ dataset: [entry('2024-12-01', 2024, [api(uuid(1), 'latest')])] }, TITLE))
+        .toEqual([{ year: 2024, id: uuid(1) }]);
+      expect(extractDatasetVersions({ dataset: [entry('2024-12-01', 2024, [csv])] }, TITLE))
+        .toEqual([{ year: 2024, id: uuid(99) }]);
+    });
+
+    it('uses temporal, not the release date in the title, as the data year', () => {
+      const catalog = { dataset: [entry('2024-01-01', 2023, [api(uuid(5))])] };
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2023, id: uuid(5) }]);
+    });
+
+    it('matches via inSeries title even if the entry title has another suffix', () => {
+      const catalog = { dataset: [entry('2024-12-01', 2024, [api(uuid(6))], {
+        title: 'Renamed release label', inSeries: [{ '@type': 'DatasetSeries', title: TITLE }],
+      })]};
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2024, id: uuid(6) }]);
+    });
+
+    it('does not let a shorter family title match a longer one ("by Provider" vs "by Provider and Service")', () => {
+      const catalog = { dataset: [entry('2024-12-01', 2024, [api(uuid(7))])] };
+      expect(extractDatasetVersions(catalog, 'Medicare Physician & Other Practitioners - by Provider')).toEqual([]);
+    });
   });
 
   it('returns empty array for a missing or malformed catalog', () => {
@@ -2000,5 +2068,63 @@ describe('trendSvgPath()', () => {
     expect(linePath.match(/^M /)).toBeTruthy();
     expect((linePath.match(/L /g) || []).length).toBe(2); // 2 of 3 points use L, first uses M
     expect(areaPath.endsWith('Z')).toBe(true);
+  });
+});
+
+// ─── Latest-alias fallback + data-year detection ─────────────────────────────
+
+describe('LATEST_DATASET_IDS', () => {
+  it('has a UUID for every dataset family', () => {
+    const fams = ['provider', 'provSummary', 'geography', 'inpProvider', 'inpGeo', 'dmeGeo', 'dmeReferring'];
+    expect(Object.keys(LATEST_DATASET_IDS).sort()).toEqual(fams.sort());
+    Object.values(LATEST_DATASET_IDS).forEach(id =>
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/));
+  });
+
+  it('provider matches the HTML\'s hardcoded DATASET_ID (the two must not drift)', () => {
+    const html = require('fs').readFileSync(require('path').join(__dirname, 'cms-sales-intel (4).html'), 'utf8');
+    const m = html.match(/const DATASET_ID = '([0-9a-f-]{36})'/);
+    expect(m && m[1]).toBe(LATEST_DATASET_IDS.provider);
+  });
+});
+
+describe('yearFromDataFileName()', () => {
+  // Real meta.data_file_name values from /data-viewer, Oct 2026.
+  it.each([
+    ['PHY_R26_P05_V10_D24_Prov_Svc.csv', 2024],
+    ['MUP_PHY_R26_P05_V10_D24_Geo.csv', 2024],
+    ['MUP_INP_RY26_P03_V10_DY24_PrvSvc.CSV', 2024],
+    ['mup_dme_ry26_p05_v10_dy24_geor.csv', 2024],
+    ['mup_dme_ry26_p05_v10_dy24_rfrhpr.csv', 2024],
+    ['MUP_PHY_R25_P05_V20_D23_Geo.csv', 2023],
+    ['MUP_IHP_RY23_P03_V10_DY19_GEO.CSV', 2019],
+  ])('%s → %i', (name, year) => {
+    expect(yearFromDataFileName(name)).toBe(year);
+  });
+
+  it('does not mistake the release-year token (R26 / RY26) for the data year', () => {
+    expect(yearFromDataFileName('MUP_PHY_R26_P05_V10.csv')).toBeNull();
+    expect(yearFromDataFileName('MUP_INP_RY26_P03.CSV')).toBeNull();
+  });
+
+  it('returns null for missing or unrecognized names', () => {
+    expect(yearFromDataFileName(undefined)).toBeNull();
+    expect(yearFromDataFileName('')).toBeNull();
+    expect(yearFromDataFileName('something.csv')).toBeNull();
+  });
+});
+
+describe('icd10IndexStaleness()', () => {
+  const V = 'MS-DRG v43.0 / FY2026';
+  it('is current through Sep 30 of its fiscal year', () => {
+    expect(icd10IndexStaleness(V, Date.UTC(2026, 8, 30, 12))).toEqual({ fy: 2026, endsOn: '2026-09-30', stale: false });
+  });
+  it('is stale from Oct 1, when the next MS-DRG version takes effect', () => {
+    expect(icd10IndexStaleness(V, Date.UTC(2026, 9, 1)).stale).toBe(true);
+    expect(icd10IndexStaleness(V, new Date('2026-10-09')).stale).toBe(true);
+  });
+  it('returns null when no fiscal year can be read', () => {
+    expect(icd10IndexStaleness('', Date.now())).toBeNull();
+    expect(icd10IndexStaleness(undefined, Date.now())).toBeNull();
   });
 });

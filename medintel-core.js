@@ -8,6 +8,15 @@ function f(row, fieldName) {
   if (row[fieldName] !== undefined) return row[fieldName];
   const spaced = fieldName.replace(/_/g, ' ');
   if (row[spaced] !== undefined) return row[spaced];
+  // Last resort: case-insensitive, underscore/space-insensitive match. CMS is
+  // inconsistent about case between datasets (DME Referring spells it HCPCS_CD,
+  // every other file HCPCS_Cd), and a miss here silently reads as "no data".
+  // Only reached when both exact spellings miss, so the common path is unchanged.
+  if (!row || typeof row !== 'object') return undefined;
+  const want = fieldName.toLowerCase().replace(/ /g, '_');
+  for (const k of Object.keys(row)) {
+    if (k.toLowerCase().replace(/ /g, '_') === want) return row[k];
+  }
   return undefined;
 }
 
@@ -1099,9 +1108,20 @@ function groupByReferrer(rows) {
 // ─── DATASET VERSION DISCOVERY ───
 // data.cms.gov publishes each data year of a dataset as its own version with its
 // own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
-// lists them: each matching dataset/distribution carries a `temporal` range
-// ("2019-01-01/2019-12-31") and an API URL containing the version UUID.
-// This parses that catalog into [{ year, id }] sorted newest-first.
+// lists them, and this parses that catalog into [{ year, id }] sorted newest-first.
+//
+// Two catalog shapes are handled:
+//  - Legacy: one dataset entry titled exactly `title`, one distribution per year,
+//    each with a string `temporal` range ("2019-01-01/2019-12-31").
+//  - DCAT-US 3.0 (live since at least Oct 2026): one dataset entry PER YEAR,
+//    titled "<title> : <release date>" (e.g. "... by Geography and Service :
+//    2024-12-01"), linked to its family via `inSeries[].title`, with `temporal`
+//    as [{ startDate, endDate }]. The release date in the title is NOT the data
+//    year, so the year comes from temporal.startDate. The latest year carries two
+//    API distributions: a "latest" alias (the same UUID the app hardcodes as
+//    DATASET_ID — it moves to the next year when CMS publishes one) and a
+//    version-pinned UUID. The pinned one is preferred so a cached {year, id}
+//    keeps meaning that year.
 function extractDatasetVersions(catalog, title) {
   const normalize = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const wanted = normalize(title);
@@ -1117,6 +1137,22 @@ function extractDatasetVersions(catalog, title) {
     }
     return null;
   };
+  // temporal is a "start/end" string (legacy) or [{ startDate, endDate }] (DCAT-US 3.0).
+  const temporalYear = t => {
+    for (const p of (Array.isArray(t) ? t : [t])) {
+      const y = (p && typeof p === 'object') ? yearFrom(p.startDate, p.endDate) : yearFrom(p);
+      if (y) return y;
+    }
+    return null;
+  };
+  const belongs = ds => {
+    if (normalize(ds.title) === wanted) return true;
+    const series = Array.isArray(ds.inSeries) ? ds.inSeries : (ds.inSeries ? [ds.inSeries] : []);
+    if (series.some(s => normalize(s && s.title) === wanted)) return true;
+    // Per-version title "<title> : YYYY-MM-DD" — strip only that exact suffix, so
+    // "... by Provider" never matches "... by Provider and Service".
+    return normalize(String(ds.title || '').replace(/\s*:\s*\d{4}-\d{2}-\d{2}\s*$/, '')) === wanted;
+  };
 
   const byYear = {};
   const record = (year, id) => {
@@ -1124,20 +1160,69 @@ function extractDatasetVersions(catalog, title) {
   };
 
   datasets.forEach(ds => {
-    if (normalize(ds.title) !== wanted) return;
-    // Distribution-level entries (one dataset entry, one distribution per year)
-    (ds.distribution || []).forEach(dist => {
+    if (!ds || !belongs(ds)) return;
+    const dists = Array.isArray(ds.distribution) ? ds.distribution : [];
+    const dsYear = temporalYear(ds.temporal);
+    if (dsYear) {
+      // Dataset-level year: the entry IS one version. Pick its pinned API UUID
+      // over the "latest" alias, then fall back to the alias / the identifier.
+      const apiIds = dists
+        .map(d => ({ id: uuidFromUrl(d.accessURL) || uuidFromUrl(d.downloadURL), latest: /latest/i.test(String(d.description || '')) }))
+        .filter(d => d.id);
+      const pick = apiIds.find(d => !d.latest) || apiIds[0];
+      record(dsYear, (pick && pick.id) || uuidFromUrl(ds.identifier) || uuidFromUrl(ds.accessURL));
+      return;
+    }
+    // Legacy: one dataset entry, one distribution per year
+    dists.forEach(dist => {
       const id = uuidFromUrl(dist.accessURL) || uuidFromUrl(dist.downloadURL);
-      const year = yearFrom(dist.temporal, dist.title, dist.description);
+      const year = temporalYear(dist.temporal) || yearFrom(dist.title, dist.description);
       record(year, id);
     });
-    // Dataset-level entries (one dataset entry per year, same title)
-    const dsId = uuidFromUrl(ds.identifier) || uuidFromUrl(ds.accessURL);
-    const dsYear = yearFrom(ds.temporal, ds.modified && null); // only temporal is a reliable year signal
-    record(dsYear, dsId);
   });
 
   return Object.values(byYear).sort((a, b) => b.year - a.year);
+}
+
+// "latest" alias UUIDs, one per dataset family. Each is the API distribution the
+// catalog marks description:"latest" — CMS points it at the newest data year, so
+// it survives new-year releases. Used as a fallback when the catalog can't give
+// a family's year list (unreachable, or a format change like the Oct 2026 move
+// to DCAT-US 3.0): the app keeps working on the latest year, minus history.
+// Taken from https://data.cms.gov/data.json on 2026-10-09 (all serving CY2024).
+// provider must equal DATASET_ID in the HTML (a test enforces it). The weekly
+// live check (scripts/live-smoke.mjs) verifies each still serves the catalog's
+// newest year.
+const LATEST_DATASET_IDS = {
+  provider:     '92396110-2aed-4d63-a6a2-5d6207d46a29',
+  provSummary:  '8889d81e-2ee7-448f-8713-f071038289b5',
+  geography:    '6fea9d79-0129-4e4c-b1b8-23cd86a4f435',
+  inpProvider:  '690ddc6c-2767-4618-b277-420ffb2bf27c',
+  inpGeo:       '2941ab09-8cee-49d8-9703-f3c5b854e388',
+  dmeGeo:       '27c150fd-8578-43b1-bba5-6388987e32af',
+  dmeReferring: '86b4807a-d63a-44be-bfdf-ffd398d5e623',
+};
+
+// The data year a dataset version serves, from the source file name the
+// data-api's /data-viewer endpoint reports (meta.data_file_name). CMS encodes
+// it as _D24_ / _DY24_ / _dy24_ (verified live across all seven families, and
+// for older years, e.g. MUP_IHP_RY23_P03_V10_DY19_GEO.CSV → 2019). Returns
+// null rather than guessing when the pattern isn't there.
+function yearFromDataFileName(name) {
+  const m = String(name || '').match(/(?:^|_)DY?(\d{2})(?=[_.])/i);
+  return m ? 2000 + parseInt(m[1], 10) : null;
+}
+
+// Is the bundled ICD-10-PCS → MS-DRG crosswalk past its fiscal year? MS-DRG
+// versions are federal fiscal years: FY N runs Oct 1 (N-1) – Sep 30 N, and a new
+// grouper version takes effect every Oct 1. `version` is the index's own label,
+// e.g. "MS-DRG v43.0 / FY2026". Returns null if no FY can be read.
+function icd10IndexStaleness(version, now) {
+  const m = String(version || '').match(/FY\s*(\d{4})/i);
+  if (!m) return null;
+  const fy = parseInt(m[1], 10);
+  const t = (now instanceof Date ? now : new Date(now == null ? Date.now() : now)).getTime();
+  return { fy, endsOn: `${fy}-09-30`, stale: t >= Date.UTC(fy, 9, 1) };
 }
 
 // ─── STATE NAMES ───
@@ -1248,5 +1333,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
 }
