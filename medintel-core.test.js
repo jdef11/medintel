@@ -7,7 +7,7 @@ const {
   tokenizeMedical, searchDict, crossSuggest,
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
-  extractDatasetVersions, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
+  extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
   parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms,
   resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital
@@ -16,6 +16,19 @@ const {
 // ─── f() — field accessor ───────────────────────────────────────────────────
 
 describe('f()', () => {
+  it('falls back to a case-insensitive match (DME Referring spells it HCPCS_CD)', () => {
+    expect(f({ HCPCS_CD: 'E0601' }, 'HCPCS_Cd')).toBe('E0601');
+    expect(f({ 'hcpcs cd': 'E0601' }, 'HCPCS_Cd')).toBe('E0601');
+  });
+
+  it('prefers an exact match over a case-insensitive one', () => {
+    expect(f({ HCPCS_CD: 'wrong', HCPCS_Cd: 'right' }, 'HCPCS_Cd')).toBe('right');
+  });
+
+  it('does not match a different field that merely shares a prefix', () => {
+    expect(f({ HCPCS_Cd_Extra: 'x' }, 'HCPCS_Cd')).toBeUndefined();
+  });
+
   it('returns value for an underscore-keyed field', () => {
     expect(f({ Rndrng_NPI: '1234567890' }, 'Rndrng_NPI')).toBe('1234567890');
   });
@@ -2055,5 +2068,63 @@ describe('trendSvgPath()', () => {
     expect(linePath.match(/^M /)).toBeTruthy();
     expect((linePath.match(/L /g) || []).length).toBe(2); // 2 of 3 points use L, first uses M
     expect(areaPath.endsWith('Z')).toBe(true);
+  });
+});
+
+// ─── Latest-alias fallback + data-year detection ─────────────────────────────
+
+describe('LATEST_DATASET_IDS', () => {
+  it('has a UUID for every dataset family', () => {
+    const fams = ['provider', 'provSummary', 'geography', 'inpProvider', 'inpGeo', 'dmeGeo', 'dmeReferring'];
+    expect(Object.keys(LATEST_DATASET_IDS).sort()).toEqual(fams.sort());
+    Object.values(LATEST_DATASET_IDS).forEach(id =>
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/));
+  });
+
+  it('provider matches the HTML\'s hardcoded DATASET_ID (the two must not drift)', () => {
+    const html = require('fs').readFileSync(require('path').join(__dirname, 'cms-sales-intel (4).html'), 'utf8');
+    const m = html.match(/const DATASET_ID = '([0-9a-f-]{36})'/);
+    expect(m && m[1]).toBe(LATEST_DATASET_IDS.provider);
+  });
+});
+
+describe('yearFromDataFileName()', () => {
+  // Real meta.data_file_name values from /data-viewer, Oct 2026.
+  it.each([
+    ['PHY_R26_P05_V10_D24_Prov_Svc.csv', 2024],
+    ['MUP_PHY_R26_P05_V10_D24_Geo.csv', 2024],
+    ['MUP_INP_RY26_P03_V10_DY24_PrvSvc.CSV', 2024],
+    ['mup_dme_ry26_p05_v10_dy24_geor.csv', 2024],
+    ['mup_dme_ry26_p05_v10_dy24_rfrhpr.csv', 2024],
+    ['MUP_PHY_R25_P05_V20_D23_Geo.csv', 2023],
+    ['MUP_IHP_RY23_P03_V10_DY19_GEO.CSV', 2019],
+  ])('%s → %i', (name, year) => {
+    expect(yearFromDataFileName(name)).toBe(year);
+  });
+
+  it('does not mistake the release-year token (R26 / RY26) for the data year', () => {
+    expect(yearFromDataFileName('MUP_PHY_R26_P05_V10.csv')).toBeNull();
+    expect(yearFromDataFileName('MUP_INP_RY26_P03.CSV')).toBeNull();
+  });
+
+  it('returns null for missing or unrecognized names', () => {
+    expect(yearFromDataFileName(undefined)).toBeNull();
+    expect(yearFromDataFileName('')).toBeNull();
+    expect(yearFromDataFileName('something.csv')).toBeNull();
+  });
+});
+
+describe('icd10IndexStaleness()', () => {
+  const V = 'MS-DRG v43.0 / FY2026';
+  it('is current through Sep 30 of its fiscal year', () => {
+    expect(icd10IndexStaleness(V, Date.UTC(2026, 8, 30, 12))).toEqual({ fy: 2026, endsOn: '2026-09-30', stale: false });
+  });
+  it('is stale from Oct 1, when the next MS-DRG version takes effect', () => {
+    expect(icd10IndexStaleness(V, Date.UTC(2026, 9, 1)).stale).toBe(true);
+    expect(icd10IndexStaleness(V, new Date('2026-10-09')).stale).toBe(true);
+  });
+  it('returns null when no fiscal year can be read', () => {
+    expect(icd10IndexStaleness('', Date.now())).toBeNull();
+    expect(icd10IndexStaleness(undefined, Date.now())).toBeNull();
   });
 });

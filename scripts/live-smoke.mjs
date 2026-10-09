@@ -6,8 +6,9 @@
 // about the *live* data.cms.gov API (exact dataset titles, field spellings,
 // DRG code padding, catalog shape). This script hits the real API and asserts
 // each one, so a field-name drift on CMS's side is caught before it silently
-// breaks the deployed app. It has NO effect on the build and is not run in CI
-// (the sandbox/CI has no route to data.cms.gov).
+// breaks the deployed app. It has NO effect on the build or deploy. It runs
+// weekly via .github/workflows/live-smoke.yml, which turns a failure into a
+// GitHub issue. Exit codes: 0 pass, 1 a check failed, 2 data.cms.gov unreachable.
 
 import { createRequire } from 'module';
 
@@ -38,7 +39,8 @@ const bad = (m) => { console.log(`  ✗ ${m}`); failures++; };
 // Use the app's real catalog parser, so this checks what the app actually does
 // rather than a local copy that can drift from it.
 const require = createRequire(import.meta.url);
-const { extractDatasetVersions } = require('../medintel-core.js');
+const { extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness } = require('../medintel-core.js');
+const { readFileSync } = require('fs');
 
 async function getJson(url) {
   const r = await fetch(url);
@@ -247,11 +249,38 @@ async function main() {
     else console.log('  ⚠ C1889 unexpectedly present — the app skips the DMEPOS query for C-codes, so revisit that assumption');
   }
 
+  // The app falls back to these when the catalog can't be read. They're only a
+  // safe fallback if CMS keeps them pointed at the newest year — this is where
+  // a stale or retired alias gets caught.
+  console.log('\n15. Latest-year fallback IDs (LATEST_DATASET_IDS) still serve the newest data year');
+  for (const [key, id] of Object.entries(LATEST_DATASET_IDS)) {
+    try {
+      const j = await getJson(`${DATA_API_ROOT}/${id}/data-viewer?size=0`);
+      const file = j && j.meta && j.meta.data_file_name;
+      const year = yearFromDataFileName(file);
+      const want = resolved[key] && resolved[key].year;
+      if (!year) bad(`${key}: alias ${id} — could not read a data year from "${file}"`);
+      else if (want && year !== want) bad(`${key}: alias serves CY ${year} but the catalog's newest is CY ${want} — update LATEST_DATASET_IDS in medintel-core.js from data.json's "latest" API distribution`);
+      else ok(`${key}: alias serves CY ${year}${want ? ' (= catalog newest)' : ' (catalog year unknown)'}`);
+    } catch (e) { bad(`${key}: alias ${id} — ${e.message}`); }
+  }
+
+  // Not a live-API check, but it's a yearly chore that otherwise only gets
+  // noticed by a user: MS-DRG versions change every Oct 1.
+  console.log('\n16. ICD-10-PCS → MS-DRG crosswalk (data/icd10pcs-drg-index.json) is for the current fiscal year');
+  try {
+    const idx = JSON.parse(readFileSync(new URL('../data/icd10pcs-drg-index.json', import.meta.url), 'utf8'));
+    const st = icd10IndexStaleness(idx.version);
+    if (!st) bad(`could not read a fiscal year from the index version "${idx.version}"`);
+    else if (st.stale) bad(`index is ${idx.version} (built ${idx.builtAt}), which ended ${st.endsOn} — rebuild for FY${st.fy + 1}: update the source URLs in scripts/build-icd10pcs-drg-index.mjs, then npm run build:icd10pcs`);
+    else ok(`${idx.version} — current through ${st.endsOn}`);
+  } catch (e) { bad(`could not read the index: ${e.message}`); }
+
   finish();
 }
 
 function finish() {
-  console.log(`\n${failures === 0 ? '✅ All live checks passed.' : `❌ ${failures} check(s) failed — the deployed app may need a field/title fix.`}`);
+  console.log(`\n${failures === 0 ? '✅ All live checks passed.' : `❌ ${failures} check(s) failed — see the ✗ lines above for what needs updating.`}`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
