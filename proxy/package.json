@@ -1,0 +1,13 @@
+{
+  "name": "medintel-cms-proxy",
+  "private": true,
+  "description": "Cloudflare Worker that proxies the CMS endpoints MedIntel can't call directly from the browser",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.149.0"
+  }
+}
