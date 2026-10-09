@@ -902,6 +902,12 @@
   }
   .lookup-row:last-child { border-bottom: none; }
   .lookup-metric { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* ICD-10-PCS rows carry a resolved MS-DRG *set* (or a full-sentence status)
+     in the metric column, not one short number — widen the column and let it
+     wrap instead of overflowing under the action button. Scoped modifier: the
+     shared .lookup-row grid is also used by the CPT/DRG/DMEPOS panels. */
+  .lookup-row-icd10 { grid-template-columns: 74px 1fr minmax(170px, 34%) auto; }
+  .lookup-row-icd10 > .lookup-metric { white-space: normal; }
   .mini-btn {
     font-size: 10px;
     font-weight: 600;
@@ -929,6 +935,9 @@
   @media (max-width: 900px) {
     .lookup-row { grid-template-columns: 64px 1fr auto; }
     .lookup-row > .lookup-metric { display: none; }
+    /* ICD-10-PCS rows: the metric IS the payload (the resolved DRG set), so
+       instead of hiding it, wrap it onto its own full-width line. */
+    .lookup-row-icd10 > .lookup-metric { display: block; grid-column: 1 / -1; text-align: left; }
   }
 
   /* ─── RESPONSIVE ───
@@ -5459,7 +5468,7 @@ function icd10PcsRowHtml(resolved) {
   }
   const desc = resolved.desc || (resolved.status === 'unknown' ? '' : '(description unavailable)');
   return `
-    <div class="lookup-row">
+    <div class="lookup-row lookup-row-icd10">
       <div class="proc-code">${escapeHtml(resolved.code)}${orBadge}</div>
       <div class="proc-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</div>
       <div class="lookup-metric">${escapeHtml(metric)}</div>
