@@ -1099,9 +1099,20 @@ function groupByReferrer(rows) {
 // ─── DATASET VERSION DISCOVERY ───
 // data.cms.gov publishes each data year of a dataset as its own version with its
 // own UUID. The official machine-readable catalog (https://data.cms.gov/data.json)
-// lists them: each matching dataset/distribution carries a `temporal` range
-// ("2019-01-01/2019-12-31") and an API URL containing the version UUID.
-// This parses that catalog into [{ year, id }] sorted newest-first.
+// lists them, and this parses that catalog into [{ year, id }] sorted newest-first.
+//
+// Two catalog shapes are handled:
+//  - Legacy: one dataset entry titled exactly `title`, one distribution per year,
+//    each with a string `temporal` range ("2019-01-01/2019-12-31").
+//  - DCAT-US 3.0 (live since at least Oct 2026): one dataset entry PER YEAR,
+//    titled "<title> : <release date>" (e.g. "... by Geography and Service :
+//    2024-12-01"), linked to its family via `inSeries[].title`, with `temporal`
+//    as [{ startDate, endDate }]. The release date in the title is NOT the data
+//    year, so the year comes from temporal.startDate. The latest year carries two
+//    API distributions: a "latest" alias (the same UUID the app hardcodes as
+//    DATASET_ID — it moves to the next year when CMS publishes one) and a
+//    version-pinned UUID. The pinned one is preferred so a cached {year, id}
+//    keeps meaning that year.
 function extractDatasetVersions(catalog, title) {
   const normalize = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const wanted = normalize(title);
@@ -1117,6 +1128,22 @@ function extractDatasetVersions(catalog, title) {
     }
     return null;
   };
+  // temporal is a "start/end" string (legacy) or [{ startDate, endDate }] (DCAT-US 3.0).
+  const temporalYear = t => {
+    for (const p of (Array.isArray(t) ? t : [t])) {
+      const y = (p && typeof p === 'object') ? yearFrom(p.startDate, p.endDate) : yearFrom(p);
+      if (y) return y;
+    }
+    return null;
+  };
+  const belongs = ds => {
+    if (normalize(ds.title) === wanted) return true;
+    const series = Array.isArray(ds.inSeries) ? ds.inSeries : (ds.inSeries ? [ds.inSeries] : []);
+    if (series.some(s => normalize(s && s.title) === wanted)) return true;
+    // Per-version title "<title> : YYYY-MM-DD" — strip only that exact suffix, so
+    // "... by Provider" never matches "... by Provider and Service".
+    return normalize(String(ds.title || '').replace(/\s*:\s*\d{4}-\d{2}-\d{2}\s*$/, '')) === wanted;
+  };
 
   const byYear = {};
   const record = (year, id) => {
@@ -1124,17 +1151,25 @@ function extractDatasetVersions(catalog, title) {
   };
 
   datasets.forEach(ds => {
-    if (normalize(ds.title) !== wanted) return;
-    // Distribution-level entries (one dataset entry, one distribution per year)
-    (ds.distribution || []).forEach(dist => {
+    if (!ds || !belongs(ds)) return;
+    const dists = Array.isArray(ds.distribution) ? ds.distribution : [];
+    const dsYear = temporalYear(ds.temporal);
+    if (dsYear) {
+      // Dataset-level year: the entry IS one version. Pick its pinned API UUID
+      // over the "latest" alias, then fall back to the alias / the identifier.
+      const apiIds = dists
+        .map(d => ({ id: uuidFromUrl(d.accessURL) || uuidFromUrl(d.downloadURL), latest: /latest/i.test(String(d.description || '')) }))
+        .filter(d => d.id);
+      const pick = apiIds.find(d => !d.latest) || apiIds[0];
+      record(dsYear, (pick && pick.id) || uuidFromUrl(ds.identifier) || uuidFromUrl(ds.accessURL));
+      return;
+    }
+    // Legacy: one dataset entry, one distribution per year
+    dists.forEach(dist => {
       const id = uuidFromUrl(dist.accessURL) || uuidFromUrl(dist.downloadURL);
-      const year = yearFrom(dist.temporal, dist.title, dist.description);
+      const year = temporalYear(dist.temporal) || yearFrom(dist.title, dist.description);
       record(year, id);
     });
-    // Dataset-level entries (one dataset entry per year, same title)
-    const dsId = uuidFromUrl(ds.identifier) || uuidFromUrl(ds.accessURL);
-    const dsYear = yearFrom(ds.temporal, ds.modified && null); // only temporal is a reliable year signal
-    record(dsYear, dsId);
   });
 
   return Object.values(byYear).sort((a, b) => b.year - a.year);

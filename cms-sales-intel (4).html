@@ -1388,6 +1388,10 @@ const DME_GEO_DATASET_TITLE = 'Medicare Durable Medical Equipment, Devices & Sup
 const DME_REFERRING_DATASET_TITLE = 'Medicare Durable Medical Equipment, Devices & Supplies - by Referring Provider and Service';
 const VERSIONS_CACHE_KEY = 'medintel_dataset_versions_v4';
 const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog weekly
+// A cache where some dataset family came back empty (title drift, catalog format
+// change) is only trusted briefly — otherwise one bad discovery would disable
+// Code Lookup / trends / Size a Market for a full week, even after a fix ships.
+const PARTIAL_VERSIONS_CACHE_TTL_MS = 60 * 60 * 1000;
 
 // CORS proxies — we try multiple in order since free proxies can go down
 const CORS_PROXIES = [
@@ -1549,11 +1553,19 @@ function loadDatasetVersionsOnce() {
   return versionsPromise;
 }
 
+// 'unknown' until discovery runs; 'loaded' once a catalog (or cache) was read,
+// even if nothing in it matched; 'unreachable' if data.json couldn't be fetched.
+// Lets requireVersions() tell a network failure from a catalog it can't parse.
+let catalogStatus = 'unknown';
+
 async function loadDatasetVersions() {
   // Serve from cache when fresh
   try {
     const cached = JSON.parse(localStorage.getItem(VERSIONS_CACHE_KEY) || 'null');
-    if (cached && (Date.now() - cached.fetchedAt) < VERSIONS_CACHE_TTL_MS &&
+    const complete = cached && Object.keys(VERSION_KIND_TITLES)
+      .every(k => Array.isArray(cached[k]) && cached[k].length);
+    const ttl = complete ? VERSIONS_CACHE_TTL_MS : PARTIAL_VERSIONS_CACHE_TTL_MS;
+    if (cached && (Date.now() - cached.fetchedAt) < ttl &&
         Array.isArray(cached.provider) && cached.provider.length) {
       datasetVersions = {
         provider: sanitizeVersions(cached.provider),
@@ -1564,13 +1576,14 @@ async function loadDatasetVersions() {
         dmeGeo: sanitizeVersions(cached.dmeGeo),
         dmeReferring: sanitizeVersions(cached.dmeReferring)
       };
-      if (datasetVersions.provider.length) { populateYearSelect(); return; }
+      if (datasetVersions.provider.length) { catalogStatus = 'loaded'; populateYearSelect(); return; }
       // sanitization emptied the cache → fall through and refetch
     }
   } catch(e) { /* corrupt cache — refetch */ }
 
   const catalog = await fetchCatalog();
   if (!catalog) {
+    catalogStatus = 'unreachable';
     document.getElementById('yearNote').textContent =
       'Could not reach the data.cms.gov catalog — searches will use the latest published data year. Reload the page to retry.';
     return;
@@ -1584,6 +1597,7 @@ async function loadDatasetVersions() {
     dmeGeo: extractDatasetVersions(catalog, DME_GEO_DATASET_TITLE),
     dmeReferring: extractDatasetVersions(catalog, DME_REFERRING_DATASET_TITLE)
   };
+  catalogStatus = 'loaded';
   try {
     localStorage.setItem(VERSIONS_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), ...datasetVersions }));
   } catch(e) { /* storage full/unavailable — fine, versions stay in memory */ }
@@ -4101,9 +4115,14 @@ async function requireVersions(kind) {
     // dataset families resolved) but has no entry under this family's title —
     // e.g. CMS renamed it. Saying "unreachable" for the second sends people
     // chasing a network problem that doesn't exist.
+    // A third: it loaded but NO family resolved — the catalog's structure
+    // changed (this happened when data.json moved to DCAT-US 3.0).
     const anyResolved = Object.values(datasetVersions).some(v => v.length);
     if (anyResolved) {
       throw new Error(`The data.cms.gov catalog loaded, but has no dataset titled "${VERSION_KIND_TITLES[kind] || kind}" — CMS may have renamed or retired it.`);
+    }
+    if (catalogStatus === 'loaded') {
+      throw new Error('The data.cms.gov catalog loaded, but none of the expected Medicare datasets could be read from it — CMS may have changed the catalog format.');
     }
     throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
   }
@@ -5171,8 +5190,12 @@ async function lookupDmeReferrers(code) {
   const g = dmeReferringBase();
   if (!g) return { referrers: [], year: null };
   try {
-    const raw = await corsFetch(`${g.base}?size=${FETCH_SIZE}&filter[HCPCS_Cd]=${encodeURIComponent(code)}`);
-    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    // This dataset spells the column HCPCS_CD (capital D, verified live for
+    // CY2023/2024), unlike every other file's HCPCS_Cd. The API silently ignores
+    // a filter on a column that doesn't exist and returns unrelated codes, which
+    // the check below would then drop — an always-empty panel.
+    const raw = await corsFetch(`${g.base}?size=${FETCH_SIZE}&filter[HCPCS_CD]=${encodeURIComponent(code)}`);
+    const rows = (raw || []).filter(r => (f(r, 'HCPCS_CD') || f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
     return { referrers: groupByReferrer(rows), year: g.year };
   } catch (e) {
     console.log(`DME referrer lookup failed for ${code}:`, e.message);

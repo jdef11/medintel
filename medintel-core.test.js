@@ -928,6 +928,61 @@ describe('extractDatasetVersions()', () => {
     expect(extractDatasetVersions(catalog, TITLE).length).toBe(1);
   });
 
+  // data.json moved to DCAT-US 3.0: one entry per year, "<title> : <release date>",
+  // temporal as [{startDate,endDate}], latest year has a "latest" alias + a pinned UUID.
+  describe('DCAT-US 3.0 catalog shape', () => {
+    const api = (id, description) => ({ '@type': 'Distribution', format: 'API', accessURL: `https://data.cms.gov/data-api/v1/dataset/${id}/data`, ...(description ? { description } : {}) });
+    const csv = { '@type': 'Distribution', format: 'CSV', downloadURL: 'https://data.cms.gov/sites/default/files/x.csv' };
+    const entry = (release, year, dists, extra = {}) => ({
+      '@type': 'Dataset',
+      title: `${TITLE} : ${release}`,
+      identifier: `https://data.cms.gov/data-api/v1/dataset/${uuid(99)}/data-viewer`,
+      temporal: [{ '@type': 'PeriodOfTime', startDate: `${year}-01-01`, endDate: `${year}-12-31` }],
+      distribution: dists,
+      ...extra,
+    });
+
+    it('matches per-year "<title> : <date>" entries and reads the year from temporal objects', () => {
+      const catalog = { dataset: [
+        entry('2022-12-02', 2022, [csv, api(uuid(22))]),
+        entry('2023-12-31', 2023, [csv, api(uuid(23))]),
+      ]};
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([
+        { year: 2023, id: uuid(23) },
+        { year: 2022, id: uuid(22) },
+      ]);
+    });
+
+    it('prefers the version-pinned API distribution over the "latest" alias', () => {
+      const catalog = { dataset: [entry('2024-12-01', 2024, [api(uuid(1), 'latest'), csv, api(uuid(2))])] };
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2024, id: uuid(2) }]);
+    });
+
+    it('falls back to the "latest" alias, then the identifier, when no pinned UUID exists', () => {
+      expect(extractDatasetVersions({ dataset: [entry('2024-12-01', 2024, [api(uuid(1), 'latest')])] }, TITLE))
+        .toEqual([{ year: 2024, id: uuid(1) }]);
+      expect(extractDatasetVersions({ dataset: [entry('2024-12-01', 2024, [csv])] }, TITLE))
+        .toEqual([{ year: 2024, id: uuid(99) }]);
+    });
+
+    it('uses temporal, not the release date in the title, as the data year', () => {
+      const catalog = { dataset: [entry('2024-01-01', 2023, [api(uuid(5))])] };
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2023, id: uuid(5) }]);
+    });
+
+    it('matches via inSeries title even if the entry title has another suffix', () => {
+      const catalog = { dataset: [entry('2024-12-01', 2024, [api(uuid(6))], {
+        title: 'Renamed release label', inSeries: [{ '@type': 'DatasetSeries', title: TITLE }],
+      })]};
+      expect(extractDatasetVersions(catalog, TITLE)).toEqual([{ year: 2024, id: uuid(6) }]);
+    });
+
+    it('does not let a shorter family title match a longer one ("by Provider" vs "by Provider and Service")', () => {
+      const catalog = { dataset: [entry('2024-12-01', 2024, [api(uuid(7))])] };
+      expect(extractDatasetVersions(catalog, 'Medicare Physician & Other Practitioners - by Provider')).toEqual([]);
+    });
+  });
+
   it('returns empty array for a missing or malformed catalog', () => {
     expect(extractDatasetVersions(null, TITLE)).toEqual([]);
     expect(extractDatasetVersions({}, TITLE)).toEqual([]);
