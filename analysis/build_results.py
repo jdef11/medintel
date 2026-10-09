@@ -12,7 +12,8 @@ SETTING = "Medicare Part B FFS - physician/practitioner services (CMS Geography 
 DX_POS = "n/a (procedure-based proxy; source has no diagnosis field)"
 STD_ERR = "n/a (complete FFS claims, not a sample)"
 
-# code -> (tier, family label). Tiers are defined in methods.md.
+# code -> (tier, working label). Labels are my own unverified shorthand and are NOT used in results;
+# the table carries only the CMS descriptor. Tiers are defined in methods.md.
 CODES = {
     "29866": ("A", "Osteochondral autograft, knee, arthroscopic"),
     "29867": ("A", "Osteochondral allograft, knee, arthroscopic"),
@@ -48,7 +49,7 @@ for q in log:
         for field, measure in MEASURES:
             supp = d is None
             rows.append([
-                q["year"], SETTING, f"Tier {tier}: {q['code']} {label}", DX_POS,
+                q["year"], SETTING, f"Tier {tier}: {q['code']}", DX_POS,
                 "place_of_service", f"{pl} - {PLACES[pl]}",
                 "suppressed" if supp else float(d[field]), STD_ERR,
                 supp, q["query_id"], measure, q["code"],
@@ -68,7 +69,7 @@ ws2.append(["query_id", "year", "hcpcs_code", "dataset_uuid", "url", "requested_
 for q in log:
     ws2.append([q["query_id"], q["year"], q["code"], q["dataset_uuid"], q["url"], q["requested_at"], q.get("http_status"), q.get("row_count")])
 ws3 = wb.create_sheet("code_list")
-ws3.append(["hcpcs_code", "tier", "label_used_here", "cms_descriptor_latest_year_found"])
+ws3.append(["hcpcs_code", "tier", "my_working_label_UNVERIFIED", "cms_descriptor_latest_year_found"])
 for c, (t, l) in CODES.items():
     latest = max([y for (cc, y) in desc if cc == c], default=None)
     ws3.append([c, t, l, desc.get((c, latest), "NOT FOUND IN ANY YEAR") if latest else "NOT FOUND IN ANY YEAR"])
