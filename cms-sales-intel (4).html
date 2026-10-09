@@ -5302,12 +5302,23 @@ async function executeLookupSearch() {
   const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
   const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
   const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
+  // Carry each failure's own reason (corsFetch's per-attempt detail) through
+  // to the UI — a bare "unavailable" gives nothing to diagnose from.
+  const reasonOf = r => (r.reason && r.reason.message) || String(r.reason || 'unknown error');
   const dictErrors = [];
-  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
-  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
-  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
+  if (settled[0].status === 'rejected') dictErrors.push(`CPT/HCPCS index unavailable (${reasonOf(settled[0])})`);
+  if (settled[1].status === 'rejected') dictErrors.push(`MS-DRG index unavailable (${reasonOf(settled[1])})`);
+  if (settled[2].status === 'rejected') dictErrors.push(`ICD-10-PCS crosswalk unavailable (${reasonOf(settled[2])})`);
   if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
-    throw new Error('Could not build either code index from the CMS API — please try again.');
+    // ICD-10-PCS codes resolve from the bundled crosswalk file alone, so a
+    // CMS outage shouldn't block them — only bail when some term needs CMS.
+    const icd10Only = icd10PcsLoaded && terms.every(t => /^[A-Za-z0-9]{7}$/.test(t));
+    if (!icd10Only) {
+      const cptReason = reasonOf(settled[0]);
+      const drgReason = reasonOf(settled[1]);
+      const detail = cptReason === drgReason ? cptReason : `CPT/HCPCS: ${cptReason} | MS-DRG: ${drgReason}`;
+      throw new Error(`Could not build either code index from the CMS API. ${detail}`);
+    }
   }
 
   const multi = terms.length > 1;
