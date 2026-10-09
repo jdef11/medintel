@@ -4097,10 +4097,23 @@ async function requireVersions(kind) {
   }
   const versions = datasetVersions[kind];
   if (!versions.length) {
+    // Two different failures: the catalog never loaded, or it loaded (other
+    // dataset families resolved) but has no entry under this family's title —
+    // e.g. CMS renamed it. Saying "unreachable" for the second sends people
+    // chasing a network problem that doesn't exist.
+    const anyResolved = Object.values(datasetVersions).some(v => v.length);
+    if (anyResolved) {
+      throw new Error(`The data.cms.gov catalog loaded, but has no dataset titled "${VERSION_KIND_TITLES[kind] || kind}" — CMS may have renamed or retired it.`);
+    }
     throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
   }
   return versions;
 }
+const VERSION_KIND_TITLES = {
+  provider: PROVIDER_DATASET_TITLE, provSummary: PROV_SUMMARY_DATASET_TITLE, geography: GEO_DATASET_TITLE,
+  inpProvider: INP_PROVIDER_DATASET_TITLE, inpGeo: INP_GEO_DATASET_TITLE,
+  dmeGeo: DME_GEO_DATASET_TITLE, dmeReferring: DME_REFERRING_DATASET_TITLE
+};
 
 function finishTrend(results, cacheKey) {
   const trend = results.sort((a, b) => a.year - b.year);
@@ -5302,12 +5315,23 @@ async function executeLookupSearch() {
   const cpt = settled[0].status === 'fulfilled' ? settled[0].value : [];
   const drg = settled[1].status === 'fulfilled' ? settled[1].value : [];
   const icd10PcsLoaded = settled[2].status === 'fulfilled' ? settled[2].value : null;
+  // Carry each failure's own reason (corsFetch's per-attempt detail) through
+  // to the UI — a bare "unavailable" gives nothing to diagnose from.
+  const reasonOf = r => (r.reason && r.reason.message) || String(r.reason || 'unknown error');
   const dictErrors = [];
-  if (settled[0].status === 'rejected') dictErrors.push('CPT/HCPCS index unavailable');
-  if (settled[1].status === 'rejected') dictErrors.push('MS-DRG index unavailable');
-  if (settled[2].status === 'rejected') dictErrors.push('ICD-10-PCS crosswalk unavailable');
+  if (settled[0].status === 'rejected') dictErrors.push(`CPT/HCPCS index unavailable (${reasonOf(settled[0])})`);
+  if (settled[1].status === 'rejected') dictErrors.push(`MS-DRG index unavailable (${reasonOf(settled[1])})`);
+  if (settled[2].status === 'rejected') dictErrors.push(`ICD-10-PCS crosswalk unavailable (${reasonOf(settled[2])})`);
   if (settled[0].status === 'rejected' && settled[1].status === 'rejected') {
-    throw new Error('Could not build either code index from the CMS API — please try again.');
+    // ICD-10-PCS codes resolve from the bundled crosswalk file alone, so a
+    // CMS outage shouldn't block them — only bail when some term needs CMS.
+    const icd10Only = icd10PcsLoaded && terms.every(t => /^[A-Za-z0-9]{7}$/.test(t));
+    if (!icd10Only) {
+      const cptReason = reasonOf(settled[0]);
+      const drgReason = reasonOf(settled[1]);
+      const detail = cptReason === drgReason ? cptReason : `CPT/HCPCS: ${cptReason} | MS-DRG: ${drgReason}`;
+      throw new Error(`Could not build either code index from the CMS API. ${detail}`);
+    }
   }
 
   const multi = terms.length > 1;
