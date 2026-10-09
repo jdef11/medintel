@@ -317,10 +317,11 @@ function parseIndexPage(html) {
     const category = decodeEntities(m[4]);
     // A trailing '*' marks a non-OR procedure per the manual's own legend; a
     // trailing '+' marks membership in a procedure cluster (out of scope, v1).
-    let orProcedure = true;
-    let code = rawCode;
-    if (code.endsWith('*')) { orProcedure = false; code = code.slice(0, -1); }
-    if (code.endsWith('+')) { code = code.slice(0, -1); }
+    // A code can carry both, in either order ("02H40JZ*+") — strip every
+    // trailing marker, not just the last one, or the '*' ends up in the code.
+    const marked = rawCode.match(/^(.*?)([^0-9A-Za-z]*)$/);
+    const code = marked[1];
+    const orProcedure = !marked[2].includes('*');
     if (code) currentCode = code;
     if (!currentCode || !mdc || !drgRange) continue;
     rows.push({ code: currentCode, mdc: mdc.padStart(2, '0'), drgRange, category, orProcedure });

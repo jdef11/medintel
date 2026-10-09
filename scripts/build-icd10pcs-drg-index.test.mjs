@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  readZipEntry, listZipEntries, fiscalYearOf, msDrgVersionFor, sourcesForFy,
+  readZipEntry, listZipEntries, parseIndexPage, fiscalYearOf, msDrgVersionFor, sourcesForFy,
   pickOrderFileEntry, findOrderZipLink, validateIndex, SENTINEL_CODES,
 } from './build-icd10pcs-drg-index.mjs';
 
@@ -48,6 +48,26 @@ const indexPage = (rows, pageNo, total, next) => `<html><body><div>Page ${pageNo
 <table class="codelst">${rows.map(([c, mdc, drg, cat]) =>
   `<tr><td class="code">${c}</td><td class="clcl">${mdc}</td><td class="clcl">${drg}</td><td class="clcl">${cat}</td></tr>`).join('\n')}</table>
 ${next ? `<a id="next_page" href="${next}">next</a>` : ''}</body></html>`;
+
+describe('parseIndexPage()', () => {
+  it('strips every trailing marker, in either order (CMS writes both "*+" and "+*")', () => {
+    const rows = parseIndexPage(indexPage([
+      ['02H40JZ*+', '05', '260-262', 'Pacemaker'],
+      ['02H40MZ+*', '05', '260-262', 'Pacemaker'],
+      ['0SRC0J9+', '08', '469-470', 'Major Joint'],
+      ['0016070*', '01', '031-033', 'Shunt'],
+      ['0JH60DZ', '05', '252-254', 'Device'],
+    ], 1, 1, null));
+    expect(rows.map((r) => [r.code, r.orProcedure])).toEqual([
+      ['02H40JZ', false], ['02H40MZ', false], ['0SRC0J9', true], ['0016070', false], ['0JH60DZ', true],
+    ]);
+  });
+
+  it('carries a code forward to its continuation rows', () => {
+    const rows = parseIndexPage(indexPage([['0SRC0J9', '08', '469-470', 'A'], ['&nbsp;', '21', '907-909', 'B']], 1, 1, null));
+    expect(rows.map((r) => [r.code, r.drgRange])).toEqual([['0SRC0J9', '469-470'], ['0SRC0J9', '907-909']]);
+  });
+});
 
 describe('fiscal-year helpers', () => {
   it('maps dates to the federal fiscal year (Oct 1 starts the next FY)', () => {
