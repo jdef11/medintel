@@ -272,7 +272,7 @@ async function main() {
     const idx = JSON.parse(readFileSync(new URL('../data/icd10pcs-drg-index.json', import.meta.url), 'utf8'));
     const st = icd10IndexStaleness(idx.version);
     if (!st) bad(`could not read a fiscal year from the index version "${idx.version}"`);
-    else if (st.stale) bad(`index is ${idx.version} (built ${idx.builtAt}), which ended ${st.endsOn} — rebuild for FY${st.fy + 1}: update the source URLs in scripts/build-icd10pcs-drg-index.mjs, then npm run build:icd10pcs`);
+    else if (st.stale) bad(`index is ${idx.version} (built ${idx.builtAt}), which ended ${st.endsOn} — rebuild for FY${st.fy + 1}: the icd10pcs-rebuild workflow does this weekly (check its issues), or run it from the Actions tab`);
     else ok(`${idx.version} — current through ${st.endsOn}`);
   } catch (e) { bad(`could not read the index: ${e.message}`); }
 
