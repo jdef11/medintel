@@ -80,8 +80,10 @@ function msDrgVersionFor(fy) {
   return fy - 1983;
 }
 
-// Candidate locations, most likely first. Patterns verified for FY2026 (built
-// from them) and FY2027 (manual pages indexed at the fr-v44 path, Oct 2026).
+// Candidate locations, most likely first. The manual path held for FY2026 and
+// FY2027. The order-file ZIP name did not: FY2027's was
+// "2027-icd-10-pcs-order-file-long-abbreviated-titles.zip" (no "and"), found via
+// the codes-page fallback in downloadOrderZip().
 function sourcesForFy(fy, env = {}) {
   const v = msDrgVersionFor(fy);
   return {
