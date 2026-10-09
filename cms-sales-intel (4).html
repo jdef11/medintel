@@ -4097,10 +4097,23 @@ async function requireVersions(kind) {
   }
   const versions = datasetVersions[kind];
   if (!versions.length) {
+    // Two different failures: the catalog never loaded, or it loaded (other
+    // dataset families resolved) but has no entry under this family's title —
+    // e.g. CMS renamed it. Saying "unreachable" for the second sends people
+    // chasing a network problem that doesn't exist.
+    const anyResolved = Object.values(datasetVersions).some(v => v.length);
+    if (anyResolved) {
+      throw new Error(`The data.cms.gov catalog loaded, but has no dataset titled "${VERSION_KIND_TITLES[kind] || kind}" — CMS may have renamed or retired it.`);
+    }
     throw new Error('Historical data years are unavailable — the data.cms.gov catalog could not be reached. Reload the page to retry.');
   }
   return versions;
 }
+const VERSION_KIND_TITLES = {
+  provider: PROVIDER_DATASET_TITLE, provSummary: PROV_SUMMARY_DATASET_TITLE, geography: GEO_DATASET_TITLE,
+  inpProvider: INP_PROVIDER_DATASET_TITLE, inpGeo: INP_GEO_DATASET_TITLE,
+  dmeGeo: DME_GEO_DATASET_TITLE, dmeReferring: DME_REFERRING_DATASET_TITLE
+};
 
 function finishTrend(results, cacheKey) {
   const trend = results.sort((a, b) => a.year - b.year);
