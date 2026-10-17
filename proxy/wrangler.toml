@@ -1,0 +1,11 @@
+# Cloudflare Worker config for the MedIntel CMS proxy. Deploy: see README.md.
+name = "medintel-cms-proxy"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+# "true": a copy of the app opened from file:// (it sends Origin: null) can use
+# the proxy. "false": only https://jdef11.github.io and http://localhost:* can.
+# Tradeoff in README.md.
+ALLOW_NULL_ORIGIN = "true"

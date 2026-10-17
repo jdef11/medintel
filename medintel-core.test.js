@@ -7,7 +7,7 @@ const {
   tokenizeMedical, searchDict, crossSuggest,
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
-  extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
+  extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
   parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms,
   resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital
@@ -2126,5 +2126,57 @@ describe('icd10IndexStaleness()', () => {
   it('returns null when no fiscal year can be read', () => {
     expect(icd10IndexStaleness('', Date.now())).toBeNull();
     expect(icd10IndexStaleness(undefined, Date.now())).toBeNull();
+  });
+});
+
+// ─── CMS proxy routing ───────────────────────────────────────────────────────
+
+describe('normalizeProxyBase()', () => {
+  it('accepts an https Worker URL and strips trailing slashes', () => {
+    expect(normalizeProxyBase('https://medintel-cms-proxy.acme.workers.dev/')).toBe('https://medintel-cms-proxy.acme.workers.dev');
+    expect(normalizeProxyBase('  https://proxy.example.com  ')).toBe('https://proxy.example.com');
+  });
+  it('accepts http only for local wrangler dev', () => {
+    expect(normalizeProxyBase('http://127.0.0.1:8787')).toBe('http://127.0.0.1:8787');
+    expect(normalizeProxyBase('http://localhost:8787')).toBe('http://localhost:8787');
+    expect(normalizeProxyBase('http://proxy.example.com')).toBe('');
+  });
+  it('treats empty, malformed, or query/credential-bearing values as unset', () => {
+    for (const bad of ['', null, undefined, 'not a url', 'https://x.example/?url=', 'https://u:p@x.example', 'https://x.example/#a']) {
+      expect(normalizeProxyBase(bad)).toBe('');
+    }
+  });
+});
+
+describe('cmsProxyUrl()', () => {
+  const B = 'https://medintel-cms-proxy.acme.workers.dev';
+  it('maps the three data.cms.gov route families onto the Worker, query untouched', () => {
+    const q = '?conditions%5B0%5D%5Bvalue%5D%5B%5D=1&conditions%5B0%5D%5Bvalue%5D%5B%5D=2';
+    expect(cmsProxyUrl(B, `https://data.cms.gov/provider-data/api/1/datastore/query/mj5m-pzi6/0${q}`))
+      .toBe(`${B}/provider-data/api/1/datastore/query/mj5m-pzi6/0${q}`);
+    expect(cmsProxyUrl(B, 'https://data.cms.gov/data-api/v1/dataset/abc/data?size=1&filter[HCPCS_Cd]=27447'))
+      .toBe(`${B}/data-api/v1/dataset/abc/data?size=1&filter[HCPCS_Cd]=27447`);
+    expect(cmsProxyUrl(B + '/', 'https://data.cms.gov/data.json')).toBe(`${B}/data.json`);
+  });
+  it('maps NPPES /api/ onto /nppes/api/', () => {
+    expect(cmsProxyUrl(B, 'https://npiregistry.cms.hhs.gov/api/?version=2.1&limit=20'))
+      .toBe(`${B}/nppes/api/?version=2.1&limit=20`);
+  });
+  it('returns null for anything the Worker does not serve, or when no proxy is set', () => {
+    expect(cmsProxyUrl(B, 'https://evil.example/data.json')).toBeNull();
+    expect(cmsProxyUrl(B, 'https://data.cms.gov/provider-data/api/1/metastore/schemas')).toBeNull();
+    expect(cmsProxyUrl(B, 'http://data.cms.gov/data.json')).toBeNull();
+    expect(cmsProxyUrl(B, 'https://data.cms.gov.evil.example/data.json')).toBeNull();
+    expect(cmsProxyUrl(B, 'https://npiregistry.cms.hhs.gov/provider-view/1548269731')).toBeNull();
+    expect(cmsProxyUrl('', 'https://data.cms.gov/data.json')).toBeNull();
+  });
+});
+
+describe('needsCmsProxy()', () => {
+  it('is true only for the hosts with no CORS for github.io', () => {
+    expect(needsCmsProxy('https://data.cms.gov/provider-data/api/1/datastore/query/x/0')).toBe(true);
+    expect(needsCmsProxy('https://npiregistry.cms.hhs.gov/api/?version=2.1')).toBe(true);
+    expect(needsCmsProxy('https://data.cms.gov/data-api/v1/dataset/x/data')).toBe(false);
+    expect(needsCmsProxy('https://data.cms.gov/data.json')).toBe(false);
   });
 });

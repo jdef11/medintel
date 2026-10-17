@@ -1225,6 +1225,50 @@ function icd10IndexStaleness(version, now) {
   return { fy, endsOn: `${fy}-09-30`, stale: t >= Date.UTC(fy, 9, 1) };
 }
 
+// ─── CMS PROXY ROUTING ───
+// The app reads CMS from the browser. data-api and data.json send CORS
+// headers and are called directly; the Provider Data Catalog (Group by
+// practice / hospital) and NPPES (NPI Look Up) send none for
+// https://jdef11.github.io (verified Oct 2026), so they go through MedIntel's
+// own Cloudflare Worker (proxy/), which mirrors these paths:
+//   https://data.cms.gov/<path>?<q>          → <base>/<path>?<q>
+//   https://npiregistry.cms.hhs.gov/api/?<q> → <base>/nppes/api/?<q>
+
+// Normalizes the configured Worker URL: https only (or http://localhost for
+// `wrangler dev`), no trailing slash, no query or fragment. Returns '' when
+// unset or invalid, which callers treat as "no proxy configured".
+function normalizeProxyBase(base) {
+  const b = String(base || '').trim().replace(/\/+$/, '');
+  if (!b) return '';
+  let u;
+  try { u = new URL(b); } catch (e) { return ''; }
+  const localDev = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+  if (u.protocol !== 'https:' && !localDev) return '';
+  if (u.search || u.hash || u.username || u.password) return '';
+  return b;
+}
+
+// The Worker URL for a CMS URL, or null if there's no (valid) proxy configured
+// or the URL isn't one the Worker serves. The query string is kept exactly as
+// built (provider-data needs its repeated conditions[0][value][]= params).
+function cmsProxyUrl(base, url) {
+  const b = normalizeProxyBase(base);
+  if (!b) return null;
+  const s = String(url || '');
+  const cms = s.match(/^https:\/\/data\.cms\.gov(\/(?:data-api\/v1\/dataset\/|provider-data\/api\/1\/datastore\/query\/)[^?#]+|\/data\.json)(\?[^#]*)?$/);
+  if (cms) return b + cms[1] + (cms[2] || '');
+  const nppes = s.match(/^https:\/\/npiregistry\.cms\.hhs\.gov\/api\/(\?[^#]*)?$/);
+  if (nppes) return b + '/nppes/api/' + (nppes[1] || '');
+  return null;
+}
+
+// True for the hosts that never answer a browser on github.io directly, so
+// the app should go straight to the proxy instead of burning a request (and a
+// console CORS error) on a direct attempt that can't succeed.
+function needsCmsProxy(url) {
+  return /^https:\/\/(data\.cms\.gov\/provider-data\/|npiregistry\.cms\.hhs\.gov\/)/.test(String(url || ''));
+}
+
 // ─── STATE NAMES ───
 // The "by Geography and Service" dataset identifies states by full name
 // (Rndrng_Prvdr_Geo_Desc), not abbreviation — this maps between the two.
@@ -1333,5 +1377,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
 }

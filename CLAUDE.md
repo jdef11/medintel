@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **MedIntel** is a single-file, zero-dependency web application for medical device sales intelligence. It searches two free, public CMS government APIs to help sales teams identify high-value Medicare providers by procedure volume and payment data.
 
-- **Architecture:** Client-side only — pure vanilla HTML, CSS, and JavaScript
+- **Architecture:** Client-side only — pure vanilla HTML, CSS, and JavaScript — plus one small server-side piece the app doesn't own the data for: `proxy/`, a Cloudflare Worker that relays the few CMS endpoints browsers can't call directly (see "CMS proxy" under External APIs)
 - **Entry point:** `cms-sales-intel (4).html` (almost the entire application lives in this one file — see the `data/` exception below)
 - **No build step, no package manager, no framework**
 - **One exception to "single file":** `data/icd10pcs-drg-index.json`, a static reference-data asset (see below). Unlike every other dataset this app queries, ICD-10-PCS↔MS-DRG has no live, filterable CMS API behind it — it only exists as static annual/semi-annual reference files, so it's fetched from a bundled JSON file rather than `data.cms.gov`.
@@ -19,7 +19,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 /
 ├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
 ├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
-├── medintel-core.test.js         # Vitest suite for medintel-core.js (295 tests)
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (302 tests)
+├── proxy/                        # MedIntel CMS proxy — Cloudflare Worker, deployed separately by the owner (proxy/README.md)
+│   ├── worker.js                 #   request handler (method/origin/allowlist checks, edge cache, upstream timeouts)
+│   ├── policy.js                 #   pure allowlist + CORS rules (resolveUpstream, isAllowedOrigin, corsHeaders)
+│   ├── worker.test.mjs           #   Vitest suite (52 tests): "not an open proxy" + CORS + handler behavior
+│   ├── wrangler.toml / package.json  # Worker config (ALLOW_NULL_ORIGIN) and the pinned wrangler CLI
+│   └── README.md                 #   why it exists, deploy steps, free-tier limits
 ├── data/icd10pcs-drg-index.json  # Static ICD-10-PCS → MS-DRG crosswalk + descriptions (~56k codes, ~9MB) — fetched at runtime, not embedded; rebuilt by the script below
 ├── scripts/live-smoke.mjs        # Live-CMS verification script (npm run smoke) — run weekly by live-smoke.yml, or manually
 ├── scripts/build-icd10pcs-drg-index.mjs  # Rebuilds data/icd10pcs-drg-index.json for one MS-DRG fiscal year — scrapes CMS's MS-DRG Definitions Manual + ICD-10-PCS Order File; run by icd10pcs-rebuild.yml (or npm run build:icd10pcs)
@@ -33,7 +39,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 └── CLAUDE.md                      # This file
 ```
 
-The app itself ships as a static file bundle with zero runtime dependencies — `package.json`/`vitest` exist only to test the pure logic extracted into `medintel-core.js`, not to build or bundle anything. `data/icd10pcs-drg-index.json` is a plain static asset fetched by the browser exactly like any other same-origin file (no server-side logic, no database) — it's just not embedded inline, because at ~9MB it would bloat the HTML file and blow past what `localStorage` can reliably cache alongside the CPT/DRG dictionaries (see `loadIcd10PcsIndex()`).
+The app itself ships as a static file bundle with zero runtime dependencies — `package.json`/`vitest` exist only to test the pure logic extracted into `medintel-core.js`, not to build or bundle anything. `data/icd10pcs-drg-index.json` is a plain static asset fetched by the browser exactly like any other same-origin file (no database, and the only server-side logic anywhere is the `proxy/` Worker) — it's just not embedded inline, because at ~9MB it would bloat the HTML file and blow past what `localStorage` can reliably cache alongside the CPT/DRG dictionaries (see `loadIcd10PcsIndex()`).
 
 ---
 
@@ -93,7 +99,6 @@ let displayPage = 0              // Client-side results page (CMS tabs)
 let npiPage = 0                  // NPI results page
 let isLoading = false            // Prevent double-submit
 let searchGen = 0                // Generation token — discards superseded searches
-let activeProxyIndex = 0         // Last successful CORS proxy
 let selectedYear = ''            // '' = latest; else a specific data year
 ```
 
@@ -101,7 +106,7 @@ Pagination is client-side (`displayPage` + `prevPage`/`nextPage`) for the CMS ta
 
 JavaScript function naming: **camelCase** (`executeSearch`, `groupByProvider`, `exportCSV`)
 
-Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `FETCH_SIZE`, `CORS_PROXIES`).
+Constants are UPPER_CASE (`DATASET_ID`, `BASE_URL`, `FETCH_SIZE`, `CMS_PROXY_BASE`).
 
 ---
 
@@ -181,18 +186,33 @@ GET https://npiregistry.cms.hhs.gov/api/?version=2.1
 ```
 
 - No authentication required
-- Supports CORS natively — no proxy needed in most cases
+- **Sends no CORS headers** for any origin (verified Oct 2026; CLAUDE.md used to say otherwise), so a browser can't call it directly. NPI Look Up always goes through the CMS proxy's `/nppes/api/` route
 - Returns provider records with addresses, taxonomies, and credentials
 
-### CORS Proxy Fallback Chain
+### CMS proxy (`proxy/`, a Cloudflare Worker) — replaced the free public CORS relays
 
-When running as a local file (`file://`), the app cycles through three proxies:
+Which CMS hosts a browser can call directly (verified in a real browser, Oct 2026):
 
-1. `https://api.allorigins.win/raw?url={encoded_url}`
-2. `https://corsproxy.io/?{encoded_url}`
-3. `https://api.codetabs.com/v1/proxy?quest={encoded_url}`
+| Host | `https://jdef11.github.io` | `http://localhost` | `file://` (Origin `null`) |
+|---|---|---|---|
+| `data.cms.gov/data-api/…` | ✅ | ✅ | ✅ |
+| `data.cms.gov/data.json` | ✅ | ✅ | ✅ |
+| `data.cms.gov/provider-data/…` | ❌ | ✅ (CMS allowlists localhost) | ❌ |
+| `npiregistry.cms.hhs.gov/api/` | ❌ | ❌ | ❌ |
 
-The `activeProxyIndex` variable remembers the last successful proxy to avoid re-trying failed ones.
+The app used to cover the ❌ cells (and any direct-call failure) by cycling three free public relays (`allorigins.win`, `corsproxy.io`, `codetabs.com`). Those are gone. In their place is `CMS_PROXY_BASE` (near the top of the inline script), the URL of the owner's own Worker in `proxy/`. The **localhost exception** for provider-data matters when testing: on `npx serve`, Group by works even with a broken or missing proxy. Test the production path by serving the page at the github.io origin (e.g. Playwright `route` on `https://jdef11.github.io/medintel/**`).
+
+- **Routing (app side):** `corsFetch()` tries direct first, then the Worker. `needsCmsProxy(url)` (provider-data and NPPES) skips the direct attempt, since it can't succeed. `fetchCatalog()` does direct then Worker. `executeNpiSearch()` goes straight to the Worker. `cmsProxyUrl(base, url)` maps `https://data.cms.gov/<path>?q` → `<base>/<path>?q` and `https://npiregistry.cms.hhs.gov/api/?q` → `<base>/nppes/api/?q`, keeping the query string byte-for-byte. `normalizeProxyBase()` accepts https, or http only for localhost/127.0.0.1. `proxiedUrl(url)` binds these to `CMS_PROXY_BASE`. All three helpers are pure, in medintel-core.js.
+- **Unset `CMS_PROXY_BASE`:** data-api, data.json and every feature built on them keep working directly. Group by practice/hospital and NPI Look Up show `PROXY_NOT_CONFIGURED`: `resolvePracticeAffiliations`/`resolveHospitalAffiliations` check up front instead of making doomed calls. Both resolvers also now **throw when every batch fails**, instead of silently rendering every provider as a solo group as if that were data. A partial failure still degrades only that batch.
+- **Worker rules** (`proxy/policy.js`, tested in `proxy/worker.test.mjs`):
+  - GET (+ OPTIONS) only.
+  - Fixed routes `/data-api/v1/dataset/…`, `/provider-data/api/1/datastore/query/…`, `/data.json`, `/nppes/api/`, each with a hard-coded upstream host, so it's never a `?url=` relay.
+  - Paths are restricted to `[A-Za-z0-9._~-/]` with no empty or dot segments.
+  - CORS echoes only `https://jdef11.github.io`, `http://localhost:*`, and `null` (if `ALLOW_NULL_ORIGIN`). Any other browser Origin is refused with 403 before any upstream fetch.
+  - Upstream statuses pass through; the Worker's own errors are `504 upstream_timeout` and `502 upstream_unreachable` (JSON).
+  - 200s are cached 24 h (NPPES 1 h) via the Cache API plus fetch-level `cf.cacheTtlByStatus`. CMS sends `no-store`, so the Worker substitutes its own max-age. A response header `X-Proxy-Cache: HIT|MISS` reports the cache outcome.
+  - A 403 from the proxy always means "refused by policy" (CMS data is public). `corsFetch` reports it as such, and treats other 4xx as CMS's real answer.
+- **Free tier:** 100k requests/day (Error 1027 until 00:00 UTC once exceeded), 10 ms CPU/request (streaming, so tiny), 128 MB memory (bodies are never buffered; data.json is ~18 MB). The Cache API is only *guaranteed* on a custom domain. Whether it hits on `*.workers.dev` is unverified, hence the fetch-level cache too. Details and deploy steps: `proxy/README.md`.
 
 ### ICD-10-PCS → MS-DRG crosswalk (NOT a live API)
 
@@ -218,9 +238,9 @@ GET https://data.cms.gov/provider-data/api/1/datastore/query/{datasetId}/0
 - **`27ea-46a8`** — "Facility Affiliation Data." Gives real facility ties by CCN, typed by `facility_type` (`Hospital`, `Home health agency`, `Inpatient rehabilitation facility`, `Hospice`, `Skilled nursing facility`, `Dialysis facility`) via the field `facility_affiliations_certification_number` — powers **Group by hospital** (filtered to `facility_type === 'Hospital'`). A genuinely different, independent one-to-many fact from `org_pac_id` (verified live) — see Search Modes above.
 - **`xubh-q36u`** — "Hospital General Information." A small, name-only lookup keyed by `facility_id` (the same CCN) — resolves a CCN to `facility_name`/`citytown`/`state`/`hospital_overall_rating`. Only used to label Group by hospital's cards; queried for the small set of unique CCNs the search turned up, not once per provider.
 
-All three are *live* queryable REST APIs (unlike the two static ICD-10-PCS sources above) but wrap rows in `{results: [...], count, schema}` rather than returning a bare array, so `corsFetch()` takes an optional `opts.extract(parsedJson)` callback (defaulting to the original bare-array check, so every other call site is unaffected) to unwrap this shape. No CORS headers on any of the three (verified live) — goes through the same proxy-fallback chain as everything else, and unlike the rest of this app, that fallback chain applies in **every** context (not just `file://`), since this host never sends an `Access-Control-Allow-Origin` header even when the app is served over http(s).
+All three are *live* queryable REST APIs (unlike the two static ICD-10-PCS sources above) but wrap rows in `{results: [...], count, schema}` rather than returning a bare array, so `corsFetch()` takes an optional `opts.extract(parsedJson)` callback (defaulting to the original bare-array check, so every other call site is unaffected) to unwrap this shape. No CORS headers for `https://jdef11.github.io` on any of the three (verified live; CMS does send them for `localhost`). `corsFetch()` therefore sends these straight to the CMS proxy (see above), which also edge-caches each batch for 24 h. Measured with `wrangler dev`, a repeat batch drops from ~14 s to ~6 ms.
 
-**Flat per-request latency, not per-row** (verified live against `mj5m-pzi6`, assumed to hold for the other two on the same host): this endpoint takes roughly 13-15 seconds per query *regardless of how many NPIs are requested in one call* (tested at 1, 3, 20, 50, and 100 NPIs) — consistent with a near-full scan rather than an indexed point lookup. Combined with free-proxy instability under concurrent load (verified live: 15 concurrent single-NPI requests through `allorigins.win` mostly failed with 500/408/522), the only viable strategy is **fewer, larger requests**, not more concurrent small ones — see `fetchPracticeAffiliationsBatch`/`fetchFacilityAffiliationsBatch` below. The `in` operator's array value **must** be submitted as repeated array-style params (`conditions[0][value][]=A&conditions[0][value][]=B`) — a comma-joined string or a JSON-encoded array string both silently return `{"results":[],"count":0}` with no error.
+**Flat per-request latency, not per-row** (verified live against `mj5m-pzi6`, assumed to hold for the other two on the same host): this endpoint takes roughly 13-15 seconds per query *regardless of how many NPIs are requested in one call* (tested at 1, 3, 20, 50, and 100 NPIs) — consistent with a near-full scan rather than an indexed point lookup. Combined with how badly the old free relays handled concurrent load (15 concurrent single-NPI requests through `allorigins.win` mostly failed with 500/408/522), the only viable strategy is **fewer, larger requests**, not more concurrent small ones — see `fetchPracticeAffiliationsBatch`/`fetchFacilityAffiliationsBatch` below. The `in` operator's array value **must** be submitted as repeated array-style params (`conditions[0][value][]=A&conditions[0][value][]=B`) — a comma-joined string or a JSON-encoded array string both silently return `{"results":[],"count":0}` with no error.
 
 ---
 
@@ -236,7 +256,7 @@ All three are *live* queryable REST APIs (unlike the two static ICD-10-PCS sourc
 | `buildApiUrl(offset)` | Constructs CMS API query URL from `getSearchCriteria()` via `buildFilterParams` |
 | `buildFilterParams(criteria)` | Emits CMS filter params. **2+ conditions get an explicit `group][conjunction]=AND` with `memberOf`** — a bare condition list is combined as OR by the API |
 | `rowMatchesCriteria(row, criteria)` | Client-side AND enforcement (case-insensitive), so displayed rows always satisfy every criterion regardless of API conjunction behavior. Ops: `CONTAINS`, `=`, `!=`. Criterion flags: `clientOnly` (never sent to the API), `lenient` (passes when the column is absent in that dataset year) |
-| `corsFetch(url, opts?)` | CORS-aware fetch — tries direct then cycles proxies. Every call site expects a bare row array by default; `opts.extract(parsedJson)` lets a caller consume a different shape (e.g. the Provider Data Catalog's `{results: [...]}` wrapper for `fetchPracticeAffiliationsBatch`) — must return an array or throw, and is a strict superset of the default behavior, so every existing single-argument call site is unaffected. `opts.directTimeoutMs`/`opts.proxyTimeoutMs` override the default `DIRECT_TIMEOUT_MS`/`PROXY_TIMEOUT_MS` (both 30000ms) for a single slow endpoint (e.g. the Provider Data Catalog's flat ~15s query cost) without changing every other call site's timeout |
+| `corsFetch(url, opts?)` | CORS-aware fetch — tries direct, then MedIntel's CMS proxy (`CMS_PROXY_BASE`); skips direct for `needsCmsProxy` hosts; retries the proxy on 429/502/503; distinguishes "too slow" (timeouts/504) from "unreachable". Every call site expects a bare row array by default; `opts.extract(parsedJson)` lets a caller consume a different shape (e.g. the Provider Data Catalog's `{results: [...]}` wrapper for `fetchPracticeAffiliationsBatch`) — must return an array or throw, and is a strict superset of the default behavior, so every existing single-argument call site is unaffected. `opts.directTimeoutMs`/`opts.proxyTimeoutMs` override the default `DIRECT_TIMEOUT_MS`/`PROXY_TIMEOUT_MS` (both 30000ms) for a single slow endpoint (e.g. the Provider Data Catalog's flat ~15s query cost) without changing every other call site's timeout |
 | `fetchWithTimeout(url, ms)` | Fetch wrapper with configurable timeout |
 | `groupByProvider(rows)` | Aggregates raw rows by NPI, sorts by total payment |
 | `groupByProcedure(rows)` | Aggregates raw rows by HCPCS code (procedure tab), sorts by total services |
@@ -296,7 +316,7 @@ All three are *live* queryable REST APIs (unlike the two static ICD-10-PCS sourc
 ### Making Changes
 
 1. **No build required.** Edit the HTML file and refresh the browser.
-2. **Serve locally for faster API calls** (avoids CORS proxy overhead):
+2. **Serve locally** (`file://` also works for most features, but Group by and NPI Look Up then depend on `ALLOW_NULL_ORIGIN` in the Worker):
    ```bash
    npx serve .
    # Then open http://localhost:3000/cms-sales-intel (4).html
@@ -338,11 +358,11 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 295 tests, plus `scripts/build-icd10pcs-drg-index.test.mjs`, 18 offline tests of the crosswalk build). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 302 tests, plus `scripts/build-icd10pcs-drg-index.test.mjs`, 18 offline tests of the crosswalk build, and `proxy/worker.test.mjs`, 52 tests of the CMS proxy's allowlist/CORS/handler). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; network + Node 18+ required; also run every Monday by `.github/workflows/live-smoke.yml`, which opens one `live-cms-check` issue on failure, comments on it while it stays red, and closes it on the next green run. Exit code 2 means the runner couldn't reach data.cms.gov at all and gets its own issue title. GitHub-hosted runners **can** reach both CMS hosts (verified 2026-10-09): `www.cms.gov` via the icd10pcs-rebuild workflow scraping the FY2027 manual and order file (run 37941393294), and `data.cms.gov` via this workflow's first run, which passed every check (run 37947054488)) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`, DME Referring's `HCPCS_CD`), DRG code padding, and catalog shape. It resolves dataset versions with the app's real `extractDatasetVersions()` (imported from medintel-core.js), not a copy, so a catalog-format change fails step 2. Step 15 checks every `LATEST_DATASET_IDS` alias still serves the catalog's newest year; step 16 fails when the ICD-10-PCS crosswalk is past its fiscal year.
 - **`npm run build:icd10pcs`** (`node scripts/build-icd10pcs-drg-index.mjs`; network to `www.cms.gov` required, ~5-10 min) rebuilds `data/icd10pcs-drg-index.json`. Normally done by the `icd10pcs-rebuild` workflow; see "ICD-10-PCS → MS-DRG crosswalk" above.
-- Manual UI validation: open in a browser (or `npx serve .`), exercise Find Customers, Find by Code, Size a Market, and both utilities with valid/invalid input, check CSV exports, and use devtools network throttling to verify proxy fallback. For the ICD-10-PCS feature specifically: a code that resolves to multiple MS-DRGs, a code with no DRG relevance, an unrecognized code, and an ICD-10-PCS code combined with a manually-typed MS-DRG (confirm union/dedupe) should each produce a distinct, explicit message — never a silent empty result.
+- Manual UI validation: open in a browser (or `npx serve .`), exercise Find Customers, Find by Code, Size a Market, and both utilities with valid/invalid input, check CSV exports, and use devtools request blocking on `data.cms.gov` to verify the CMS-proxy fallback. Remember provider-data works directly on localhost (see "CMS proxy"), so test Group by at the github.io origin or with direct requests blocked. For the ICD-10-PCS feature specifically: a code that resolves to multiple MS-DRGs, a code with no DRG relevance, an unrecognized code, and an ICD-10-PCS code combined with a manually-typed MS-DRG (confirm union/dedupe) should each produce a distinct, explicit message — never a silent empty result.
 
 ---
 
@@ -359,7 +379,7 @@ aws s3 cp "cms-sales-intel (4).html" s3://your-bucket/
 npx serve .
 ```
 
-No environment variables, no server-side configuration, no database.
+The app itself needs no environment variables, server configuration or database. The one server-side piece is the CMS proxy Worker. It's deployed separately with `cd proxy && npm install && npx wrangler login && npx wrangler deploy` (steps in `proxy/README.md`), and its URL goes into `CMS_PROXY_BASE` in the HTML. Deploy the Worker **before** shipping an app version whose `CMS_PROXY_BASE` points at it. With `CMS_PROXY_BASE` empty, Group by practice/hospital and NPI Look Up show a "proxy not configured" error.
 
 ---
 

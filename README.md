@@ -1,6 +1,6 @@
 # MedIntel — CMS Medicare Sales Intelligence
 
-A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No server, no build step, no API key required.
+A web application that searches CMS Medicare and NPPES public APIs to help medical device manufacturers identify high-value providers and surgical targets — by procedure code, location, specialty, and procedure volume. No build step, no API key required. Three features (Group by practice, Group by hospital and NPI Look Up) also need a small proxy you deploy yourself for free on Cloudflare; see [`proxy/README.md`](proxy/README.md).
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Tests](https://img.shields.io/badge/tests-231%20passing-brightgreen)
@@ -157,11 +157,9 @@ One-click CSV download for any search mode, for use in Excel, Salesforce, or oth
 2. Open `cms-sales-intel (4).html` in any modern browser (Chrome, Edge, Firefox, Safari)
 3. Search
 
-The app routes API requests through CORS proxies automatically so it works from a local file with no server needed.
+Most searches call CMS directly and work from a local file. Group by practice/hospital and NPI Look Up go through the MedIntel CMS proxy (below); that works from a local file only while the proxy's `ALLOW_NULL_ORIGIN` setting is on (the default).
 
-### Option 2: Serve Locally (Faster)
-
-Serving locally avoids CORS proxy overhead:
+### Option 2: Serve Locally
 
 ```bash
 npm install   # installs dev dependencies (Vitest for tests)
@@ -172,7 +170,11 @@ Then open `http://localhost:3000/cms-sales-intel (4).html`.
 
 ### Option 3: Host It
 
-Deploy the HTML file and `medintel-core.js` to any static host (GitHub Pages, Netlify, Vercel, S3, Azure Static Web Apps, SharePoint document library, etc.). No build step required.
+Deploy the HTML file, `medintel-core.js` and `data/` to any static host (GitHub Pages, Netlify, Vercel, S3, Azure Static Web Apps, SharePoint document library, etc.). No build step required.
+
+### The CMS proxy (needed for Group by practice/hospital and NPI Look Up)
+
+Two CMS services the app uses can't be called directly from a browser on another site: the Provider Data Catalog (practice and hospital affiliations) and the NPPES NPI Registry. They send no CORS headers. The app reaches them through a small Cloudflare Worker in [`proxy/`](proxy/). It only relays those specific CMS endpoints, it only answers this app's own pages, and it caches responses for a day so repeat searches are fast. Deploy it once (free tier, about 10 minutes), then paste its URL into `CMS_PROXY_BASE` in the HTML. Step-by-step instructions and the free-tier limits are in [`proxy/README.md`](proxy/README.md). If you host the app somewhere other than `https://jdef11.github.io`, add your origin to `ALLOWED_ORIGINS` in `proxy/policy.js`.
 
 ---
 
@@ -256,9 +258,9 @@ All are free, public, and maintained by the Centers for Medicare & Medicaid Serv
 
 - **Architecture:** `cms-sales-intel (4).html` (UI + app logic) + `medintel-core.js` (pure logic functions) + `data/icd10pcs-drg-index.json` (static ICD-10-PCS → MS-DRG crosswalk — the one dataset with no live CMS API, so it ships as a bundled file instead)
 - **No framework, no build step** — vanilla HTML, CSS, and JavaScript
-- **Test suite:** 244 unit tests via Vitest (`npm test`)
-- **CORS handling:** tries direct fetch first, then cycles through three CORS proxy fallbacks (`allorigins.win`, `corsproxy.io`, `codetabs.com`)
-- **NPPES API** supports CORS natively — NPI Lookup connects directly without a proxy
+- **Test suite:** 372 tests via Vitest (`npm test`), including the proxy's allowlist and CORS rules
+- **CORS handling:** calls CMS directly where CMS allows it (the claims datasets and the catalog), and otherwise uses MedIntel's own Cloudflare Worker (`proxy/`). No third-party relay services are involved.
+- **NPPES API** sends no CORS headers, so NPI Look Up always goes through the proxy
 - **Responsive** — works on desktop and mobile
 
 ### Running Tests

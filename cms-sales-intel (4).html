@@ -1225,7 +1225,7 @@
       <div class="section-label">About This Data</div>
       <div class="info-box">
         <strong>Data Source:</strong> CMS Medicare Physician & Other Practitioners dataset via
-        <a href="https://data.cms.gov" target="_blank">data.cms.gov</a> public API. Hosted (e.g. GitHub Pages) it calls CMS directly; opened as a local <code>file://</code> it falls back to a public CORS proxy, which means your search terms transit a third-party service — prefer the hosted version for sensitive queries.<br><br>
+        <a href="https://data.cms.gov" target="_blank">data.cms.gov</a> public API. Most searches call CMS directly from your browser. Group by practice / hospital and NPI Look Up use CMS services that don't allow direct browser access, so they go through MedIntel's own proxy (a Cloudflare Worker that only relays these specific CMS endpoints); no third-party relay service is involved.<br><br>
         <strong>What it contains:</strong> Services, procedures, utilization counts, and Medicare payment amounts per provider, organized by NPI and HCPCS/CPT code.<br><br>
         <strong>Use case:</strong> Identify high-volume surgeons and providers who perform specific procedures — ideal for medical device sales targeting.<br><br>
         <strong>Tip:</strong> For best results, search by a specific HCPCS code (e.g. 27447 for total knee replacement) plus a state to find top-volume surgeons in a territory.<br><br>
@@ -1393,13 +1393,21 @@ const VERSIONS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // re-check the catalog w
 // Code Lookup / trends / Size a Market for a full week, even after a fix ships.
 const PARTIAL_VERSIONS_CACHE_TTL_MS = 60 * 60 * 1000;
 
-// CORS proxies — we try multiple in order since free proxies can go down
-const CORS_PROXIES = [
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-];
-let activeProxyIndex = 0;
+// MedIntel's own CMS proxy: the Cloudflare Worker in proxy/ (deploy steps in
+// proxy/README.md). Paste its URL here, e.g.
+//   const CMS_PROXY_BASE = 'https://medintel-cms-proxy.<your-subdomain>.workers.dev';
+// data-api and data.json are called directly and only fall back to it; the
+// Provider Data Catalog (Group by practice / hospital) and NPPES (NPI Look Up)
+// send no CORS headers, so those features need it. Left empty, they show
+// PROXY_NOT_CONFIGURED instead of failing obscurely; everything else still works.
+const CMS_PROXY_BASE = '';
+const PROXY_NOT_CONFIGURED =
+  "This feature reads a CMS service that doesn't allow direct browser access, so it needs MedIntel's " +
+  "CMS proxy, which isn't set up in this copy of the app (CMS_PROXY_BASE is empty). " +
+  'Deploy the Worker in proxy/ and paste its URL into CMS_PROXY_BASE (see proxy/README.md).';
+function proxiedUrl(url) {
+  return cmsProxyUrl(CMS_PROXY_BASE, url);
+}
 
 let currentTab = 'provider';
 let currentResults = [];      // raw rows for NPI tab
@@ -1508,24 +1516,17 @@ function init() {
 // ─── DATA YEAR DISCOVERY ───
 async function fetchCatalog() {
   const validate = obj => obj && Array.isArray(obj.dataset);
-  // Direct first (works when hosted; the catalog is a large static file)
-  try {
-    const resp = await fetchWithTimeout(CATALOG_URL, CATALOG_TIMEOUT_MS);
-    if (resp.ok) {
+  // Direct first: data.json sends CORS headers (verified for github.io,
+  // localhost and file://), then MedIntel's CMS proxy if one is configured.
+  for (const url of [CATALOG_URL, proxiedUrl(CATALOG_URL)].filter(Boolean)) {
+    try {
+      const resp = await fetchWithTimeout(url, CATALOG_TIMEOUT_MS);
+      if (!resp.ok) continue;
       const data = await resp.json();
       if (validate(data)) return data;
+    } catch(e) {
+      console.log(`Catalog fetch failed (${url === CATALOG_URL ? 'direct' : 'CMS proxy'}):`, e.message);
     }
-  } catch(e) {
-    console.log('Catalog direct fetch failed, trying proxies...', e.message);
-  }
-  const proxyOrder = CORS_PROXIES.map((_, i) => (activeProxyIndex + i) % CORS_PROXIES.length);
-  for (const idx of proxyOrder) {
-    try {
-      const resp = await fetchWithTimeout(CORS_PROXIES[idx](CATALOG_URL), CATALOG_TIMEOUT_MS);
-      if (!resp.ok) continue;
-      const data = JSON.parse(await resp.text());
-      if (validate(data)) { activeProxyIndex = idx; return data; }
-    } catch(e) { continue; }
   }
   return null;
 }
@@ -1824,8 +1825,9 @@ async function fetchProviderBenes(npis) {
 // (CMS Provider Data Catalog, dataset mj5m-pzi6), sourced from PECOS Medicare
 // enrollment records. This is the ONLY source in this app for a real
 // provider-to-practice crosswalk (org_pac_id) rather than an inferred address
-// match. No CORS headers on this host (verified live) — goes through
-// corsFetch()'s proxy-fallback chain like every other external call here.
+// match. No CORS headers on this host for https://jdef11.github.io (verified
+// live; CMS does send them for localhost, which can hide this when testing
+// locally), so corsFetch() sends it straight to MedIntel's CMS proxy.
 //
 // This endpoint has a genuinely slow, roughly FLAT ~13-15s backend query cost
 // per request — verified live: a 1-NPI query and a 100-NPI query both took
@@ -1833,11 +1835,12 @@ async function fetchProviderBenes(npis) {
 // an indexed point lookup, meaning the cost doesn't scale with how much is
 // asked for. That makes fewer, bigger requests the fix, not more concurrent
 // small ones: firing one request per NPI (the original design) turned a
-// 400-provider search into 400 separate ~15s round trips, which also
-// overwhelmed the free CORS proxies this endpoint requires (verified live:
-// 15 concurrent single-NPI requests through one proxy mostly failed with
-// 500/408/522 errors). Batching via the datastore API's "in" operator turns
-// that into ~8 requests instead.
+// 400-provider search into 400 separate ~15s round trips (and, back when
+// the app used free public CORS relays, mostly failed: 15 concurrent
+// single-NPI requests through one relay returned 500/408/522). Batching via
+// the datastore API's "in" operator turns that into ~8 requests instead. The
+// CMS proxy also edge-caches each batch for a day, so repeating a search is
+// near-instant (verified with wrangler dev: ~14s uncached, ~6ms cached).
 // Same host, several distinct datasets (dataset id is the last-but-one URL
 // segment) — Group by practice and Group by hospital below both build on
 // this, plus a separate CCN→hospital-name lookup Group by hospital alone needs.
@@ -1851,7 +1854,7 @@ const practiceAffiliationCache = {};
 
 const PRACTICE_BATCH_SIZE = 50; // verified live: 1, 3, 20, and 100 NPIs per request all cost about the same ~13-15s, so batch generously
 const PRACTICE_BATCH_CONCURRENCY = 3; // each batch is itself a slow, heavy request — unlike a typical bulk fetch, this app does NOT want dozens in flight at once
-const PRACTICE_FETCH_TIMEOUT_MS = 60000; // this endpoint alone can take ~15s+ on a good day; give it real headroom, especially with a CORS proxy's own latency on top
+const PRACTICE_FETCH_TIMEOUT_MS = 60000; // this endpoint alone can take ~15s+ on a good day; the CMS proxy gives up on it at 45s and answers 504, so this stays above that
 
 // Queries a whole batch of NPIs in ONE request. The "in" operator's value
 // must be submitted as repeated array-style params (value[]=A&value[]=B) —
@@ -1914,11 +1917,14 @@ async function runWithConcurrencyCap(items, worker, cap, onProgress) {
 // result set, not just the current display page — a practice's members can
 // land on different pages of the per-provider sorted list). Only fetches NPIs
 // not already in practiceAffiliationCache, batched PRACTICE_BATCH_SIZE at a
-// time. A failed batch degrades every NPI in it to solo (never blocks the
-// rest, never throws) rather than failing the whole resolution.
+// time. A failed batch degrades every NPI in it to solo rather than failing
+// the whole resolution, but if EVERY batch fails (proxy down, misconfigured,
+// over quota) it throws: an all-solo "result" would look like real data.
 async function resolvePracticeAffiliations(providers, progress) {
   const uncached = providers.filter(p => practiceAffiliationCache[p.npi] === undefined);
+  if (uncached.length && !proxiedUrl(providerDataApiBase(PRACTICE_AFFILIATION_DATASET_ID))) throw new Error(PROXY_NOT_CONFIGURED);
   const batches = chunkArray(uncached, PRACTICE_BATCH_SIZE);
+  const failures = [];
   let done = 0;
   await runWithConcurrencyCap(batches, async batch => {
     const npis = batch.map(p => p.npi);
@@ -1926,11 +1932,16 @@ async function resolvePracticeAffiliations(providers, progress) {
       const byNpi = await fetchPracticeAffiliationsBatch(npis);
       npis.forEach(npi => { practiceAffiliationCache[npi] = byNpi[npi] || []; });
     } catch (e) {
+      failures.push(e.message);
       npis.forEach(npi => { practiceAffiliationCache[npi] = null; }); // lookup failed — treated as solo downstream
     }
     done += batch.length;
     if (progress) progress(`Resolving practice affiliations — ${done}/${uncached.length}...`);
   }, PRACTICE_BATCH_CONCURRENCY);
+  if (batches.length && failures.length === batches.length) {
+    batches.flat().forEach(p => { delete practiceAffiliationCache[p.npi]; }); // let a retry try again
+    throw new Error(failures[0]);
+  }
 
   const affiliationByNpi = {};
   providers.forEach(provider => {
@@ -2035,11 +2046,13 @@ async function fetchHospitalInfoBatch(ccns) {
 // result set, mirroring resolvePracticeAffiliations), then resolves every
 // unique CCN that turned up to a real hospital name in a second, much
 // smaller pass. Same fail-soft contract as practice resolution: a failed
-// batch degrades every NPI in it to "no hospital on file" rather than
-// blocking the rest or throwing.
+// batch degrades every NPI in it to "no hospital on file", but if EVERY batch
+// fails it throws rather than showing an empty rollup as if it were data.
 async function resolveHospitalAffiliations(providers, progress) {
   const uncached = providers.filter(p => facilityAffiliationCache[p.npi] === undefined);
+  if (uncached.length && !proxiedUrl(providerDataApiBase(FACILITY_AFFILIATION_DATASET_ID))) throw new Error(PROXY_NOT_CONFIGURED);
   const npiBatches = chunkArray(uncached, PRACTICE_BATCH_SIZE);
+  const failures = [];
   let done = 0;
   await runWithConcurrencyCap(npiBatches, async batch => {
     const npis = batch.map(p => p.npi);
@@ -2047,11 +2060,16 @@ async function resolveHospitalAffiliations(providers, progress) {
       const byNpi = await fetchFacilityAffiliationsBatch(npis);
       npis.forEach(npi => { facilityAffiliationCache[npi] = byNpi[npi] || []; });
     } catch (e) {
+      failures.push(e.message);
       npis.forEach(npi => { facilityAffiliationCache[npi] = null; }); // lookup failed — treated as no-hospital-on-file downstream
     }
     done += batch.length;
     if (progress) progress(`Resolving hospital affiliations — ${done}/${uncached.length}...`);
   }, PRACTICE_BATCH_CONCURRENCY);
+  if (npiBatches.length && failures.length === npiBatches.length) {
+    npiBatches.flat().forEach(p => { delete facilityAffiliationCache[p.npi]; }); // let a retry try again
+    throw new Error(failures[0]);
+  }
 
   const hospitalsByNpi = {};
   const allCcns = new Set();
@@ -2504,7 +2522,8 @@ function buildApiUrl(offset = 0) {
 
 // Global concurrency gate. Big fan-outs (a TAM search can queue hundreds of
 // requests) are capped so we don't open hundreds of sockets at once — which
-// free CORS proxies rate-limit and browsers queue, causing false failures.
+// browsers queue (causing false timeouts) and which would burn through the
+// CMS proxy's free-tier daily request allowance on a single search.
 const MAX_CONCURRENT_FETCHES = 5;
 
 // Request timeouts. These are generous on purpose: text/CONTAINS searches over
@@ -2575,83 +2594,92 @@ async function corsFetch(url, opts = {}) {
   const proxyTimeoutMs = opts.proxyTimeoutMs || PROXY_TIMEOUT_MS;
   const attempts = []; // diagnostic trail — included in the error so failures are never silent
 
-  // First, try the direct request (works if hosted on a server with CORS headers)
-  try {
-    const directResp = await fetchWithTimeout(url, directTimeoutMs);
-    const text = await directResp.text();
-    if (directResp.ok) {
-      const data = JSON.parse(text);
-      try {
-        const rows = extract(data);
-        console.log('Direct fetch succeeded');
-        return rows;
-      } catch (extractErr) {
-        // The API answered but not with the shape we asked for. A proxy would
-        // get the same answer, so surface it immediately instead of masking
-        // it as "no results".
-        throw new Error(`CMS API responded HTTP ${directResp.status} but returned an error instead of data: ${describeApiBody(text)}`);
-      }
-    }
-    // Got a real HTTP response (CORS works) with an error status — report it directly.
-    throw new Error(`CMS API request failed with HTTP ${directResp.status} ${directResp.statusText}: ${describeApiBody(text)}`);
-  } catch(e) {
-    if (e.message.startsWith('CMS API')) throw e;
-    attempts.push(`direct: ${e.message}`);
-    console.log('Direct fetch failed (expected for local files), trying proxies...', e.message);
-  }
-
-  // Try CORS proxies in order, starting from the last one that worked
-  const proxyOrder = [];
-  for (let i = 0; i < CORS_PROXIES.length; i++) {
-    proxyOrder.push((activeProxyIndex + i) % CORS_PROXIES.length);
-  }
-
-  for (const idx of proxyOrder) {
-    const proxyUrl = CORS_PROXIES[idx](url);
-    console.log(`Trying proxy ${idx}: ${proxyUrl.slice(0, 80)}...`);
-    // Retry this proxy a couple of times on transient rate-limit / server
-    // errors (429/5xx) with exponential backoff before moving to the next one.
-    let moveOn = false;
-    for (let attempt = 0; attempt <= 2 && !moveOn; attempt++) {
-      try {
-        const resp = await fetchWithTimeout(proxyUrl, proxyTimeoutMs);
-        const text = await resp.text();
-        if (!resp.ok) {
-          if ((resp.status === 429 || resp.status >= 500) && attempt < 2) {
-            await sleep(backoffDelay(attempt, 600, 6000));
-            continue; // retry same proxy
-          }
-          attempts.push(`proxy ${idx}: HTTP ${resp.status}`);
-          console.log(`Proxy ${idx} returned ${resp.status}`);
-          moveOn = true;
-          break;
-        }
-        // Validate it's actual JSON (some proxies return HTML error pages)
+  // Direct first: data-api and data.json send CORS headers (verified for
+  // github.io, localhost and file://). Hosts that never do (Provider Data
+  // Catalog, NPPES) skip straight to MedIntel's CMS proxy.
+  if (!needsCmsProxy(url)) {
+    try {
+      const directResp = await fetchWithTimeout(url, directTimeoutMs);
+      const text = await directResp.text();
+      if (directResp.ok) {
         const data = JSON.parse(text);
         try {
           const rows = extract(data);
-          activeProxyIndex = idx; // remember which proxy worked
-          console.log(`Proxy ${idx} succeeded, got ${rows.length} results`);
+          console.log('Direct fetch succeeded');
           return rows;
         } catch (extractErr) {
-          attempts.push(`proxy ${idx}: HTTP 200 but not a data array — ${describeApiBody(text)}`);
-          moveOn = true;
+          // The API answered but not with the shape we asked for. The proxy
+          // would get the same answer, so surface it immediately instead of
+          // masking it as "no results".
+          throw new Error(`CMS API responded HTTP ${directResp.status} but returned an error instead of data: ${describeApiBody(text)}`);
         }
-      } catch(e) {
-        attempts.push(`proxy ${idx}: ${e.message}`);
-        console.log(`Proxy ${idx} failed:`, e.message);
-        moveOn = true;
       }
+      // Got a real HTTP response (CORS works) with an error status — report it directly.
+      throw new Error(`CMS API request failed with HTTP ${directResp.status} ${directResp.statusText}: ${describeApiBody(text)}`);
+    } catch(e) {
+      if (e.message.startsWith('CMS API')) throw e;
+      attempts.push(`direct: ${e.message}`);
+      console.log('Direct fetch failed, trying the CMS proxy...', e.message);
+    }
+  }
+
+  const proxyUrl = proxiedUrl(url);
+  if (!proxyUrl) {
+    if (needsCmsProxy(url)) throw new Error(PROXY_NOT_CONFIGURED);
+    throw new Error('Could not reach the CMS API directly (' + attempts.join(' | ') + '), and no CMS proxy ' +
+      'is configured to fall back to (CMS_PROXY_BASE is empty). Check your connection and try again.');
+  }
+
+  // MedIntel's CMS proxy (proxy/worker.js). It passes CMS's own status codes
+  // through, and answers 504 {error:"upstream_timeout"} / 502
+  // {error:"upstream_unreachable"} itself when CMS doesn't answer. Retry a
+  // couple of times on transient 429/502/503 with backoff; a 504 means the
+  // query is too slow for CMS, which retrying won't fix.
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    try {
+      const resp = await fetchWithTimeout(proxyUrl, proxyTimeoutMs);
+      const text = await resp.text();
+      if (!resp.ok) {
+        if ([429, 502, 503].includes(resp.status) && attempt < 2) {
+          await sleep(backoffDelay(attempt, 600, 6000));
+          continue;
+        }
+        if (resp.status === 403) {
+          // Only the proxy itself answers 403 (CMS's datasets are public):
+          // this page's origin or the request path isn't on its allowlist.
+          throw new Error(`MedIntel's CMS proxy refused this request: ${describeApiBody(text)}. ` +
+            'It only serves the CMS endpoints this app uses, to https://jdef11.github.io, http://localhost and file:// pages.');
+        }
+        attempts.push(`CMS proxy: HTTP ${resp.status} — ${describeApiBody(text)}`);
+        if (resp.status >= 400 && resp.status < 500 && resp.status !== 408 && resp.status !== 429) {
+          // A real answer from CMS (e.g. a bad filter), relayed unchanged.
+          throw new Error(`CMS API request failed with HTTP ${resp.status}: ${describeApiBody(text)}`);
+        }
+        break;
+      }
+      const data = JSON.parse(text);
+      try {
+        const rows = extract(data);
+        console.log(`CMS proxy succeeded (${resp.headers.get('X-Proxy-Cache') || 'cache status unknown'}), got ${rows.length} results`);
+        return rows;
+      } catch (extractErr) {
+        throw new Error(`CMS API responded HTTP ${resp.status} but returned an error instead of data: ${describeApiBody(text)}`);
+      }
+    } catch(e) {
+      if (e.message.startsWith('CMS API') || e.message.startsWith("MedIntel's CMS proxy")) throw e;
+      attempts.push(`CMS proxy: ${e.message}`);
+      console.log('CMS proxy attempt failed:', e.message);
+      break;
     }
   }
 
   // Distinguish "the query was too slow" from "we can't reach CMS at all" —
-  // blaming the proxies when every attempt actually TIMED OUT sends users
-  // chasing the wrong problem. A timeout on every hop (or an HTTP 408/504 from
-  // a proxy) means the request reached CMS and CMS ran out of time answering it,
-  // which is a query-cost problem the user can fix by narrowing the search.
+  // blaming the network when every attempt actually TIMED OUT sends users
+  // chasing the wrong problem. A timeout on every hop (or a 504 from the proxy)
+  // means the request reached CMS and CMS ran out of time answering it, which
+  // is a query-cost problem the user can fix by narrowing the search.
   const timedOutEverywhere = attempts.length > 0 &&
-    attempts.every(a => /timed out|408|504|522|524/i.test(a));
+    attempts.every(a => /timed out|upstream_timeout|HTTP 408|HTTP 504/i.test(a));
 
   if (timedOutEverywhere) {
     throw new Error(
@@ -2665,9 +2693,9 @@ async function corsFetch(url, opts = {}) {
 
   throw new Error(
     'Could not reach the CMS API. Details of each attempt — ' + attempts.join(' | ') + ' — ' +
-    'If every attempt shows a network/CORS failure, the free proxy services may be down; try again shortly ' +
-    'or serve the file locally (e.g. "npx serve"). If an attempt shows an HTTP status or API message, ' +
-    'that is the CMS API\'s actual response.'
+    "If the CMS proxy attempt shows a network failure, MedIntel's proxy may be down or over its free-tier " +
+    'daily request limit (it resets at midnight UTC); try again later. If an attempt shows an HTTP status ' +
+    "or API message, that is the CMS API's actual response."
   );
 }
 
@@ -3014,38 +3042,18 @@ async function executeNpiSearch(offset = 0) {
 
   console.log('NPPES API URL:', url);
 
-  // NPPES API supports CORS natively — try direct first
+  // NPPES sends no CORS headers (verified Oct 2026: a browser on github.io is
+  // blocked), so this always goes through MedIntel's CMS proxy.
+  const proxyUrl = proxiedUrl(url);
+  if (!proxyUrl) throw new Error(PROXY_NOT_CONFIGURED);
   let data;
   try {
-    const resp = await fetchWithTimeout(url, DIRECT_TIMEOUT_MS);
-    if (resp.ok) {
-      data = await resp.json();
-      console.log('NPPES direct fetch succeeded');
-    }
+    const resp = await fetchWithTimeout(proxyUrl, PROXY_TIMEOUT_MS);
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${describeApiBody(text)}`);
+    data = JSON.parse(text);
   } catch(e) {
-    console.log('NPPES direct failed, trying proxy...', e.message);
-  }
-
-  // Fallback to CORS proxy if direct failed
-  if (!data) {
-    const proxyOrder = CORS_PROXIES.map((_, i) => (activeProxyIndex + i) % CORS_PROXIES.length);
-    for (const idx of proxyOrder) {
-      try {
-        const proxyUrl = CORS_PROXIES[idx](url);
-        const resp = await fetchWithTimeout(proxyUrl, PROXY_TIMEOUT_MS);
-        if (!resp.ok) continue;
-        const text = await resp.text();
-        data = JSON.parse(text);
-        if (data && (data.results || data.result_count !== undefined)) {
-          activeProxyIndex = idx;
-          break;
-        }
-      } catch(e) { continue; }
-    }
-  }
-
-  if (!data) {
-    throw new Error('Could not connect to the NPPES NPI Registry. Please try again.');
+    throw new Error(`Could not get an answer from the NPPES NPI Registry through MedIntel's CMS proxy (${e.message}). Please try again.`);
   }
 
   // NPPES reports problems as an Errors array in a 200 response — surface instead of showing 0 results
