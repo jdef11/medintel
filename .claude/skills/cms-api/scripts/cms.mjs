@@ -5,6 +5,7 @@
 // script enforces and why.
 
 import { mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,10 +14,22 @@ if (typeof fetch !== 'function') {
   process.exit(1);
 }
 
+// Node's built-in fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 (Node
+// >= 22.21). Behind a proxy, re-run once with it set so every host goes through.
+const PROXY = process.env.HTTPS_PROXY || process.env.https_proxy;
+const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split('.').map(Number);
+if (PROXY && !process.env.NODE_USE_ENV_PROXY && (NODE_MAJOR > 22 || (NODE_MAJOR === 22 && NODE_MINOR >= 21))) {
+  const r = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+    stdio: 'inherit', env: { ...process.env, NODE_USE_ENV_PROXY: '1', NODE_NO_WARNINGS: '1' },
+  });
+  process.exit(r.status ?? 1);
+}
+
 const CATALOG_URL = 'https://data.cms.gov/data.json';
 const DATA_API = 'https://data.cms.gov/data-api/v1/dataset';
 const PD_API = 'https://data.cms.gov/provider-data/api/1';
 const NPPES_API = 'https://npiregistry.cms.hhs.gov/api/';
+const OP_API = 'https://openpaymentsdata.cms.gov/api/1';
 const CACHE_DIR = join(tmpdir(), 'cms-api-skill');
 const CATALOG_INDEX = join(CACHE_DIR, 'catalog-index.json');
 const CATALOG_TTL_MS = 24 * 3600 * 1000;
@@ -37,7 +50,13 @@ const FAMILIES = {
   inpGeo:       'Medicare Inpatient Hospitals - by Geography and Service',
   dmeGeo:       'Medicare Durable Medical Equipment, Devices & Supplies - by Geography and Service',
   dmeReferring: 'Medicare Durable Medical Equipment, Devices & Supplies - by Referring Provider and Service',
+  outProvider:  'Medicare Outpatient Hospitals - by Provider and Service',
+  outGeo:       'Medicare Outpatient Hospitals - by Geography and Service',
+  enrollment:   'Medicare Monthly Enrollment',
 };
+
+// Families published as ONE rolling dataset; the data year is a column.
+const ROLLING = { enrollment: 'YEAR' };
 
 // "latest" alias UUIDs (taken from data.json 2026-10-09). Used only when the
 // catalog can't be loaded; CMS moves each alias to the newest year.
@@ -91,7 +110,8 @@ async function getJson(url, { retries = 2 } = {}) {
       throw new Error(`HTTP ${res.status}, non-JSON response (${text.slice(0, 160).replace(/\s+/g, ' ')}) — ${url}`);
     }
     if (!res.ok) {
-      const m = body && (body.message || body.error || JSON.stringify(body).slice(0, 200));
+      const e = body && (body.message || body.error);
+      const m = e ? (typeof e === 'object' ? JSON.stringify(e) : e) : JSON.stringify(body).slice(0, 200);
       throw new Error(`HTTP ${res.status}: ${m} — ${url}`);
     }
     return body;
@@ -186,13 +206,15 @@ async function resolveDataset(spec, year) {
     if (year) log('note: --year is ignored when a UUID is given (a UUID already names one year)');
     return { id: spec, year: null, title: null };
   }
-  const title = FAMILIES[spec] || FAMILIES[Object.keys(FAMILIES).find(k => k.toLowerCase() === spec.toLowerCase())] || spec;
+  const aliasKey = Object.keys(FAMILIES).find(k => k.toLowerCase() === spec.toLowerCase());
+  if (aliasKey && ROLLING[aliasKey] && year) die(`${aliasKey} is one rolling dataset; filter the year with --where ${ROLLING[aliasKey]}=${year} instead of --year`);
+  const title = aliasKey ? FAMILIES[aliasKey] : spec;
   let index;
   try {
     index = await loadCatalogIndex();
   } catch (e) {
     const alias = Object.keys(FAMILIES).find(k => FAMILIES[k] === title);
-    if (alias && !year) {
+    if (alias && !year && LATEST_IDS[alias]) {
       log(`warning: catalog unavailable (${e.message}); using the "latest" alias for ${alias}. Year unknown until fetched; no history available.`);
       return { id: LATEST_IDS[alias], year: null, title, note: 'latest-alias fallback' };
     }
@@ -303,7 +325,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (!a.startsWith('--')) { out._.push(a); continue; }
     const [k, inline] = a.slice(2).split(/=(.*)/s);
-    const takesValue = !['all', 'count', 'refresh', 'url', 'help', 'raw'].includes(k);
+    const takesValue = !['all', 'count', 'refresh', 'url', 'help', 'raw', 'full', 'pop65', 'by-county'].includes(k);
     const v = takesValue ? (inline !== undefined ? inline : argv[++i]) : true;
     if (takesValue && v === undefined) die(`--${k} needs a value`);
     if (k === 'where' || k === 'in') out[k].push(v); else out[k] = v;
@@ -398,29 +420,27 @@ async function cmdQuery(a) {
   log(`returned ${rows.length} row(s)` + (remaining > 0 ? ` — ${remaining} more match (raise --limit, or --all [--max N])` : ''));
 }
 
-// Query by distribution UUID (/datastore/query/{distId}), resolved from the
-// metastore, rather than /datastore/query/{datasetId}/0: the CMS edge 403s the
-// latter for mj5m-pzi6 (verified 2026-10-26) while serving the same data via
-// the distribution endpoint. The distribution id changes when CMS refreshes a
-// dataset, so it's looked up each run.
-async function pdQueryBase(id) {
+// ─── DKAN HOSTS (Provider Data Catalog, Open Payments) ───
+// Both run DKAN: {results, count, schema}; unknown columns → HTTP 400 "Column
+// not found" (unlike data-api); `in` values MUST be repeated value[] params (a
+// comma-joined string silently returns zero rows). Query by distribution UUID
+// (/datastore/query/{distId}), resolved from the metastore, rather than
+// /datastore/query/{datasetId}/0: the CMS edge 403s the latter for mj5m-pzi6
+// (verified 2026-10-26). Distribution ids change when CMS refreshes a dataset,
+// so they're looked up each run.
+async function dkanQueryBase(host, id) {
   try {
-    const j = await getJson(`${PD_API}/metastore/schemas/dataset/items/${id}?show-reference-ids`);
+    const j = await getJson(`${host}/metastore/schemas/dataset/items/${id}?show-reference-ids`);
     const dist = Array.isArray(j.distribution) && j.distribution[0] && j.distribution[0].identifier;
-    if (dist) return { base: `${PD_API}/datastore/query/${dist}`, title: j.title };
+    if (dist) return { base: `${host}/datastore/query/${dist}`, title: j.title };
     log(`warning: no distribution listed for ${id}; using /datastore/query/${id}/0`);
   } catch (e) {
     log(`warning: metastore lookup for ${id} failed (${e.message}); using /datastore/query/${id}/0`);
   }
-  return { base: `${PD_API}/datastore/query/${id}/0`, title: null };
+  return { base: `${host}/datastore/query/${id}/0`, title: null };
 }
 
-// Provider Data Catalog: {results, count, schema}. Unknown columns → HTTP 400
-// "Column not found" (unlike data-api). `in` values MUST be repeated value[]
-// params — a comma-joined string silently returns zero rows.
-async function cmdPd(a) {
-  const id = PD_ALIASES[a._[0]] || a._[0];
-  if (!/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(id || '')) die(`pd needs a provider-data dataset id like xubh-q36u (or alias: ${Object.keys(PD_ALIASES).join(', ')})`);
+function dkanParams(a) {
   const enc = encodeURIComponent;
   const parts = [];
   let i = 0;
@@ -442,12 +462,16 @@ async function cmdPd(a) {
     const desc = String(a.sort).startsWith('-');
     parts.push(`sorts[0][property]=${enc(String(a.sort).replace(/^-/, ''))}&sorts[0][order]=${desc ? 'desc' : 'asc'}`);
   }
-  const want = a.all ? intArg(a.max, 'max', 20000) : intArg(a.limit, 'limit', 100);
+  return parts;
+}
+
+async function runDkan(base, a, label) {
+  const parts = dkanParams(a);
+  const want = a.count ? 1 : a.all ? intArg(a.max, 'max', 20000) : intArg(a.limit, 'limit', 100);
   let offset = intArg(a.offset, 'offset', 0);
   const rows = [];
   let count = null;
-  const { base, title } = await pdQueryBase(id);
-  log(`provider-data ${id}${title ? ` (${title})` : ''} — large datasets take ~15s per request regardless of size; batch NPIs with --in`);
+  log(label);
   while (rows.length < want) {
     const limit = Math.min(PD_PAGE_SIZE, want - rows.length);
     const url = `${base}?${[...parts, `limit=${limit}`, `offset=${offset}`].join('&')}`;
@@ -459,8 +483,200 @@ async function cmdPd(a) {
     offset += j.results.length;
     if (j.results.length < limit) break;
   }
+  if (a.count) { process.stdout.write(JSON.stringify({ count }) + '\n'); return; }
   emit(rows, a.format || 'json');
   log(`returned ${rows.length} of ${count} matching row(s)`);
+}
+
+async function cmdPd(a) {
+  const id = PD_ALIASES[a._[0]] || a._[0];
+  if (!/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(id || '')) die(`pd needs a provider-data dataset id like xubh-q36u (or alias: ${Object.keys(PD_ALIASES).join(', ')})`);
+  const { base, title } = await dkanQueryBase(PD_API, id);
+  await runDkan(base, a, `provider-data ${id}${title ? ` (${title})` : ''} — large datasets take ~15s per request regardless of size; batch NPIs with --in`);
+}
+
+// Open Payments (Sunshine Act): industry payments to physicians, NPPs and
+// teaching hospitals. One dataset per program year per table; titles are
+// stable ("2024 General Payment Data"), ids are not.
+const OP_TYPES = {
+  general:                   y => `${y} General Payment Data`,
+  research:                  y => `${y} Research Payment Data`,
+  ownership:                 y => `${y} Ownership Payment Data`,
+  'recipient-entity':        y => `${y} payments grouped by covered recipient and reporting entities`,
+  'recipient-nature':        y => `${y} payments grouped by covered recipient and nature of payments`,
+  'entity-nature':           y => `${y} payments grouped by reporting entities and nature of payments`,
+  'entity-recipient-nature': y => `${y} payments grouped by reporting entities, covered recipient, and nature of payments`,
+  'state-nature':            y => `${y} state payment totals grouped by Nature of Payment for all years`,
+  profile:                   () => 'Covered Recipient Profile Supplement',
+  national:                  () => 'National level payment total and averages for all years',
+  'national-specialty':      () => 'National level payment total and averages by provider specialty for all years',
+  'teaching-hospitals':      () => 'Payments grouped by Teaching Hospital',
+};
+
+let opListMemo = null;
+async function opList() {
+  if (!opListMemo) opListMemo = await getJson(`${OP_API}/metastore/schemas/dataset/items?show-reference-ids`);
+  return opListMemo;
+}
+
+async function cmdOp(a) {
+  const type = a._[0];
+  const list = await opList();
+  const dist = d => (Array.isArray(d.distribution) && d.distribution[0] && d.distribution[0].identifier) || null;
+  if (!type || type === 'list') {
+    emit(list.map(d => ({ id: d.identifier, title: d.title })).sort((x, y) => x.title.localeCompare(y.title)), a.format || 'json');
+    return;
+  }
+  let ds;
+  if (UUID_RE.test(type)) {
+    ds = list.find(d => d.identifier === type);
+    if (!ds) die(`no Open Payments dataset with id ${type}. Run: node cms.mjs op list`);
+  } else {
+    const mk = OP_TYPES[type];
+    if (!mk) die(`unknown Open Payments table "${type}". Use one of: ${Object.keys(OP_TYPES).join(', ')}, list, or a dataset id`);
+    const byTitle = t => list.find(d => d.title.toLowerCase() === t.toLowerCase());
+    if (a.year) {
+      ds = byTitle(mk(a.year));
+      if (!ds) die(`no "${mk(a.year)}" dataset. Program years available: ${[...new Set(list.map(d => (d.title.match(/^(\d{4}) /) || [])[1]).filter(Boolean))].sort().join(', ')}`);
+    } else {
+      for (let y = new Date().getFullYear(); y >= 2013 && !ds; y--) ds = byTitle(mk(y));
+      if (!ds) die(`no dataset found for "${type}"`);
+    }
+  }
+  const base = dist(ds) ? `${OP_API}/datastore/query/${dist(ds)}` : (await dkanQueryBase(OP_API, ds.identifier)).base;
+  await runDkan(base, a, `Open Payments — ${ds.title} (${ds.identifier})`);
+}
+
+// openFDA device endpoints. No match → HTTP 404 {"error":{"code":"NOT_FOUND"}},
+// which means zero results, not a failure. limit ≤ 1000, skip ≤ 25000.
+const FDA_API = 'https://api.fda.gov';
+const FDA_DEVICE = ['510k', 'pma', 'classification', 'recall', 'enforcement', 'event', 'udi', 'registrationlisting', 'covid19serology'];
+
+function stripFdaBulk(x) {
+  if (Array.isArray(x)) return x.map(stripFdaBulk);
+  if (!x || typeof x !== 'object') return x;
+  const out = {};
+  for (const [k, v] of Object.entries(x)) {
+    if (k === 'openfda' && v && typeof v === 'object') {
+      const { registration_number, fei_number, ...rest } = v;
+      out[k] = stripFdaBulk(rest);
+    } else out[k] = stripFdaBulk(v);
+  }
+  return out;
+}
+
+async function cmdFda(a) {
+  const ep = a._[0];
+  if (!ep) die(`fda needs an endpoint: ${FDA_DEVICE.join(', ')} (device), or a full path like drug/label`);
+  const path = FDA_DEVICE.includes(ep) ? `device/${ep}` : ep.replace(/\.json$/, '');
+  if (!/^[a-z]+\/[a-z0-9]+$/.test(path)) die(`bad endpoint "${ep}"`);
+  // openFDA wants spaces as '+'; ':' '"' '[' ']' stay readable.
+  const q = s => encodeURIComponent(s).replace(/%20/g, '+').replace(/%2B/gi, '+').replace(/%3A/gi, ':').replace(/%22/g, '"').replace(/%5B/gi, '[').replace(/%5D/gi, ']');
+  const params = [];
+  if (a.search) params.push(`search=${q(a.search)}`);
+  if (a.sort) params.push(`sort=${q(a.sort)}`);
+  if (process.env.FDA_API_KEY) params.push(`api_key=${encodeURIComponent(process.env.FDA_API_KEY)}`);
+  const mask = u => u.replace(/api_key=[^&]+/, 'api_key=***');
+  const get = async url => {
+    if (a.url) log(mask(url));
+    try { return await getJson(url); } catch (e) {
+      if (/HTTP 404/.test(e.message) && /NOT_FOUND|No matches/i.test(e.message)) return { results: [], meta: { results: { total: 0 } } };
+      throw new Error(mask(e.message));
+    }
+  };
+  if (a['count-by']) {
+    const j = await get(`${FDA_API}/${path}.json?${[...params, `count=${q(a['count-by'])}`, `limit=${Math.min(intArg(a.limit, 'limit', 100), 1000)}`].join('&')}`);
+    emit(j.results || [], a.format || 'json');
+    log(`${(j.results || []).length} term(s) — openFDA ${path}, count=${a['count-by']}`);
+    return;
+  }
+  const want = a.all ? Math.min(intArg(a.max, 'max', 5000), 26000) : intArg(a.limit, 'limit', 25);
+  let skip = intArg(a.skip, 'skip', 0);
+  const rows = [];
+  let total = null;
+  while (rows.length < want) {
+    const limit = Math.min(1000, want - rows.length);
+    if (skip > 25000) { log('warning: openFDA allows skip ≤ 25000; narrow --search to see more'); break; }
+    const j = await get(`${FDA_API}/${path}.json?${[...params, `limit=${limit}`, `skip=${skip}`].join('&')}`);
+    total = j.meta && j.meta.results ? j.meta.results.total : total;
+    const page = j.results || [];
+    rows.push(...page);
+    skip += page.length;
+    if (page.length < limit) break;
+  }
+  emit(a.full ? rows : stripFdaBulk(rows), a.format || 'json');
+  log(`openFDA ${path} — returned ${rows.length} of ${total ?? 0} matching record(s)` + (total ? '' : ' (no matches)'));
+}
+
+// Census Bureau API. A key is required (requests without one redirect to
+// missing_key.html). Free: https://api.census.gov/data/key_signup.html
+const POP65_VARS = ['020', '021', '022', '023', '024', '025', '044', '045', '046', '047', '048', '049'].map(n => `B01001_${n}E`);
+
+async function cmdCensus(a) {
+  const key = process.env.CENSUS_API_KEY;
+  if (!key) die('the Census API requires a key. Get a free one at https://api.census.gov/data/key_signup.html and set CENSUS_API_KEY');
+  const year = a.year || '2023';
+  const dataset = a.dataset || 'acs/acs5';
+  const vars = a.pop65 ? ['NAME', 'B01001_001E', ...POP65_VARS] : String(a.get || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!vars.length) die('census needs --get VAR1,VAR2 (or --pop65)');
+  if (!a.for) die("census needs --for, e.g. --for 'state:*' or --for 'county:*' --in 'state:50'");
+  const params = [`get=${vars.map(encodeURIComponent).join(',')}`, `for=${encodeURIComponent(a.for)}`];
+  if (a.in.length) params.push(...a.in.map(i => `in=${encodeURIComponent(i)}`));
+  params.push(`key=${encodeURIComponent(key)}`);
+  const url = `https://api.census.gov/data/${year}/${dataset}?${params.join('&')}`;
+  if (a.url) log(url.replace(/key=[^&]+/, 'key=***'));
+  let j;
+  try { j = await getJson(url); } catch (e) { die(e.message.replace(/key=[^&\s]+/, 'key=***')); }
+  if (!Array.isArray(j) || !Array.isArray(j[0])) die('unexpected Census response shape');
+  const [head, ...data] = j;
+  let rows = data.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
+  if (a.pop65) {
+    rows = rows.map(r => {
+      const geo = Object.fromEntries(Object.entries(r).filter(([k]) => !/^B01001_/.test(k)));
+      return { ...geo, total_pop: +r.B01001_001E, pop_65_plus: POP65_VARS.reduce((s, v) => s + (+r[v] || 0), 0) };
+    });
+  }
+  emit(rows, a.format || 'json');
+  log(`Census ${dataset} ${year} — ${rows.length} row(s)`);
+}
+
+// Medicare Monthly Enrollment → Original Medicare (FFS) vs MA share. One
+// rolling dataset: the data year is the YEAR column (not --year on `query`),
+// and MONTH="Year" marks the annual row.
+async function cmdFfsShare(a) {
+  const r = await resolveDataset('enrollment');
+  const lvl = a.county || a.fips || a['by-county'] ? 'County' : a.state ? 'State' : 'National';
+  const conds = [{ path: 'BENE_GEO_LVL', op: '=', value: lvl }];
+  if (a.state) conds.push({ path: 'BENE_STATE_ABRVTN', op: '=', value: String(a.state).toUpperCase() });
+  if (a.county) conds.push({ path: 'BENE_COUNTY_DESC', op: 'STARTS_WITH', value: a.county }); // stored as "Windham County"
+  if (a.fips) conds.push({ path: 'BENE_FIPS_CD', op: '=', value: a.fips });
+  if ((a.county || a['by-county']) && !a.state && !a.fips) die('county-level needs --state XX (plus --county NAME, or --by-county for all counties)');
+  const cols = 'YEAR,MONTH,BENE_GEO_LVL,BENE_STATE_ABRVTN,BENE_STATE_DESC,BENE_COUNTY_DESC,BENE_FIPS_CD,TOT_BENES,ORGNL_MDCR_BENES,MA_AND_OTH_BENES';
+  const fetchRows = async (extra, size) => {
+    const url = `${DATA_API}/${r.id}/data?${[buildDataApiFilter([...conds, ...extra]), `column=${cols}`, 'sort=-YEAR', `size=${size}`].join('&')}`;
+    if (a.url) log(url);
+    return getJson(url);
+  };
+  let year = a.year;
+  if (!year) {
+    const latest = await fetchRows([{ path: 'MONTH', op: '=', value: 'Year' }], 1);
+    if (!latest.length) die('no annual (MONTH=Year) enrollment rows match');
+    year = latest[0].YEAR;
+  }
+  let rows = await fetchRows([{ path: 'YEAR', op: '=', value: String(year) }, { path: 'MONTH', op: '=', value: 'Year' }], 5000);
+  let period = `${year} annual row`;
+  if (!rows.length) die(`no annual enrollment row for ${year}${a.year ? ' (the current year has monthly rows only; omit --year for the latest full year)' : ''}`);
+  rows = rows.map(x => {
+    const tot = +x.TOT_BENES, ffs = +x.ORGNL_MDCR_BENES, ma = +x.MA_AND_OTH_BENES;
+    return {
+      year: x.YEAR, level: x.BENE_GEO_LVL, state: x.BENE_STATE_ABRVTN, state_name: x.BENE_STATE_DESC,
+      county: x.BENE_COUNTY_DESC, fips: x.BENE_FIPS_CD, total_benes: tot, original_medicare_benes: ffs,
+      ma_and_other_benes: ma, ffs_share: tot ? +(ffs / tot).toFixed(4) : null, ma_share: tot ? +(ma / tot).toFixed(4) : null,
+    };
+  });
+  emit(rows, a.format || 'json');
+  log(`Medicare Monthly Enrollment (${r.id}) — ${period}, ${lvl} level, ${rows.length} row(s). ` +
+      'ffs_share = Original Medicare / total; MA_AND_OTH includes MA and other non-FFS plans (cost plans, PACE).');
 }
 
 // NPPES returns HTTP 200 with {"Errors":[...]} for bad input — treat as error.
@@ -525,6 +741,27 @@ PROVIDER DATA CATALOG (data.cms.gov/provider-data)
       aliases: clinicians=mj5m-pzi6  facilityAff=27ea-46a8  hospitals=xubh-q36u
       ~ means case-insensitive LIKE %text%
 
+MEDICARE ENROLLMENT (FFS vs Medicare Advantage share)
+  ffs-share [--state XX [--county NAME | --fips NNNNN | --by-county]] [--year YYYY]
+      latest full year by default; ffs_share = Original Medicare / total beneficiaries
+
+OPEN PAYMENTS (openpaymentsdata.cms.gov — industry payments to clinicians)
+  op list                                     all tables and their ids
+  op <table> [--year Y] [--where/--in/--columns/--sort/--limit/--all/--count]
+      tables: ${Object.keys(OP_TYPES).join(', ')}
+      exact '=' on NPI/ids is fast (~2s); '~' (contains) on 'general' is slow (~30s)
+
+OPENFDA (api.fda.gov — devices)
+  fda <endpoint> [--search 'field:value AND ...'] [--count-by field.exact] [--sort field:desc]
+                 [--limit N] [--skip N] [--all [--max N]] [--full]
+      endpoints: ${FDA_DEVICE.join(', ')} (or e.g. drug/label)
+      no match = empty result (openFDA's 404); --full keeps bulky openfda registration arrays
+      optional FDA_API_KEY env var raises rate limits
+
+CENSUS (api.census.gov — requires free CENSUS_API_KEY)
+  census --get VARS --for 'county:*' [--in 'state:50'] [--year 2023] [--dataset acs/acs5]
+  census --pop65 --for 'state:*'              total and 65+ population (ACS B01001)
+
 NPPES NPI REGISTRY
   npi [--number N] [--first_name X] [--last_name X] [--organization_name X] [--state XX]
       [--city X] [--postal_code X] [--taxonomy_description X] [--enumeration_type NPI-1|NPI-2]
@@ -540,7 +777,7 @@ async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const a = parseArgs(rest);
   if (!cmd || cmd === 'help' || a.help) { process.stdout.write(HELP); return; }
-  const cmds = { datasets: cmdDatasets, versions: cmdVersions, columns: cmdColumns, query: cmdQuery, pd: cmdPd, npi: cmdNpi };
+  const cmds = { datasets: cmdDatasets, versions: cmdVersions, columns: cmdColumns, query: cmdQuery, pd: cmdPd, npi: cmdNpi, op: cmdOp, fda: cmdFda, census: cmdCensus, 'ffs-share': cmdFfsShare };
   if (!cmds[cmd]) die(`unknown command "${cmd}". Run: node cms.mjs help`);
   await cmds[cmd](a);
 }
