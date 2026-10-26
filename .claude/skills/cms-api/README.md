@@ -85,7 +85,7 @@ Each `query` runs in five steps:
 These are the mistakes the skill tells agents to avoid. They apply to anyone using this data.
 
 - **Medicare fee-for-service only.** No Medicare Advantage (now more than half of Medicare patients), Medicaid, or commercial insurance. Real-world volume is materially higher.
-- **"Services" are not procedures for surgical codes.** Assistant surgeons (often physician assistants) and ambulatory surgery centers bill the same CPT code. For knee replacement (27447) in CY2024 there were 571,587 billed services but about 296,000 patients. Use patient counts (`Tot_Benes`) or surgeon-only rows to estimate procedures.
+- **"Services" are not procedures for surgical codes.** Assistant surgeons (often physician assistants) and ambulatory surgery centers bill the same CPT code. For knee replacement (27447), billed services run about 1.9× the number of patients. Use patient counts (`Tot_Benes`) or surgeon-only rows to estimate procedures.
 - **Small providers are hidden.** Provider-level rows with 10 or fewer patients are suppressed, so adding them up undercounts. National and state totals come from the Geography datasets, which aren't suppressed.
 - **Patient counts don't add up across rows.** One patient can appear in several rows (different codes or settings). Use the by-Provider summary dataset for a provider's true patient count.
 - **Average payment varies by who billed.** An assistant's claim pays a fraction of the surgeon's, so one provider's average isn't the fee-schedule rate.

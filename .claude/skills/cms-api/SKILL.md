@@ -14,6 +14,8 @@ $CMS help
 
 Data goes to stdout (`--format json|csv|ndjson`); progress, row counts, dataset/year/UUID, and warnings go to stderr. Always report the dataset title and data year (CY) alongside any number you give the user.
 
+**Every number you report must come from a query you ran in this session.** Nothing in this skill's files is data: any figure in them is an illustration of a pitfall, possibly stale, and must never be given as an answer. If the APIs can't be reached (blocked network, sandbox egress rules, outage), say that, name the hosts that need allowing (`data.cms.gov`, `npiregistry.cms.hhs.gov`), and stop. Don't estimate from memory, and don't present remembered or documented figures as results.
+
 ## Workflow
 
 1. **Pick the dataset.** Use the alias table below, or `$CMS datasets --search <words>` for anything else in the catalog (~100 families: Part D prescribers, post-acute care, hospice, etc.).
@@ -107,7 +109,7 @@ Flag these to the user whenever they affect an answer:
 - **Privacy redaction.** By-Provider rows are suppressed when they have ≤10 beneficiaries. Summing provider rows undercounts. For true totals, use the `geography` or `inpGeo` National/State rows, which are not subject to that floor.
 - **`Tot_Benes` is distinct per row.** Summing it across a provider's codes or places of service overcounts unique patients. Use `provSummary` for a provider's distinct count.
 - **Place of service:** `Place_Of_Srvc` `F` = facility, `O` = office. A code usually has both rows, so filter or sum deliberately.
-- **For surgical codes, `Tot_Srvcs` is billed lines, not procedures.** Assistant-at-surgery claims from physician assistants and nurse practitioners, plus ambulatory surgical center (ASC) facility claims, bill the same CPT code. For CPT 27447 in CY2024 there were 571,587 national services but only 295,814 beneficiaries. Orthopedic surgeons billed 294k of those services, physician assistants 163k (about $134 average), and ASCs 48k (about $6,842 average). Use national `Tot_Benes` as the procedure estimate, or count only the surgeon specialties in `provider`, and say which you used.
+- **For surgical codes, `Tot_Srvcs` is billed lines, not procedures.** Assistant-at-surgery claims from physician assistants and nurse practitioners, plus ambulatory surgical center (ASC) facility claims, bill the same CPT code. For total knee arthroplasty, national services ran about 1.9× beneficiaries. The surgeons' lines roughly matched the beneficiary count; the rest were PA/NP assistant lines (paid about 14% of the surgeon's amount) and ASC facility claims. Use national `Tot_Benes` as the procedure estimate, or count only the surgeon specialties in `provider`, and say which you used.
 - **Per-row averages vary for the same code.** This follows from the point above: a PA's assistant line pays about 14% of the surgeon's. Don't treat one provider's `Avg_Mdcr_Pymt_Amt` as the fee-schedule rate.
 - **Payment math:** total paid ≈ `Avg_Mdcr_Pymt_Amt × Tot_Srvcs` (physician) or `Avg_Mdcr_Pymt_Amt × Tot_Dschrgs` (inpatient).
 - **Geography levels:** `Rndrng_Prvdr_Geo_Lvl` is `National` or `State`, and states use full names in `Rndrng_Prvdr_Geo_Desc`. The DMEPOS geography file uses `Rfrg_Prvdr_Geo_Lvl` instead.
