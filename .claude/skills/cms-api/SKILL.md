@@ -82,14 +82,16 @@ These were verified against the live APIs on 2026-10-26.
 - The newest year has two API distributions: a moving `latest` alias and a pinned UUID. Use the pinned one if you'll store the UUID.
 - To confirm which year a UUID serves, read `/data-viewer?size=0` → `meta.data_file_name`. `_D24_` or `_DY24_` means CY2024.
 
-**Provider Data Catalog** (`https://data.cms.gov/provider-data/api/1/datastore/query/{id}/0`)
+**Provider Data Catalog** (`https://data.cms.gov/provider-data/api/1/datastore/query/{distributionId}`)
+- **Send a `User-Agent` that names your client.** The CMS edge (Akamai) answers Node's default `User-Agent` ("node") with an HTML 403 "Access Denied". curl's default passes. The CLI sends `cms-api-skill/1.0 (+repo URL)`. Never imitate a browser.
+- **Query by distribution UUID, not `/{datasetId}/0`.** On 2026-10-26 the edge 403'd `/datastore/query/mj5m-pzi6/0` for every client, while `/datastore/query/{distributionId}` served the same rows with the same parameters. Get the distribution id from `/provider-data/api/1/metastore/schemas/dataset/items/{datasetId}?show-reference-ids` → `distribution[0].identifier`. It changes when CMS refreshes the data, so look it up each run; the CLI does this. Don't hardcode one.
 - Responses are wrapped: `{results:[...], count, schema}`.
 - Conditions use `conditions[i][property]`, `conditions[i][value]`, and `conditions[i][operator]`. Operators include `=`, `<>`, `<`, `>`, `LIKE` (use `%text%`; case-insensitive), and `in`.
 - **`in` values must be repeated `conditions[i][value][]=` params.** A comma-joined string returns `{"results":[],"count":0}` silently.
 - An unknown column returns HTTP 400 "Column not found". This host fails loudly, unlike data-api.
 - `limit` max is 1500 (400 above that). Paginate with `offset`. Select fields with `properties[]=`. Sort with `sorts[0][property]` and `sorts[0][order]=asc|desc`.
 - **Each query takes about 13-15 s, regardless of how many rows you ask for.** Batch 50-100 NPIs per `in` query. Many small queries are slower and get throttled.
-- **The CMS edge (Akamai) can answer with an HTML "Access Denied" 403.** This is a block on the client or network, not a data answer. The CLI reports it as such. Don't loop on retries or disguise the client; tell the user.
+- **Any other HTML "Access Denied" 403** is a block on the client or network, not a data answer. The CLI reports it as such. Check the two points above, then stop: don't loop on retries or disguise the client; tell the user.
 
 **NPPES** (`https://npiregistry.cms.hhs.gov/api/?version=2.1`)
 - **Errors come back as HTTP 200 with `{"Errors":[...]}`**, for example for `state` alone or a non-10-digit NPI. Always check for the `Errors` key.

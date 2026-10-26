@@ -15,7 +15,7 @@ if (typeof fetch !== 'function') {
 
 const CATALOG_URL = 'https://data.cms.gov/data.json';
 const DATA_API = 'https://data.cms.gov/data-api/v1/dataset';
-const PD_API = 'https://data.cms.gov/provider-data/api/1/datastore/query';
+const PD_API = 'https://data.cms.gov/provider-data/api/1';
 const NPPES_API = 'https://npiregistry.cms.hhs.gov/api/';
 const CACHE_DIR = join(tmpdir(), 'cms-api-skill');
 const CATALOG_INDEX = join(CACHE_DIR, 'catalog-index.json');
@@ -23,6 +23,9 @@ const CATALOG_TTL_MS = 24 * 3600 * 1000;
 const PAGE_SIZE = 1000;      // data-api page size; 5000 also works, but 1000 is reliable
 const PD_PAGE_SIZE = 1500;   // provider-data hard max (400 above this)
 const TIMEOUT_MS = 90000;    // provider-data queries take ~15s each, flat
+// The CMS edge 403s Node's default User-Agent ("node") on provider-data
+// (verified 2026-10-26; curl's default passes). Identify the tool honestly.
+const USER_AGENT = 'cms-api-skill/1.0 (+https://github.com/jdef11/medintel)';
 
 // Short names for the families most sales/market questions need. Any other
 // catalog title (or a dataset UUID) works too.
@@ -66,7 +69,7 @@ async function getJson(url, { retries = 2 } = {}) {
     const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     let res, text;
     try {
-      res = await fetch(url, { signal: ctrl.signal, headers: { accept: 'application/json' } });
+      res = await fetch(url, { signal: ctrl.signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT } });
       text = await res.text();
     } catch (e) {
       clearTimeout(t);
@@ -395,6 +398,23 @@ async function cmdQuery(a) {
   log(`returned ${rows.length} row(s)` + (remaining > 0 ? ` — ${remaining} more match (raise --limit, or --all [--max N])` : ''));
 }
 
+// Query by distribution UUID (/datastore/query/{distId}), resolved from the
+// metastore, rather than /datastore/query/{datasetId}/0: the CMS edge 403s the
+// latter for mj5m-pzi6 (verified 2026-10-26) while serving the same data via
+// the distribution endpoint. The distribution id changes when CMS refreshes a
+// dataset, so it's looked up each run.
+async function pdQueryBase(id) {
+  try {
+    const j = await getJson(`${PD_API}/metastore/schemas/dataset/items/${id}?show-reference-ids`);
+    const dist = Array.isArray(j.distribution) && j.distribution[0] && j.distribution[0].identifier;
+    if (dist) return { base: `${PD_API}/datastore/query/${dist}`, title: j.title };
+    log(`warning: no distribution listed for ${id}; using /datastore/query/${id}/0`);
+  } catch (e) {
+    log(`warning: metastore lookup for ${id} failed (${e.message}); using /datastore/query/${id}/0`);
+  }
+  return { base: `${PD_API}/datastore/query/${id}/0`, title: null };
+}
+
 // Provider Data Catalog: {results, count, schema}. Unknown columns → HTTP 400
 // "Column not found" (unlike data-api). `in` values MUST be repeated value[]
 // params — a comma-joined string silently returns zero rows.
@@ -426,10 +446,11 @@ async function cmdPd(a) {
   let offset = intArg(a.offset, 'offset', 0);
   const rows = [];
   let count = null;
-  log(`provider-data ${id} — expect ~10-15s per request regardless of size; batch NPIs with --in`);
+  const { base, title } = await pdQueryBase(id);
+  log(`provider-data ${id}${title ? ` (${title})` : ''} — large datasets take ~15s per request regardless of size; batch NPIs with --in`);
   while (rows.length < want) {
     const limit = Math.min(PD_PAGE_SIZE, want - rows.length);
-    const url = `${PD_API}/${id}/0?${[...parts, `limit=${limit}`, `offset=${offset}`].join('&')}`;
+    const url = `${base}?${[...parts, `limit=${limit}`, `offset=${offset}`].join('&')}`;
     if (a.url) log(url);
     const j = await getJson(url);
     if (!j || !Array.isArray(j.results)) die(`unexpected response shape from ${url}`);
