@@ -30,14 +30,20 @@ An HTML "Access Denied" page from a CMS host is a block on the client or network
 **Cite every number.** Give its source dataset, its data year or period, and what it measures (for example, "Medicare fee-for-service beneficiaries, CY2024"). For questions that combine sources (market sizing, linking surgeons to payments or devices), also load the `medtech-market-intel` skill.
 <!-- END ground-rules -->
 
-> **Status: not verified against live data.** The Census API began requiring a key, and none was available when this skill was built. The no-key error path is tested; real queries are not. Check the first results against census.gov before relying on them, and tell the user this skill is unverified.
+> **Status: partly verified.** The Census API requires a key for every data request (ACS, decennial and population-estimate endpoints all redirect to "missing key"); its metadata endpoints don't. Verified live without a key (2026-10-27):
+> - the `--pop65` variable mapping;
+> - automatic detection of the newest release;
+> - the missing-key and invalid-key errors.
+>
+> **No data response has been checked yet.** Until one has, compare the first results against census.gov and tell the user the figures come from a newly connected source.
 
 ## Setup
 
 1. Get a free key at https://api.census.gov/data/key_signup.html.
-2. Set it as the `CENSUS_API_KEY` environment variable.
+2. Activate it with the link in the confirmation email. An unactivated key is rejected as invalid.
+3. Set it as the `CENSUS_API_KEY` environment variable.
 
-Without the key, every request redirects to a "missing key" page. The CLI stops with a clear error instead.
+Without a key, or with a bad one, Census redirects to an HTML "missing key" or "invalid key" page instead of returning an error. The CLI recognizes both and stops with a clear message.
 
 ## Commands
 
@@ -51,7 +57,7 @@ CLI census --get NAME,B01001_001E --for 'us:1' --year 2023            # any ACS 
 
 - `--pop65` sums ACS table B01001 cells 020-025 (male 65+) and 044-049 (female 65+).
 - `--dataset` defaults to `acs/acs5` (5-year estimates, all counties); `acs/acs1` (1-year) covers only areas of 65,000+ people.
-- `--year` defaults to 2023.
+- `--year` defaults to the newest release that defines the first requested variable. The tool checks this through the keyless metadata endpoint; on 2026-10-27 that was 2024 for both `acs/acs5` and `acs/acs1`.
 - Geography uses FIPS codes: state `50`; county `025` within state `50`, i.e. `50025`. That matches `BENE_FIPS_CD` in Medicare enrollment, for joins.
 
 ## Reading the data correctly
@@ -61,7 +67,7 @@ CLI census --get NAME,B01001_001E --for 'us:1' --year 2023            # any ACS 
 - Small counties have wide margins. Say "estimate" and avoid false precision.
 
 **Matching periods**
-- 5-year ACS "2023" covers 2019-2023, so it's not directly comparable to a single claims year. Name the period.
+- A 5-year ACS release covers five years: "2024" means 2020-2024. That's not directly comparable to a single claims year, so name the period.
 
 **Choosing a denominator**
 - For Medicare rates, Medicare enrollment (`ffs-share`, `cms-claims` skill) is usually the better denominator: it counts Medicare beneficiaries directly, and the Original Medicare count matches fee-for-service claims.

@@ -654,21 +654,40 @@ async function cmdFda(a) {
 // missing_key.html). Free: https://api.census.gov/data/key_signup.html
 const POP65_VARS = ['020', '021', '022', '023', '024', '025', '044', '045', '046', '047', '048', '049'].map(n => `B01001_${n}E`);
 
+// Newest year whose dataset defines `probeVar`. The variables metadata
+// endpoint needs no key (only data requests do), so this works keyless.
+async function latestCensusYear(dataset, probeVar) {
+  const now = new Date().getFullYear();
+  for (let y = now - 1; y >= now - 6; y--) {
+    try {
+      await getJson(`https://api.census.gov/data/${y}/${dataset}/variables/${encodeURIComponent(probeVar)}.json`, { retries: 0 });
+      return String(y);
+    } catch { /* not published (404) — try the year before */ }
+  }
+  die(`variable ${probeVar} not found in any ${dataset} release from ${now - 6} to ${now - 1}: check the name (see api.census.gov/data/<year>/${dataset}/variables.html) or pass --year`);
+}
+
 async function cmdCensus(a) {
-  const key = process.env.CENSUS_API_KEY;
-  if (!key) die('the Census API requires a key. Get a free one at https://api.census.gov/data/key_signup.html and set CENSUS_API_KEY');
-  const year = a.year || '2023';
   const dataset = a.dataset || 'acs/acs5';
   const vars = a.pop65 ? ['NAME', 'B01001_001E', ...POP65_VARS] : String(a.get || '').split(',').map(s => s.trim()).filter(Boolean);
   if (!vars.length) die('census needs --get VAR1,VAR2 (or --pop65)');
   if (!a.for) die("census needs --for, e.g. --for 'state:*' or --for 'county:*' --in 'state:50'");
+  const year = a.year ? String(a.year) : await latestCensusYear(dataset, vars.find(v => v !== 'NAME') || 'NAME');
+  const key = process.env.CENSUS_API_KEY;
+  if (!key) die(`the Census API requires a key for data requests (would query ${dataset} ${year}). ` +
+    'Get a free one at https://api.census.gov/data/key_signup.html, activate it from the confirmation email, and set CENSUS_API_KEY');
   const params = [`get=${vars.map(encodeURIComponent).join(',')}`, `for=${encodeURIComponent(a.for)}`];
   if (a.in.length) params.push(...a.in.map(i => `in=${encodeURIComponent(i)}`));
   params.push(`key=${encodeURIComponent(key)}`);
   const url = `https://api.census.gov/data/${year}/${dataset}?${params.join('&')}`;
   if (a.url) log(url.replace(/key=[^&]+/, 'key=***'));
   let j;
-  try { j = await getJson(url); } catch (e) { die(e.message.replace(/key=[^&\s]+/, 'key=***')); }
+  try { j = await getJson(url); } catch (e) {
+    const msg = e.message.replace(/key=[^&\s]+/g, 'key=***');
+    // A bad key redirects to an HTML "missing/invalid key" page rather than a JSON error.
+    if (/missing_key|invalid[ _]key/i.test(msg)) die('Census rejected CENSUS_API_KEY (invalid, or not yet activated: use the link in the confirmation email). ' + msg.slice(0, 200));
+    die(msg);
+  }
   if (!Array.isArray(j) || !Array.isArray(j[0])) die('unexpected Census response shape');
   const [head, ...data] = j;
   let rows = data.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
@@ -802,7 +821,8 @@ OPENFDA (api.fda.gov — devices)
       optional FDA_API_KEY env var raises rate limits
 
 CENSUS (api.census.gov — requires free CENSUS_API_KEY)
-  census --get VARS --for 'county:*' [--in 'state:50'] [--year 2023] [--dataset acs/acs5]
+  census --get VARS --for 'county:*' [--in 'state:50'] [--year Y] [--dataset acs/acs5]
+      --year defaults to the newest release that defines the first variable
   census --pop65 --for 'state:*'              total and 65+ population (ACS B01001)
 
 NPPES NPI REGISTRY
