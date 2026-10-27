@@ -16,7 +16,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/medtech-data.mjs help
 
 If `${CLAUDE_SKILL_DIR}` appears literally instead of as a path (claude.ai chat doesn't substitute it), use the path to this skill's folder, i.e. the directory holding this SKILL.md. Data goes to stdout (`--format json|csv|ndjson`). Progress, row counts, the dataset/year/ID used, and warnings go to stderr. `--url` prints every request.
 
-**Only report numbers you queried.** Every figure you give must come from a query you ran in this conversation. Nothing in this plugin's files is data: any number in them illustrates a pitfall and may be stale. Never present a documented, remembered or estimated figure as a result.
+**Only report numbers you queried.** Every figure you give must come from a query you ran in this conversation. Nothing in this plugin's files is data: any number in them illustrates a pitfall and may be stale. Never present a documented, remembered or estimated figure as a result. Don't attach uncertainty ranges ("±10%") unless they come from the data, such as an ACS margin of error. Name the assumption and its likely direction instead.
 
 **When a source can't be reached, say so and stop.** Name the host that needs allowing:
 - `data.cms.gov`
@@ -64,7 +64,7 @@ Batch NPI lookups (`--in npi=...`, 50-100 per call) rather than looping one NPI 
    - ASC: physician-file rows billed by ASC entities (`Rndrng_Prvdr_Type` = "Ambulatory Surgical Center" in `provider`).
 
    These come from different files with different counting units. Present them as a triangulation, not as parts that must sum exactly to step 1.
-3. **Medicare Advantage-inclusive estimate.** Use `ffs-share` for the same geography and the nearest year.
+3. **Medicare Advantage-inclusive estimate.** Use `ffs-share` for the same geography, with `--year` set to the claims year (the default is the latest full year).
    - Estimate = FFS volume ÷ `ffs_share`.
    - The assumption: Medicare Advantage members have the procedure at the same rate as fee-for-service members. That's unproven; MA utilization management can lower rates. Label the result as an estimate.
    - Enrollment has years the claims data doesn't, and vice versa. Use the matching year when it exists, and say so when it doesn't.

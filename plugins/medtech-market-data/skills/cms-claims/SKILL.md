@@ -16,7 +16,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/medtech-data.mjs help
 
 If `${CLAUDE_SKILL_DIR}` appears literally instead of as a path (claude.ai chat doesn't substitute it), use the path to this skill's folder, i.e. the directory holding this SKILL.md. Data goes to stdout (`--format json|csv|ndjson`). Progress, row counts, the dataset/year/ID used, and warnings go to stderr. `--url` prints every request.
 
-**Only report numbers you queried.** Every figure you give must come from a query you ran in this conversation. Nothing in this plugin's files is data: any number in them illustrates a pitfall and may be stale. Never present a documented, remembered or estimated figure as a result.
+**Only report numbers you queried.** Every figure you give must come from a query you ran in this conversation. Nothing in this plugin's files is data: any number in them illustrates a pitfall and may be stale. Never present a documented, remembered or estimated figure as a result. Don't attach uncertainty ranges ("±10%") unless they come from the data, such as an ACS margin of error. Name the assumption and its likely direction instead.
 
 **When a source can't be reached, say so and stop.** Name the host that needs allowing:
 - `data.cms.gov`
@@ -55,6 +55,7 @@ CLI query inpProvider --where DRG_Cd=470 --where Rndrng_Prvdr_State_Abrvtn=OH --
 # Original Medicare vs Medicare Advantage share (latest full year)
 CLI ffs-share --state TX
 CLI ffs-share --state VT --by-county --format csv
+CLI ffs-share --state TX --year 2024        # match the claims year; the default is the latest full year
 ```
 
 ## Dataset aliases
@@ -106,6 +107,7 @@ Flag whichever of these affect your answer.
 **Counting procedures**
 - **For surgical codes, services are not procedures. Lead with beneficiaries.** Assistant-at-surgery lines (PAs, NPs) and ambulatory surgery center (ASC) facility claims bill the same CPT code, so `Tot_Srvcs` can run near 2× the real number of operations.
   - For "how many procedures/surgeries were done", the headline number is `Tot_Benes` (national or state geography rows), stated as "≈ N procedures (Medicare FFS beneficiaries)". Mention services second, if at all, labelled "billed lines".
+  - Sum `Tot_Benes` across the place-of-service rows (`F` + `O`) for the headline, and note that a patient in both rows could be counted twice. Office rows are usually tiny for surgical codes. Say which rows you summed, so answers are comparable.
   - For ranking surgeons, rank individuals (`Rndrng_Prvdr_Ent_Cd=I`) in surgical specialties by `Tot_Benes`. Exclude ASCs (`Ent_Cd=O`), physician assistants and nurse practitioners, and say you did.
 - **Beneficiary counts are distinct per row.** Summing `Tot_Benes` across codes or places of service overcounts patients. Use `provSummary` for one provider's true count.
 - **Place of service:** `F` = facility, `O` = office. A code usually has both rows.

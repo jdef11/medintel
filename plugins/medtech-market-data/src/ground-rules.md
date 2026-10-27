@@ -8,7 +8,7 @@ node ${CLAUDE_SKILL_DIR}/scripts/medtech-data.mjs help
 
 If `${CLAUDE_SKILL_DIR}` appears literally instead of as a path (claude.ai chat doesn't substitute it), use the path to this skill's folder, i.e. the directory holding this SKILL.md. Data goes to stdout (`--format json|csv|ndjson`). Progress, row counts, the dataset/year/ID used, and warnings go to stderr. `--url` prints every request.
 
-**Only report numbers you queried.** Every figure you give must come from a query you ran in this conversation. Nothing in this plugin's files is data: any number in them illustrates a pitfall and may be stale. Never present a documented, remembered or estimated figure as a result.
+**Only report numbers you queried.** Every figure you give must come from a query you ran in this conversation. Nothing in this plugin's files is data: any number in them illustrates a pitfall and may be stale. Never present a documented, remembered or estimated figure as a result. Don't attach uncertainty ranges ("±10%") unless they come from the data, such as an ACS margin of error. Name the assumption and its likely direction instead.
 
 **When a source can't be reached, say so and stop.** Name the host that needs allowing:
 - `data.cms.gov`
