@@ -56,6 +56,10 @@ Endpoints: `510k`, `pma`, `classification`, `recall`, `enforcement`, `event` (MA
 - **`.exact` fields** (`applicant.exact`) match or count the whole value. Plain fields are tokenized. Use `--count-by field.exact` to see every spelling variant of a company name.
 - **Field names differ by endpoint** (`product_code` on 510(k) and recall; `device.device_report_product_code` on event; `product_codes.code` on udi). Check the field list at open.fda.gov/apis/device/ for each endpoint.
 
+**Endpoint quirks**
+- **`enforcement` records carry no product code.** `product_code:` searches there return nothing, because the `openfda` block is empty. To get a recall's class (I/II/III), search `recall` by product code, then query `enforcement` by firm and date and join on `recall_number`.
+- **Prefer `--format json` for recalls and events.** Their free-text fields contain line breaks, which make CSV hard to read.
+
 **Results and limits**
 - **No match returns HTTP 404 `NOT_FOUND`.** The CLI treats that as an empty result, not an error.
 - `limit` ≤ 1000 and `skip` ≤ 25000. Beyond that, narrow the search (by date range, for example).

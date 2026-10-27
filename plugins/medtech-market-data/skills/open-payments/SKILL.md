@@ -71,12 +71,29 @@ CLI op general --year 2024 --where covered_recipient_npi=1548269731 \
 **API mechanics:** Open Payments runs on the same API software (DKAN) as the CMS Provider Data Catalog.
 - An unknown column fails with HTTP 400.
 - `in` lists need repeated `value[]` parameters (the CLI does this).
-- `limit` max is 1500.
+- **`limit` max is 500** ("JSON Schema validation failed" above that). The CLI pages at 500.
+- **Amounts are stored as text, so the server sorts them alphabetically** ("9975.00" above "77857879.56"). The CLI sorts locally instead: with `--sort`, it fetches every match (up to `--max`, default 20,000), sorts numerically, then applies `--limit`. If it warns that it sorted only part of the matches, narrow the filters or use a grouped table.
 
 **Speed (measured 2026-10-26)**
 - An exact `=` match on an NPI or company ID returns in about 2 s, even on `general`.
 - A contains (`~`) search on `general` took about 30 s. Run name searches on the grouped tables (`entity-nature`, `recipient-entity`, about 1-6 s), then filter `general` by the ID you found.
 - All values come back as strings. Amounts are dollars.
+- **Company totals by category: use `entity-nature`** (one row per company × payment type, one fast query). Don't page through `general`, which has hundreds of thousands of rows for a large company.
+
+## Payment-type codes (`nature_of_payment_type_code` in the grouped tables)
+
+The grouped tables give the payment type only as a number. These codes were verified on 2026-10-27, by matching each code's row count for Stryker in PY2024 to `general` rows with that `nature_of_payment_or_transfer_of_value` text (all 11 matched exactly):
+
+| Code | Payment type | Code | Payment type |
+|---|---|---|---|
+| 1 | Consulting Fee | 10 | Royalty or License |
+| 2 | Compensation for services other than consulting (faculty/speaker, non-CE) | 14 | Grant |
+| 6 | Food and Beverage | 15 | Space rental or facility fees (teaching hospital only) |
+| 7 | Travel and Lodging | 17 | Debt forgiveness |
+| 8 | Education | 18 | Long term medical supply or device loan |
+| | | 19 | Acquisitions |
+
+**Other codes (3, 4, 5, 9, 11, 12, 13, 16, …) are not verified, so don't guess their names.** To identify one, take a recipient from `entity-recipient-nature` with that code and look at the same company's `general` rows for that recipient. Or report it as "payment type code N".
 
 ## Reading the data correctly
 
