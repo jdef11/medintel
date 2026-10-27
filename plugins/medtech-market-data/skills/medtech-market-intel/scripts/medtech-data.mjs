@@ -534,7 +534,9 @@ async function runDkan(base, a, label, pageSize = PD_PAGE_SIZE, opts = {}) {
     if (!a.all) rows = rows.slice(0, limitArg);
   }
   emit(rows, a.format || 'json');
-  log(`returned ${rows.length} of ${count} matching row(s)` + (clientSort ? `, sorted locally by ${a.sort}` : ''));
+  const more = count - intArg(a.offset, 'offset', 0) - rows.length;
+  log(`returned ${rows.length} of ${count} matching row(s)` + (clientSort ? `, sorted locally by ${a.sort}` : '') +
+      (more > 0 && !clientSort ? ` — ${more} more match (raise --limit, or --all [--max N]); sums over these rows are incomplete` : ''));
 }
 
 async function cmdPd(a) {

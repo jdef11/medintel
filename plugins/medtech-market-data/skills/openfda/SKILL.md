@@ -54,10 +54,12 @@ Endpoints: `510k`, `pma`, `classification`, `recall`, `enforcement`, `event` (MA
 **Writing searches**
 - **`field:value`**, combined with `AND` / `OR` (uppercase). Use quotes for phrases (`applicant:"Smith & Nephew"`) and brackets for ranges (`decision_date:[20240101 TO 20241231]`). The CLI converts spaces to `+`.
 - **`.exact` fields** (`applicant.exact`) match or count the whole value. Plain fields are tokenized. Use `--count-by field.exact` to see every spelling variant of a company name.
+- **Several values: always write `OR` inside parentheses.** `product_code:(LPH OR JDI)` works. `product_code:(LPH JDI)` (space only) is read as AND and silently returns 0. For quoted values, use `recall_number:("Z-1329-2025" OR "Z-1645-2025")`. The form `recall_number:"A" OR recall_number:"B"` returned only one of two records in testing.
+- **One device type often has several product codes.** "Total hip implants" spans at least JDI, LPH, LZO, MEH, MBL, OQG, KWZ and MAY. Find them with `classification`, say which codes you included and why, and query them together.
 - **Field names differ by endpoint** (`product_code` on 510(k) and recall; `device.device_report_product_code` on event; `product_codes.code` on udi). Check the field list at open.fda.gov/apis/device/ for each endpoint.
 
 **Endpoint quirks**
-- **`enforcement` records carry no product code.** `product_code:` searches there return nothing, because the `openfda` block is empty. To get a recall's class (I/II/III), search `recall` by product code, then query `enforcement` by firm and date and join on `recall_number`.
+- **`enforcement` records carry no product code.** `product_code:` searches there return nothing, because the `openfda` block is empty. To get a recall's class (I/II/III), take the `product_res_number` values from `recall` (e.g. `Z-1329-2025`). They equal `recall_number` in `enforcement`, so query `enforcement --search 'recall_number:("Z-1329-2025" OR "Z-1645-2025")'` and read `classification`.
 - **Prefer `--format json` for recalls and events.** Their free-text fields contain line breaks, which make CSV hard to read.
 
 **Results and limits**

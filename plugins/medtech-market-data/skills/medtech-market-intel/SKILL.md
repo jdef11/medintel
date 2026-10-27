@@ -71,7 +71,12 @@ Batch NPI lookups (`--in npi=...`, 50-100 per call) rather than looping one NPI 
 4. **All-payer.** No free API covers commercial or Medicaid outpatient volume. Don't extrapolate one from Medicare.
    - Say it's out of scope, or use HCUP for inpatient all-payer (via `hcupnet-query` if available).
    - Note that inpatient-only data undercounts procedures that have moved outpatient. Total knee and hip replacement left Medicare's inpatient-only list in 2018 and 2020.
-5. **Value.** Volume × device ASP, where the ASP comes from the user. CMS data has no device prices; Medicare payment amounts are professional or facility payments, not device revenue.
+5. **Per-capita rates: match the numerator to the denominator.** Fee-for-service claims ÷ all residents 65+ understates the rate by roughly the Medicare Advantage share, because the denominator includes people whose procedures the numerator can't see. Report either:
+   - **measured:** FFS procedures ÷ Original Medicare beneficiaries (`ffs-share`, same year); or
+   - **estimated:** the Medicare Advantage-inclusive estimate ÷ population 65+ (`popest`).
+
+   If you show the mismatched figure at all, label it "not comparable" and never lead with it.
+6. **Value.** Volume × device ASP, where the ASP comes from the user. CMS data has no device prices; Medicare payment amounts are professional or facility payments, not device revenue.
 
 ## Recipe: account and surgeon targeting
 
