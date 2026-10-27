@@ -1,7 +1,7 @@
 // Offline tests for the pure parts of medtech-data.mjs. Live API behavior is
 // checked by running the CLI (see the plugin README's "Checking it works").
 import { describe, it, expect } from 'vitest';
-import { buildCatalogIndex, buildDataApiFilter, parseIn, parseWhere, stripFdaBulk, truncateLongStrings } from './medtech-data.mjs';
+import { buildCatalogIndex, buildDataApiFilter, nationalFromSingleAge, parseCsv, parseIn, parseWhere, popestYearCode, stripFdaBulk, sumPopestCounties, truncateLongStrings } from './medtech-data.mjs';
 
 describe('parseWhere', () => {
   it.each([
@@ -108,6 +108,34 @@ describe('truncateLongStrings', () => {
     expect(out.list[0]).toBe('y'.repeat(10) + '… [truncated 2 more chars; use --full]');
     expect(out.short).toBe('ok');
     expect(out.n).toBe(5);
+  });
+});
+
+describe('Census population estimates (popest)', () => {
+  it('parseCsv handles CRLF, quoted fields with commas and escaped quotes, and a trailing newline', () => {
+    const csv = 'A,B\r\n1,"x, ""y"""\r\n2,z\n';
+    expect(parseCsv(csv)).toEqual([{ A: '1', B: 'x, "y"' }, { A: '2', B: 'z' }]);
+  });
+
+  it('maps years to county-file YEAR codes (1 = April 2020 base, 2 = July 2020 ...)', () => {
+    expect(popestYearCode('base', 2025)).toBe(1);
+    expect(popestYearCode(2020, 2025)).toBe(2);
+    expect(popestYearCode('2025', 2025)).toBe(7);
+    expect(popestYearCode(2026, 2025)).toBeNull();
+    expect(popestYearCode(2019, 2025)).toBeNull();
+  });
+
+  it('sums county rows into a state total', () => {
+    const rows = [{ POPESTIMATE: '100', AGE65PLUS_TOT: '20', AGE85PLUS_TOT: '3' }, { POPESTIMATE: '50', AGE65PLUS_TOT: '10', AGE85PLUS_TOT: '1' }];
+    expect(sumPopestCounties(rows)).toEqual({ total_pop: 150, pop_65_plus: 30, pop_85_plus: 4 });
+  });
+
+  it('builds national 65+/85+ from single-year-of-age rows: total sex only, 100 = 100+, 999 row excluded from sums', () => {
+    const rows = [
+      { SEX: '0', AGE: '64', P: '10' }, { SEX: '0', AGE: '65', P: '5' }, { SEX: '0', AGE: '85', P: '2' },
+      { SEX: '0', AGE: '100', P: '1' }, { SEX: '0', AGE: '999', P: '18' }, { SEX: '1', AGE: '65', P: '99' },
+    ];
+    expect(nationalFromSingleAge(rows, 'P')).toEqual({ total_pop: 18, pop_65_plus: 8, pop_85_plus: 3 });
   });
 });
 

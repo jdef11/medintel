@@ -11,7 +11,7 @@ A Claude plugin that gives Claude live access to free public healthcare data for
 | `nppes` | What's Dr. X's NPI, specialty and address? | NPPES NPI Registry |
 | `open-payments` | Which manufacturers pay this surgeon, and how much? Who does Stryker pay in Texas? | CMS Open Payments |
 | `openfda` | Who holds 510(k)s for knee implants? Recent hip recalls? Adverse-event reports by manufacturer? | openFDA device APIs |
-| `census` | 65+ population by county, for per-capita rates | Census ACS (**needs a free key; not yet verified live**) |
+| `census` | Total/65+/85+ population by nation, state or county (no key); other ACS variables | Census Population Estimates (no key) + ACS API (**needs a free key; data responses not yet verified**) |
 | `medtech-market-intel` | Market sizing with a Medicare Advantage adjustment, site-of-care splits, surgeon targeting, competitor mapping | combines the above |
 
 Claude picks the right skill from your question. You don't need to name one.
@@ -35,9 +35,10 @@ Claude picks the right skill from your question. You don't need to name one.
 - `openpaymentsdata.cms.gov`
 - `api.fda.gov`
 - `api.census.gov`
+- `www2.census.gov`: needed for keyless population figures in chat
 
 **Keys (environment variables):**
-- `CENSUS_API_KEY`: required for the census skill (free at api.census.gov/data/key_signup.html). I don't know whether claude.ai's code sandbox lets you set environment variables, so the census skill may only work in Claude Code.
+- `CENSUS_API_KEY`: only needed for ACS variables beyond population counts (free at api.census.gov/data/key_signup.html). Population counts (total, 65+, 85+) come from Census's keyless files, so they work in claude.ai chat too.
 - `FDA_API_KEY`: optional; raises openFDA's rate limits.
 
 ## How it behaves

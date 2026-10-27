@@ -1,6 +1,6 @@
 ---
 name: census
-description: US Census Bureau API (American Community Survey) — population, 65-and-over population, and other demographics by nation, state or county, for per-capita rates and market-sizing denominators (e.g. procedures per 1,000 seniors by county). Requires a free Census API key in CENSUS_API_KEY.
+description: US Census Bureau population data — total, 65-and-over and 85-and-over population and median age by nation, state or county (official annual estimates, no key needed), plus any American Community Survey variable (needs a free CENSUS_API_KEY). Use for per-capita rates and market-sizing denominators, e.g. procedures per 1,000 seniors by state or county, or "how many people 65+ live in X".
 ---
 
 # Census Bureau API (ACS)
@@ -24,20 +24,54 @@ If `${CLAUDE_SKILL_DIR}` appears literally instead of as a path (claude.ai chat 
 - `openpaymentsdata.cms.gov`
 - `api.fda.gov`
 - `api.census.gov`
+- `www2.census.gov`
 
 An HTML "Access Denied" page from a CMS host is a block on the client or network, not an empty answer. Don't retry in a loop. Never disguise the client (for example, a browser User-Agent) or route around a block.
 
 **Cite every number.** Give its source dataset, its data year or period, and what it measures (for example, "Medicare fee-for-service beneficiaries, CY2024"). For questions that combine sources (market sizing, linking surgeons to payments or devices), also load the `medtech-market-intel` skill.
 <!-- END ground-rules -->
 
-> **Status: partly verified.** The Census API requires a key for every data request (ACS, decennial and population-estimate endpoints all redirect to "missing key"); its metadata endpoints don't. Verified live without a key (2026-10-27):
+## Which command
+
+| Need | Command | Key? |
+|---|---|---|
+| Total, 65+, 85+ population, median age (county) | `popest` (official Census Population Estimates) | **No.** Works in claude.ai chat once `www2.census.gov` is allowed |
+| Anything else from the ACS (income, insurance, education, ...) | `census` (ACS via api.census.gov) | Yes, `CENSUS_API_KEY` |
+
+Default to `popest` for population denominators. These are the Census Bureau's official annual population totals, with no survey margin of error. Use `census` only for variables the population-estimate files don't have. If no key is available, say the ACS variable can't be fetched; don't substitute something else.
+
+## popest: official population estimates (no key)
+
+`CLI` means `node ${CLAUDE_SKILL_DIR}/scripts/medtech-data.mjs`.
+
+```bash
+CLI popest                                          # United States, newest vintage
+CLI popest --state TX                               # state total (sum of its counties)
+CLI popest --state VT --by-county --format csv      # every county in a state
+CLI popest --state NM --county "doña ana"           # one county (name prefix, case-insensitive), or --fips 35013
+CLI popest --state OH --year 2022                   # an earlier July 1 estimate from the same vintage
+```
+
+- **Output:** `total_pop`, `pop_65_plus`, `pop_85_plus`, `pct_65_plus`, `year`, `fips`, plus `median_age` for counties.
+- **Dates and vintages:** each figure is the resident population on **July 1** of `year`. `--year base` gives the April 1, 2020 estimates base.
+  - A **vintage** is one annual release. Vintage 2025 (released June 2026) re-estimates every year from 2020 to 2025.
+  - Estimates for the same year change between vintages, so compare years within one vintage and cite it ("Census PEP Vintage 2025, July 1, 2024").
+  - The CLI picks the newest vintage automatically; `--vintage YYYY` pins one.
+- **How it's built (verified 2026-10-27 against the published file-layout documents):**
+  - It reads static CSVs from `www2.census.gov/programs-surveys/popest/datasets/`: per-state county files `cc-estVVVV-agesex-SS.csv` (Latin-1 encoded) and the national single-year-of-age file `nc-estVVVV-agesex-res.csv`.
+  - A state total is the sum of its counties. Summing all 50 states and DC reproduced the national file exactly.
+  - DC (`DC`) and Puerto Rico (`PR`) are supported.
+
+## census: ACS via api.census.gov (key required)
+
+> **Status: data responses unverified.** Every api.census.gov data request needs a key; only the metadata endpoints don't. Verified without a key (2026-10-27):
 > - the `--pop65` variable mapping;
 > - automatic detection of the newest release;
 > - the missing-key and invalid-key errors.
 >
-> **No data response has been checked yet.** Until one has, compare the first results against census.gov and tell the user the figures come from a newly connected source.
+> Until a keyed query has been checked against census.gov, say the figures come from a newly connected source. For plain population counts, use `popest` instead.
 
-## Setup
+### Setup
 
 1. Get a free key at https://api.census.gov/data/key_signup.html.
 2. Activate it with the link in the confirmation email. An unactivated key is rejected as invalid.
@@ -45,7 +79,7 @@ An HTML "Access Denied" page from a CMS host is a block on the client or network
 
 Without a key, or with a bad one, Census redirects to an HTML "missing key" or "invalid key" page instead of returning an error. The CLI recognizes both and stops with a clear message.
 
-## Commands
+### Commands
 
 `CLI` means `node ${CLAUDE_SKILL_DIR}/scripts/medtech-data.mjs`.
 
@@ -61,6 +95,11 @@ CLI census --get NAME,B01001_001E --for 'us:1' --year 2023            # any ACS 
 - Geography uses FIPS codes: state `50`; county `025` within state `50`, i.e. `50025`. That matches `BENE_FIPS_CD` in Medicare enrollment, for joins.
 
 ## Reading the data correctly
+
+**popest vs ACS:**
+- **Population estimates** are modeled from the 2020 Census, births, deaths and migration. They're official totals with no margin of error.
+- **ACS 5-year figures** are survey averages over five years, with margins of error.
+- They won't match exactly; don't mix them in one table without saying so.
 
 **Estimates, not counts**
 - ACS figures are survey estimates with margins of error (the `M` variables, e.g. `B01001_001M`).

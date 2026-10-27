@@ -91,14 +91,19 @@ const die = (msg, code = 1) => { log(`error: ${msg}`); process.exit(code); };
 
 // ─── HTTP ───
 
-async function getJson(url, { retries = 2 } = {}) {
+// Text (not JSON) GET, e.g. Census CSVs, which are Latin-1 encoded.
+function getText(url, { encoding = 'utf-8', retries = 2 } = {}) {
+  return getJson(url, { retries, text: encoding });
+}
+
+async function getJson(url, { retries = 2, text: textEncoding = null } = {}) {
   for (let attempt = 0; ; attempt++) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     let res, text;
     try {
-      res = await fetch(url, { signal: ctrl.signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT } });
-      text = await res.text();
+      res = await fetch(url, { signal: ctrl.signal, headers: { accept: textEncoding ? '*/*' : 'application/json', 'user-agent': USER_AGENT } });
+      text = new TextDecoder(textEncoding || 'utf-8').decode(await res.arrayBuffer());
     } catch (e) {
       clearTimeout(t);
       if (attempt < retries) { await sleep(2000 * 2 ** attempt); continue; }
@@ -113,6 +118,10 @@ async function getJson(url, { retries = 2 } = {}) {
       throw new Error(`HTTP ${res.status} "Access Denied" from the CMS edge (Akamai) — this host is refusing ` +
         `this client/network. Not a data answer and not a bad query. Do not retry in a loop or spoof headers; ` +
         `report it and try another network. URL: ${url}`);
+    }
+    if (textEncoding) {
+      if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
+      return text;
     }
     let body;
     try { body = JSON.parse(text); } catch {
@@ -701,6 +710,119 @@ async function cmdCensus(a) {
   log(`Census ${dataset} ${year} — ${rows.length} row(s)`);
 }
 
+// ─── CENSUS POPULATION ESTIMATES (keyless) ───
+// The Census Bureau's official annual estimates (PEP) as static CSVs on
+// www2.census.gov: no API key, unlike api.census.gov. Layouts verified
+// 2026-10-27 against the published file-layout PDFs (CC-EST2025-AGESEX,
+// NC-EST2025-AGESEX-RES). County files are Latin-1 and hold county rows only
+// (SUMLEV 050); a state total is the sum of its counties (checked: 50 states +
+// DC sum exactly to the national file).
+const POPEST_BASE = 'https://www2.census.gov/programs-surveys/popest/datasets';
+const STATE_FIPS = {
+  AL: '01', AK: '02', AZ: '04', AR: '05', CA: '06', CO: '08', CT: '09', DE: '10', DC: '11', FL: '12', GA: '13',
+  HI: '15', ID: '16', IL: '17', IN: '18', IA: '19', KS: '20', KY: '21', LA: '22', ME: '23', MD: '24', MA: '25',
+  MI: '26', MN: '27', MS: '28', MO: '29', MT: '30', NE: '31', NV: '32', NH: '33', NJ: '34', NM: '35', NY: '36',
+  NC: '37', ND: '38', OH: '39', OK: '40', OR: '41', PA: '42', RI: '44', SC: '45', SD: '46', TN: '47', TX: '48',
+  UT: '49', VT: '50', VA: '51', WA: '53', WV: '54', WI: '55', WY: '56', PR: '72',
+};
+
+// Minimal CSV parser (handles quoted fields, though PEP files have none).
+export function parseCsv(text) {
+  const rows = [];
+  let row = [], field = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') q = false;
+      else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  const [header, ...data] = rows;
+  return data.map(r => Object.fromEntries(header.map((h, i) => [h, r[i]])));
+}
+
+// County-file YEAR codes: 1 = 4/1/2020 base, 2 = 7/1/2020 … (vintage - 2018) = 7/1/vintage.
+export function popestYearCode(year, vintage) {
+  if (String(year).toLowerCase() === 'base') return 1;
+  const y = Number(year);
+  if (!Number.isInteger(y) || y < 2020 || y > vintage) return null;
+  return y - 2018;
+}
+
+// Sum county rows (one YEAR) into a state total. Median age can't be summed.
+export function sumPopestCounties(rows) {
+  const n = k => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0);
+  return { total_pop: n('POPESTIMATE'), pop_65_plus: n('AGE65PLUS_TOT'), pop_85_plus: n('AGE85PLUS_TOT') };
+}
+
+// National file: single year of age, SEX 0 = total, AGE 999 = all ages, AGE 100 = 100+.
+export function nationalFromSingleAge(rows, column) {
+  const tot = rows.filter(r => r.SEX === '0');
+  const n = pred => tot.filter(r => r.AGE !== '999' && pred(Number(r.AGE))).reduce((s, r) => s + Number(r[column]), 0);
+  const all = tot.find(r => r.AGE === '999');
+  return { total_pop: all ? Number(all[column]) : n(() => true), pop_65_plus: n(a => a >= 65), pop_85_plus: n(a => a >= 85) };
+}
+
+async function latestPopestVintage() {
+  const html = await getText(`${POPEST_BASE}/`);
+  const ranges = [...html.matchAll(/href="(\d{4})-(\d{4})\/"/g)].map(m => ({ dir: `${m[1]}-${m[2]}`, vintage: Number(m[2]) }));
+  if (!ranges.length) die(`could not list vintages at ${POPEST_BASE}/ — the directory format may have changed`);
+  return ranges.sort((x, y) => y.vintage - x.vintage)[0];
+}
+
+async function cmdPopest(a) {
+  let v;
+  if (a.vintage) {
+    const vin = Number(a.vintage);
+    v = { vintage: vin, dir: `${vin >= 2030 ? 2030 : 2020}-${vin}` };
+  } else v = await latestPopestVintage();
+  const year = a.year ? String(a.year) : String(v.vintage);
+  const code = popestYearCode(year, v.vintage);
+  if (!code) die(`--year must be 2020-${v.vintage} (or "base" for the April 1, 2020 estimates base) for vintage ${v.vintage}`);
+  const label = year === 'base' ? 'April 1, 2020 estimates base' : `July 1, ${year}`;
+  let rows, src;
+  if (!a.state) {
+    if (a.county || a.fips || a['by-county']) die('county-level needs --state XX');
+    src = `${POPEST_BASE}/${v.dir}/national/asrh/nc-est${v.vintage}-agesex-res.csv`;
+    const data = parseCsv(await getText(src, { encoding: 'latin1' }));
+    const col = year === 'base' ? 'ESTIMATESBASE2020' : `POPESTIMATE${year}`;
+    if (!data.length || !(col in data[0])) die(`national file has no ${col} column — ${src}`);
+    rows = [{ level: 'National', state: 'US', county: '', fips: '', ...nationalFromSingleAge(data, col) }];
+  } else {
+    const st = String(a.state).toUpperCase();
+    const fips = STATE_FIPS[st];
+    if (!fips) die(`unknown state "${a.state}" — use a 2-letter postal code (incl. DC, PR)`);
+    src = `${POPEST_BASE}/${v.dir}/counties/asrh/cc-est${v.vintage}-agesex-${fips}.csv`;
+    let data = parseCsv(await getText(src, { encoding: 'latin1' })).filter(r => r.YEAR === String(code));
+    if (!data.length) die(`no rows for YEAR code ${code} in ${src}`);
+    const stname = data[0].STNAME;
+    if (a.fips) data = data.filter(r => `${r.STATE}${r.COUNTY}` === String(a.fips).padStart(5, '0'));
+    if (a.county) data = data.filter(r => r.CTYNAME.toLowerCase().startsWith(String(a.county).toLowerCase()));
+    if ((a.fips || a.county) && !data.length) die(`no county matching ${a.fips || a.county} in ${stname}`);
+    if (a.county || a.fips || a['by-county']) {
+      rows = data.map(r => ({
+        level: 'County', state: st, county: r.CTYNAME, fips: `${r.STATE}${r.COUNTY}`,
+        total_pop: Number(r.POPESTIMATE), pop_65_plus: Number(r.AGE65PLUS_TOT), pop_85_plus: Number(r.AGE85PLUS_TOT),
+        median_age: Number(r.MEDIAN_AGE_TOT),
+      }));
+    } else {
+      rows = [{ level: 'State', state: st, county: '', fips, ...sumPopestCounties(data) }];
+    }
+  }
+  rows = rows.map(r => ({ ...r, year, pct_65_plus: r.total_pop ? +(r.pop_65_plus / r.total_pop * 100).toFixed(2) : null }));
+  emit(rows, a.format || 'json');
+  log(`Census Bureau Population Estimates (PEP), Vintage ${v.vintage}, resident population ${label} — ${rows.length} row(s). Source: ${src}`);
+}
+
 // Medicare Monthly Enrollment → Original Medicare (FFS) vs MA share. One
 // rolling dataset: the data year is the YEAR column (not --year on `query`),
 // and MONTH="Year" marks the annual row.
@@ -820,7 +942,11 @@ OPENFDA (api.fda.gov — devices)
       no match = empty result (openFDA's 404); --full keeps openfda's bulk arrays and long text untruncated
       optional FDA_API_KEY env var raises rate limits
 
-CENSUS (api.census.gov — requires free CENSUS_API_KEY)
+CENSUS POPULATION ESTIMATES (www2.census.gov — no key)
+  popest [--state XX [--county NAME | --fips NNNNN | --by-county]] [--year YYYY|base] [--vintage YYYY]
+      official annual resident population: total, 65+, 85+ (+ median age for counties); newest vintage by default
+
+CENSUS ACS (api.census.gov — requires free CENSUS_API_KEY)
   census --get VARS --for 'county:*' [--in 'state:50'] [--year Y] [--dataset acs/acs5]
       --year defaults to the newest release that defines the first variable
   census --pop65 --for 'state:*'              total and 65+ population (ACS B01001)
@@ -840,7 +966,7 @@ async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const a = parseArgs(rest);
   if (!cmd || cmd === 'help' || a.help) { process.stdout.write(HELP); return; }
-  const cmds = { datasets: cmdDatasets, versions: cmdVersions, columns: cmdColumns, query: cmdQuery, pd: cmdPd, npi: cmdNpi, op: cmdOp, fda: cmdFda, census: cmdCensus, 'ffs-share': cmdFfsShare };
+  const cmds = { datasets: cmdDatasets, versions: cmdVersions, columns: cmdColumns, query: cmdQuery, pd: cmdPd, npi: cmdNpi, op: cmdOp, fda: cmdFda, census: cmdCensus, popest: cmdPopest, 'ffs-share': cmdFfsShare };
   if (!cmds[cmd]) die(`unknown command "${cmd}". Run: node medtech-data.mjs help`);
   await cmds[cmd](a);
 }

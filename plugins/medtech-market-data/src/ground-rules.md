@@ -16,6 +16,7 @@ If `${CLAUDE_SKILL_DIR}` appears literally instead of as a path (claude.ai chat 
 - `openpaymentsdata.cms.gov`
 - `api.fda.gov`
 - `api.census.gov`
+- `www2.census.gov`
 
 An HTML "Access Denied" page from a CMS host is a block on the client or network, not an empty answer. Don't retry in a loop. Never disguise the client (for example, a browser User-Agent) or route around a block.
 
