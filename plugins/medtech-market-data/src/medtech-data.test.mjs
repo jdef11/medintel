@@ -1,7 +1,7 @@
 // Offline tests for the pure parts of medtech-data.mjs. Live API behavior is
 // checked by running the CLI (see the plugin README's "Checking it works").
 import { describe, it, expect } from 'vitest';
-import { buildCatalogIndex, buildDataApiFilter, nationalFromSingleAge, parseCsv, parseIn, parseWhere, popestYearCode, stripFdaBulk, sumPopestCounties, truncateLongStrings } from './medtech-data.mjs';
+import { buildCatalogIndex, buildDataApiFilter, nationalFromSingleAge, parseCsv, parseIn, parseWhere, popestYearCode, sortRows, stripFdaBulk, sumPopestCounties, truncateLongStrings } from './medtech-data.mjs';
 
 describe('parseWhere', () => {
   it.each([
@@ -136,6 +136,22 @@ describe('Census population estimates (popest)', () => {
       { SEX: '0', AGE: '100', P: '1' }, { SEX: '0', AGE: '999', P: '18' }, { SEX: '1', AGE: '65', P: '99' },
     ];
     expect(nationalFromSingleAge(rows, 'P')).toEqual({ total_pop: 18, pop_65_plus: 8, pop_85_plus: 3 });
+  });
+});
+
+describe('sortRows (servers that store numbers as text)', () => {
+  it('sorts text-typed amounts numerically, not alphabetically', () => {
+    const rows = [{ v: '9975.00' }, { v: '77857879.56' }, { v: '140.00' }];
+    expect(sortRows(rows, '-v').map(r => r.v)).toEqual(['77857879.56', '9975.00', '140.00']);
+    expect(sortRows(rows, 'v').map(r => r.v)).toEqual(['140.00', '9975.00', '77857879.56']);
+  });
+  it('puts placeholders like "Not Available" last in both directions', () => {
+    const rows = [{ r: 'Not Available' }, { r: '3' }, { r: '5' }, { r: '' }];
+    expect(sortRows(rows, '-r').map(x => x.r)).toEqual(['5', '3', 'Not Available', '']);
+    expect(sortRows(rows, 'r').map(x => x.r)).toEqual(['3', '5', 'Not Available', '']);
+  });
+  it('falls back to text order for non-numeric columns', () => {
+    expect(sortRows([{ n: 'b' }, { n: 'a' }], 'n').map(x => x.n)).toEqual(['a', 'b']);
   });
 });
 

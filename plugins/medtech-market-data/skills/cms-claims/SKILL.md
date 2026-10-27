@@ -104,9 +104,12 @@ Flag whichever of these affect your answer.
 - **Small providers are redacted.** By-Provider rows are suppressed at ≤10 beneficiaries, so summing them undercounts. Use the `geography`, `inpGeo` and `outGeo` totals for true totals.
 
 **Counting procedures**
-- **For surgical codes, services are not procedures.** Assistant-at-surgery lines (PAs, NPs) and ambulatory surgery center (ASC) facility claims bill the same CPT code. Use national `Tot_Benes`, or surgeon specialties only, and say which.
+- **For surgical codes, services are not procedures. Lead with beneficiaries.** Assistant-at-surgery lines (PAs, NPs) and ambulatory surgery center (ASC) facility claims bill the same CPT code, so `Tot_Srvcs` can run near 2× the real number of operations.
+  - For "how many procedures/surgeries were done", the headline number is `Tot_Benes` (national or state geography rows), stated as "≈ N procedures (Medicare FFS beneficiaries)". Mention services second, if at all, labelled "billed lines".
+  - For ranking surgeons, rank individuals (`Rndrng_Prvdr_Ent_Cd=I`) in surgical specialties by `Tot_Benes`. Exclude ASCs (`Ent_Cd=O`), physician assistants and nurse practitioners, and say you did.
 - **Beneficiary counts are distinct per row.** Summing `Tot_Benes` across codes or places of service overcounts patients. Use `provSummary` for one provider's true count.
 - **Place of service:** `F` = facility, `O` = office. A code usually has both rows.
+- **`HCPCS_Desc` is CMS's plain-language label, not the CPT descriptor.** For example, 27447 reads "Replacement of knee joint, both sides of knee"; that's normal total knee arthroplasty, not bilateral surgery.
 
 **Payments**
 - Per-row average payments mix surgeon and assistant claims, so one row's average is not the fee-schedule rate.
@@ -125,6 +128,7 @@ Flag whichever of these affect your answer.
 - `MA_AND_OTH_BENES` includes Medicare Advantage plus other non-fee-for-service plans (cost plans, PACE).
 - The annual (`MONTH=Year`) row's exact definition is in CMS's data dictionary; I haven't verified whether it's an average or a count. Say "annual enrollment row" rather than guessing.
 - The current year has monthly rows only.
+- `ffs-share` with no `--state` gives the national figure (`--state US` works too). `MONTH` is text, so sorting on it is alphabetical, not calendar order.
 
 **Other identifiers**
 - **Geography:** physician, inpatient and outpatient files use `Rndrng_Prvdr_Geo_Lvl` (National/State), with full state names in `_Geo_Desc`. DMEPOS uses `Rfrg_Prvdr_Geo_Lvl`.

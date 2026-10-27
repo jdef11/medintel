@@ -44,6 +44,7 @@ const CATALOG_INDEX = join(CACHE_DIR, 'catalog-index.json');
 const CATALOG_TTL_MS = 24 * 3600 * 1000;
 const PAGE_SIZE = 1000;      // data-api page size; 5000 also works, but 1000 is reliable
 const PD_PAGE_SIZE = 1500;   // provider-data hard max (400 above this)
+const OP_PAGE_SIZE = 500;    // Open Payments hard max ("JSON Schema validation failed" above this; verified 2026-10-27)
 const TIMEOUT_MS = 90000;    // provider-data queries take ~15s each, flat
 // The CMS edge 403s Node's default User-Agent ("node") on provider-data
 // (verified 2026-10-26; curl's default passes). Identify the tool honestly.
@@ -483,15 +484,38 @@ function dkanParams(a) {
   return parts;
 }
 
-async function runDkan(base, a, label) {
-  const parts = dkanParams(a);
-  const want = a.count ? 1 : a.all ? intArg(a.max, 'max', 20000) : intArg(a.limit, 'limit', 100);
+// Sort rows by a column: numerically when every non-empty value is a number,
+// else as text. Used where the server stores numbers as text (Open Payments
+// amounts), so its own sort is alphabetical ("9975.00" > "77857879.56").
+const MISSING = /^\s*(|not available|n\/a|na|--|\*)\s*$/i;
+export function sortRows(rows, spec) {
+  const desc = String(spec).startsWith('-');
+  const col = String(spec).replace(/^-/, '');
+  const present = rows.map(r => r[col]).filter(v => v != null && !MISSING.test(String(v)));
+  // Numeric when every real value is a number; placeholders ("Not Available", "N/A", blank) sort last either way.
+  const numeric = present.length > 0 && present.every(v => Number.isFinite(Number(v)));
+  const missing = r => r[col] == null || MISSING.test(String(r[col]));
+  return [...rows].sort((x, y) => {
+    const mx = missing(x), my = missing(y);
+    if (mx || my) return mx === my ? 0 : mx ? 1 : -1;
+    const c = numeric ? Number(x[col]) - Number(y[col]) : String(x[col]).localeCompare(String(y[col]));
+    return desc ? -c : c;
+  });
+}
+
+// opts.clientSort: the server's sort can't be trusted (text-typed numbers), so
+// fetch every match (up to --max), sort here, then apply --limit.
+async function runDkan(base, a, label, pageSize = PD_PAGE_SIZE, opts = {}) {
+  const clientSort = opts.clientSort && a.sort && !a.count;
+  const parts = dkanParams(clientSort ? { ...a, sort: undefined } : a);
+  const limitArg = intArg(a.limit, 'limit', 100);
+  const want = a.count ? 1 : (a.all || clientSort) ? intArg(a.max, 'max', 20000) : limitArg;
   let offset = intArg(a.offset, 'offset', 0);
-  const rows = [];
+  let rows = [];
   let count = null;
   log(label);
   while (rows.length < want) {
-    const limit = Math.min(PD_PAGE_SIZE, want - rows.length);
+    const limit = Math.min(pageSize, want - rows.length);
     const url = `${base}?${[...parts, `limit=${limit}`, `offset=${offset}`].join('&')}`;
     if (a.url) log(url);
     const j = await getJson(url);
@@ -502,8 +526,15 @@ async function runDkan(base, a, label) {
     if (j.results.length < limit) break;
   }
   if (a.count) { process.stdout.write(JSON.stringify({ count }) + '\n'); return; }
+  if (clientSort) {
+    if (count > rows.length) {
+      log(`warning: sorted only the first ${rows.length} of ${count} matches (raise --max, or narrow the filters / use a grouped table); the top rows may be wrong`);
+    }
+    rows = sortRows(rows, a.sort);
+    if (!a.all) rows = rows.slice(0, limitArg);
+  }
   emit(rows, a.format || 'json');
-  log(`returned ${rows.length} of ${count} matching row(s)`);
+  log(`returned ${rows.length} of ${count} matching row(s)` + (clientSort ? `, sorted locally by ${a.sort}` : ''));
 }
 
 async function cmdPd(a) {
@@ -520,7 +551,8 @@ async function cmdPd(a) {
   const id = PD_ALIASES[a._[0]] || a._[0];
   if (!/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(id || '')) die(`pd needs a provider-data dataset id like xubh-q36u (or alias: ${Object.keys(PD_ALIASES).join(', ')})`);
   const { base, title } = await dkanQueryBase(PD_API, id);
-  await runDkan(base, a, `provider-data ${id}${title ? ` (${title})` : ''} — large datasets take ~15s per request regardless of size; batch NPIs with --in`);
+  // Provider-data values are text ("3", "Not Available"), so sort locally too.
+  await runDkan(base, a, `provider-data ${id}${title ? ` (${title})` : ''} — large datasets take ~15s per request regardless of size; batch NPIs with --in`, PD_PAGE_SIZE, { clientSort: true });
 }
 
 // Open Payments (Sunshine Act): industry payments to physicians, NPPs and
@@ -572,7 +604,8 @@ async function cmdOp(a) {
     }
   }
   const base = dist(ds) ? `${OP_API}/datastore/query/${dist(ds)}` : (await dkanQueryBase(OP_API, ds.identifier)).base;
-  await runDkan(base, a, `Open Payments — ${ds.title} (${ds.identifier})`);
+  // Open Payments stores amounts as text, so its server-side sort is alphabetical.
+  await runDkan(base, a, `Open Payments — ${ds.title} (${ds.identifier})`, OP_PAGE_SIZE, { clientSort: true });
 }
 
 // openFDA device endpoints. No match → HTTP 404 {"error":{"code":"NOT_FOUND"}},
@@ -828,6 +861,7 @@ async function cmdPopest(a) {
 // and MONTH="Year" marks the annual row.
 async function cmdFfsShare(a) {
   const r = await resolveDataset('enrollment');
+  if (a.state && String(a.state).toUpperCase() === 'US') delete a.state; // national
   const lvl = a.county || a.fips || a['by-county'] ? 'County' : a.state ? 'State' : 'National';
   const conds = [{ path: 'BENE_GEO_LVL', op: '=', value: lvl }];
   if (a.state) conds.push({ path: 'BENE_STATE_ABRVTN', op: '=', value: String(a.state).toUpperCase() });
