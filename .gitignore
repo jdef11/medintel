@@ -1,2 +1,5 @@
 node_modules/
 .wrangler/
+
+# Plugin build output (node plugins/medtech-market-data/build.mjs --zip)
+plugins/medtech-market-data/dist/

@@ -1,0 +1,12 @@
+{
+  "name": "medintel-plugins",
+  "owner": { "name": "jdef11" },
+  "description": "Personal Claude plugins from the medintel repo",
+  "plugins": [
+    {
+      "name": "medtech-market-data",
+      "source": "./plugins/medtech-market-data",
+      "description": "Live CMS, Open Payments, openFDA, NPPES and Census data for medical device market intelligence"
+    }
+  ]
+}

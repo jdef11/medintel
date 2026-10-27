@@ -1,0 +1,9 @@
+{
+  "name": "medtech-market-data",
+  "version": "0.1.0",
+  "description": "Live public healthcare data for medical device market intelligence: CMS Medicare claims and enrollment, Care Compare, NPPES, Open Payments, openFDA and Census, with a zero-dependency CLI that catches each API's silent-failure traps.",
+  "author": { "name": "jdef11" },
+  "repository": "https://github.com/jdef11/medintel",
+  "license": "MIT",
+  "keywords": ["cms", "medicare", "open-payments", "openfda", "npi", "market-sizing", "medtech"]
+}

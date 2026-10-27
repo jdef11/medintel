@@ -35,6 +35,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ├── .github/workflows/icd10pcs-rebuild.yml  # Weekly: rebuilds the ICD-10-PCS crosswalk when CMS publishes a new FY → PR (or commit on a feature branch); problems → `icd10pcs-rebuild` issue
 ├── .github/workflows/live-smoke.yml  # Weekly (Mon) `npm run smoke` against real CMS; opens/updates/closes a `live-cms-check` issue
 ├── README.md                      # User-facing documentation and example searches
+├── plugins/medtech-market-data/   # Personal Claude plugin (7 skills) for live CMS / Open Payments / openFDA / NPPES / Census queries — independent of the app; see its README
+├── .claude-plugin/marketplace.json  # Marketplace entry so the plugin installs from this repo (`/plugin marketplace add jdef11/medintel`)
 ├── LICENSE                        # MIT License
 └── CLAUDE.md                      # This file
 ```
@@ -358,7 +360,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 302 tests, plus `scripts/build-icd10pcs-drg-index.test.mjs`, 18 offline tests of the crosswalk build, and `proxy/worker.test.mjs`, 52 tests of the CMS proxy's allowlist/CORS/handler). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 302 tests, plus `scripts/build-icd10pcs-drg-index.test.mjs`, 18 offline tests of the crosswalk build, `proxy/worker.test.mjs`, 52 tests of the CMS proxy's allowlist/CORS/handler, and `plugins/medtech-market-data/src/medtech-data.test.mjs`, 21 offline tests of the plugin's CLI plus a check that every skill's generated CLI copy and ground-rules block are in sync — after editing the plugin's `src/`, run `node plugins/medtech-market-data/build.mjs`). The GitHub Pages deploy runs the suite before publishing, so a stale plugin build blocks the app deploy too. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; network + Node 18+ required; also run every Monday by `.github/workflows/live-smoke.yml`, which opens one `live-cms-check` issue on failure, comments on it while it stays red, and closes it on the next green run. Exit code 2 means the runner couldn't reach data.cms.gov at all and gets its own issue title. GitHub-hosted runners **can** reach both CMS hosts (verified 2026-10-09): `www.cms.gov` via the icd10pcs-rebuild workflow scraping the FY2027 manual and order file (run 37941393294), and `data.cms.gov` via this workflow's first run, which passed every check (run 37947054488)) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`, DME Referring's `HCPCS_CD`), DRG code padding, and catalog shape. It resolves dataset versions with the app's real `extractDatasetVersions()` (imported from medintel-core.js), not a copy, so a catalog-format change fails step 2. Step 15 checks every `LATEST_DATASET_IDS` alias still serves the catalog's newest year; step 16 fails when the ICD-10-PCS crosswalk is past its fiscal year.
 - **`npm run build:icd10pcs`** (`node scripts/build-icd10pcs-drg-index.mjs`; network to `www.cms.gov` required, ~5-10 min) rebuilds `data/icd10pcs-drg-index.json`. Normally done by the `icd10pcs-rebuild` workflow; see "ICD-10-PCS → MS-DRG crosswalk" above.

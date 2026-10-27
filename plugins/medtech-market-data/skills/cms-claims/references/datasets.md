@@ -1,6 +1,6 @@
 # Column reference
 
-Columns as served for CY2024 (verified 2026-10-26 via `/data-viewer?size=0`). Older years occasionally differ, so `node scripts/cms.mjs columns <alias> --year Y` is authoritative.
+Columns as served for CY2024 (verified 2026-10-26 via `/data-viewer?size=0`). Older years occasionally differ, so `columns <alias> --year Y` is authoritative.
 
 ## provider: Physician & Other Practitioners by Provider and Service (~9.8M rows/yr)
 
@@ -34,15 +34,18 @@ The same `Rndrng_*` identity columns as `provider`, plus `Tot_HCPCS_Cds`, `Tot_B
 
 `Rfrg_NPI`, `Rfrg_Prvdr_Last_Name_Org`, `Rfrg_Prvdr_First_Name`, `Rfrg_Prvdr_MI`, `Rfrg_Prvdr_Crdntls`, `Rfrg_Prvdr_Ent_Cd`, `Rfrg_Prvdr_St1`, `Rfrg_Prvdr_St2`, `Rfrg_Prvdr_City`, `Rfrg_Prvdr_State_Abrvtn`, `Rfrg_Prvdr_State_FIPS`, `Rfrg_Prvdr_Zip5`, `Rfrg_Prvdr_RUCA_Cat`, `Rfrg_Prvdr_RUCA`, `Rfrg_Prvdr_RUCA_Desc`, `Rfrg_Prvdr_Cntry`, `Rfrg_Prvdr_Spclty_Cd`, `Rfrg_Prvdr_Spclty_Desc`, `Rfrg_Prvdr_Spclty_Srce`, `RBCS_Lvl`, `RBCS_Id`, `RBCS_Desc`, **`HCPCS_CD`** (capital D, unlike every other file), `HCPCS_Desc`, `Suplr_Rentl_Ind`, `Tot_Suplrs`, `Tot_Suplr_Benes`, `Tot_Suplr_Clms`, `Tot_Suplr_Srvcs`, `Avg_Suplr_Sbmtd_Chrg`, `Avg_Suplr_Mdcr_Alowd_Amt`, `Avg_Suplr_Mdcr_Pymt_Amt`, `Avg_Suplr_Mdcr_Stdzd_Amt`
 
-## Provider Data Catalog datasets (`pd` command)
+## outProvider: Outpatient Hospitals by Provider and Service (~116k rows/yr)
 
-| Alias | Id | Use | Key fields |
-|---|---|---|---|
-| `clinicians` | `mj5m-pzi6` | Doctors and Clinicians National Downloadable File (PECOS enrollment) | `npi`, `org_pac_id` (billing group), `facility_name`, `num_org_mem`, `citytown`, `state`, `zip_code` |
-| `facilityAff` | `27ea-46a8` | Facility Affiliation Data | `npi`, `facility_type` (Hospital, Home health agency, …), `facility_affiliations_certification_number` (CCN) |
-| `hospitals` | `xubh-q36u` | Hospital General Information | `facility_id` (CCN), `facility_name`, `citytown`, `state`, `hospital_type`, `hospital_overall_rating` |
+`Rndrng_Prvdr_CCN`, `Rndrng_Prvdr_Org_Name`, `Rndrng_Prvdr_St`, `Rndrng_Prvdr_City`, `Rndrng_Prvdr_State_Abrvtn`, `Rndrng_Prvdr_State_FIPS`, `Rndrng_Prvdr_Zip5`, `Rndrng_Prvdr_RUCA`, `Rndrng_Prvdr_RUCA_Desc`, `APC_Cd`, `APC_Desc`, `Bene_Cnt`, `CAPC_Srvcs`, `Avg_Tot_Sbmtd_Chrgs`, `Avg_Mdcr_Alowd_Amt`, `Avg_Mdcr_Pymt_Amt`, `Outlier_Srvcs`, `Avg_Mdcr_Outlier_Amt`
 
-- An NPI can have **several** `clinicians` rows (several practices). Disambiguate by matching city, state, and zip to the claims address. Don't take the first row.
-- An NPI can be affiliated with **several** hospitals. If you roll up by hospital, the per-hospital totals overlap and can't be summed.
+APC level only. This file has no HCPCS column, so per-hospital volume for a specific code isn't available here.
 
-Any other Provider Data Catalog dataset works by id. Browse them at https://data.cms.gov/provider-data/. Unknown fields return a 400 error, so a typo surfaces immediately.
+## outGeo: Outpatient Hospitals by Geography and Service (~89k rows/yr)
+
+`Rndrng_Prvdr_Geo_Lvl`, `Rndrng_Prvdr_Geo_Cd`, `Rndrng_Prvdr_Geo_Desc`, `Srvc_Lvl` (`APC` or `APC-HCPCS`), `APC_Cd`, `APC_Desc`, `HCPCS_Cd`, `HCPCS_Desc`, `Bene_Cnt`, `CAPC_Srvcs`, `Avg_Tot_Sbmtd_Chrgs`, `Avg_Mdcr_Alowd_Amt`, `Avg_Mdcr_Pymt_Amt`, `Outlier_Srvcs`, `Avg_Mdcr_Outlier_Amt`
+
+`HCPCS_Cd` is blank on `APC` rows.
+
+## enrollment: Medicare Monthly Enrollment (one rolling dataset, ~590k rows)
+
+`YEAR`, `MONTH` (`January`…`December`, or `Year` for the annual row), `BENE_GEO_LVL` (`National`/`State`/`County`), `BENE_STATE_ABRVTN`, `BENE_STATE_DESC`, `BENE_COUNTY_DESC` (stored as e.g. "Windham County"), `BENE_FIPS_CD`, `TOT_BENES`, `ORGNL_MDCR_BENES`, `MA_AND_OTH_BENES`. Breakdowns: `AGED_TOT_BENES`, `AGED_ESRD_BENES`, `AGED_NO_ESRD_BENES`, `DSBLD_TOT_BENES`, `DSBLD_ESRD_AND_ESRD_ONLY_BENES`, `DSBLD_NO_ESRD_BENES`, `MALE_TOT_BENES`, `FEMALE_TOT_BENES`, and race totals (`WHITE_TOT_BENES` …). Run `columns enrollment` for the rest.
