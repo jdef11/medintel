@@ -48,6 +48,58 @@ function getServices(row) {
   return 0;
 }
 
+// ─── PROCEDURE COUNT ───
+// Tot_Srvcs counts billed units, not procedures: a code billed with 2 units in
+// one session (e.g. 63650, one per SCS lead) counts twice. Tot_Bene_Day_Srvcs
+// counts distinct beneficiary-days, so one patient's procedure on one day is
+// one. Tot_Benes would undercount a second procedure on another day (the
+// second cataract eye), so patient-days is the procedure count. Payment math
+// stays on Tot_Srvcs — Avg_Mdcr_Pymt_Amt is per billed service, not per day.
+function getProcedureCount(row) {
+  const v = parseFloat(f(row, 'Tot_Bene_Day_Srvcs'));
+  if (!isNaN(v)) return v;
+  return getServices(row);
+}
+
+// Provider types that bill the surgeon's CPT code without being the
+// performing surgeon (verified live, CY2024: 27447 is billed by Physician
+// Assistant and Nurse Practitioner assistant-at-surgery lines and by the ASC's
+// own facility claim, on top of the surgeon's line). PAs/NPs are removed from
+// results entirely; ASCs stay listable (they buy devices) but never count
+// toward a code's procedure volume, since their claim duplicates the surgeon's.
+const NON_SURGEON_PROVIDER_TYPES = ['Physician Assistant', 'Nurse Practitioner'];
+const FACILITY_PROVIDER_TYPES = ['Ambulatory Surgical Center'];
+const VOLUME_EXCLUDED_PROVIDER_TYPES = NON_SURGEON_PROVIDER_TYPES.concat(FACILITY_PROVIDER_TYPES);
+
+function typeIn(list, type) {
+  const t = String(type || '').trim().toUpperCase();
+  return list.some(x => x.toUpperCase() === t);
+}
+function isNonSurgeonType(type) { return typeIn(NON_SURGEON_PROVIDER_TYPES, type); }
+function isVolumeExcludedType(type) { return typeIn(VOLUME_EXCLUDED_PROVIDER_TYPES, type); }
+
+// Drops PA/NP rows from a provider-level row set.
+function excludeNonSurgeonRows(rows) {
+  return (rows || []).filter(r => !isNonSurgeonType(f(r, 'Rndrng_Prvdr_Type')));
+}
+
+// Surgeon-only procedure totals for one code: the Geography & Service rows
+// (unsuppressed, all provider types) minus the provider-level rows billed by
+// VOLUME_EXCLUDED_PROVIDER_TYPES. Excluded rows below CMS's ≤10-beneficiary
+// floor can't be subtracted, so this slightly overstates; it never mixes in
+// the suppressed surgeons it would lose by summing surgeon rows instead.
+function surgeonOnlyTotals(geoRows, excludedRows) {
+  let allProcedures = 0, allPayment = 0, exProcedures = 0, exPayment = 0;
+  (geoRows || []).forEach(r => { allProcedures += getProcedureCount(r); allPayment += getPayment(r); });
+  (excludedRows || []).forEach(r => { exProcedures += getProcedureCount(r); exPayment += getPayment(r); });
+  return {
+    procedures: Math.max(0, allProcedures - exProcedures),
+    payment: Math.max(0, allPayment - exPayment),
+    allProcedures,
+    excludedProcedures: exProcedures,
+  };
+}
+
 function getBenes(row) {
   const v = parseFloat(f(row, 'Tot_Benes'));
   if (!isNaN(v)) return v;
@@ -112,11 +164,14 @@ function buildFilterParams(criteria, groupName) {
     c && c.path && !c.clientOnly && String(c.value !== undefined ? c.value : '') !== '');
   if (!list.length) return [];
   const cond = (label, c, memberOf) => {
-    // Operators come from a fixed internal set ('=' / 'CONTAINS'), so they are
+    // Operators come from a fixed internal set ('=' / 'CONTAINS' / 'IN'), so they are
     // emitted raw — matching the syntax CMS is known to accept.
+    // IN takes an array, sent as repeated value[] params (verified live).
+    const value = Array.isArray(c.value)
+      ? c.value.map(v => `&filter[${label}][condition][value][]=${encodeURIComponent(v)}`).join('')
+      : `&filter[${label}][condition][value]=${encodeURIComponent(c.value)}`;
     let p = `filter[${label}][condition][path]=${c.path}` +
-            `&filter[${label}][condition][operator]=${c.op || '='}` +
-            `&filter[${label}][condition][value]=${encodeURIComponent(c.value)}`;
+            `&filter[${label}][condition][operator]=${c.op || '='}` + value;
     if (memberOf) p += `&filter[${label}][condition][memberOf]=${memberOf}`;
     return p;
   };
@@ -131,7 +186,7 @@ function buildFilterParams(criteria, groupName) {
 // we display is correct no matter how the API combined the filters. Comparison
 // is case-insensitive, which also means a typed "ortho" matches CMS's
 // "Orthopedic Surgery" regardless of the API's own case handling.
-// Supported ops: 'CONTAINS', '=', '!='. A `lenient` criterion passes when the
+// Supported ops: 'CONTAINS', '=', '!=', 'IN' (value is an array). A `lenient` criterion passes when the
 // column is absent from the row (some dataset years omit columns) instead of
 // rejecting every row.
 function rowMatchesCriteria(row, criteria) {
@@ -141,6 +196,7 @@ function rowMatchesCriteria(row, criteria) {
     if (rawValue === undefined && c.lenient) return true;
     const actual = String(rawValue === undefined ? '' : rawValue).toUpperCase();
     const want = String(c.value).toUpperCase();
+    if (c.op === 'IN') return [].concat(c.value).some(v => String(v).toUpperCase() === actual);
     if (c.op === 'CONTAINS') return actual.includes(want);
     if (c.op === '!=') return actual !== want;
     return actual === want;
@@ -263,7 +319,7 @@ function groupByProvider(rows) {
     }
     const g = map[npi];
     const pymt = getPayment(row);
-    const srvcs = getServices(row);
+    const srvcs = getProcedureCount(row); // procedures (patient-days), not billed units
     const benes = getBenes(row);
     g.totalPayment += pymt;
     g.totalServices += srvcs;
@@ -460,8 +516,9 @@ function groupProvidersByHospital(providers, hospitalsByNpi, hospitalInfoByCcn) 
 
 // ─── GROUP BY PROCEDURE ───
 // Groups raw CMS rows by HCPCS code (one card per procedure, not per physician).
-// Each group aggregates total services, payment, and beneficiaries across all
-// providers in the fetched rows, and keeps a provider breakdown sorted by volume.
+// Each group aggregates total procedures (patient-days), payment, and
+// beneficiaries across the fetched rows (ASC facility rows excluded from the
+// totals), and keeps a provider breakdown sorted by volume.
 function groupByProcedure(rows) {
   const map = {};
   rows.forEach(row => {
@@ -480,11 +537,15 @@ function groupByProcedure(rows) {
     const g = map[code];
     if (!g.desc) g.desc = f(row, 'HCPCS_Desc') || '';
     const pymt = getPayment(row);
-    const srvcs = getServices(row);
+    const srvcs = getProcedureCount(row); // procedures (patient-days), not billed units
     const benes = getBenes(row);
-    g.totalServices += srvcs;
-    g.totalPayment += pymt;
-    g.totalBeneficiaries += benes;
+    // An ASC's facility claim duplicates the surgeon's for the same case, so it
+    // is listed below but kept out of the code's procedure totals.
+    if (!typeIn(FACILITY_PROVIDER_TYPES, f(row, 'Rndrng_Prvdr_Type'))) {
+      g.totalServices += srvcs;
+      g.totalPayment += pymt;
+      g.totalBeneficiaries += benes;
+    }
 
     const npi = f(row, 'Rndrng_NPI') || 'unknown';
     if (!g.providerMap[npi]) {
@@ -564,11 +625,13 @@ function combineTrendsByYear(trends) {
 // combineTrendsByYear() — used for the Procedure tab's per-code trend and the
 // Market TAM combined trend alike, so there is one chart implementation, not two.
 
-// Percent change in `services` between the first and last OK year. Returns
+// Percent change in `services` between the first and last OK, complete year. Returns
 // null when it can't be meaningfully stated: fewer than two OK years, or a
 // zero-volume first year (dividing by zero isn't a growth rate).
 function pctChangeAcrossYears(trend) {
-  const points = (trend || []).filter(t => t && t.ok).slice().sort((a, b) => a.year - b.year);
+  // A combined trend's partial years (complete === false: some codes missing)
+  // sum fewer codes, so comparing one to a complete year isn't growth.
+  const points = (trend || []).filter(t => t && t.ok && t.complete !== false).slice().sort((a, b) => a.year - b.year);
   if (points.length < 2) return null;
   const first = points[0];
   const last = points[points.length - 1];
@@ -1377,5 +1440,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getBenes, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getProcedureCount, getBenes, NON_SURGEON_PROVIDER_TYPES, FACILITY_PROVIDER_TYPES, VOLUME_EXCLUDED_PROVIDER_TYPES, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
 }

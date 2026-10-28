@@ -39,7 +39,7 @@ const bad = (m) => { console.log(`  ✗ ${m}`); failures++; };
 // Use the app's real catalog parser, so this checks what the app actually does
 // rather than a local copy that can drift from it.
 const require = createRequire(import.meta.url);
-const { extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness } = require('../medintel-core.js');
+const { extractDatasetVersions, LATEST_DATASET_IDS, yearFromDataFileName, icd10IndexStaleness, buildFilterParams, VOLUME_EXCLUDED_PROVIDER_TYPES } = require('../medintel-core.js');
 const { readFileSync } = require('fs');
 
 async function getJson(url) {
@@ -93,7 +93,7 @@ async function main() {
 
   console.log('\n3. Provider & Service — HCPCS + payment fields');
   if (resolved.provider) await fieldCheck('provider', `${DATA_API_ROOT}/${resolved.provider.id}/data?size=1`,
-    [['Rndrng_NPI'], ['HCPCS_Cd'], ['Tot_Srvcs', 'Tot_Srvcs_Cnt'], ['Avg_Mdcr_Pymt_Amt']]);
+    [['Rndrng_NPI'], ['HCPCS_Cd'], ['Tot_Srvcs', 'Tot_Srvcs_Cnt'], ['Tot_Bene_Day_Srvcs'], ['Rndrng_Prvdr_Type'], ['Avg_Mdcr_Pymt_Amt']]);
 
   console.log('\n4. by-Provider SUMMARY — true distinct beneficiary count (Tot_Benes)');
   if (resolved.provSummary) await fieldCheck('provSummary', `${DATA_API_ROOT}/${resolved.provSummary.id}/data?size=1`,
@@ -101,7 +101,7 @@ async function main() {
 
   console.log('\n5. Geography & Service — national row carries HCPCS + Tot_Benes');
   if (resolved.geography) await fieldCheck('geography', `${DATA_API_ROOT}/${resolved.geography.id}/data?size=1&filter[Rndrng_Prvdr_Geo_Lvl]=National`,
-    [['HCPCS_Cd'], ['Tot_Srvcs', 'Tot_Srvcs_Cnt'], ['Tot_Benes', 'Tot_Bene_Cnt']]);
+    [['HCPCS_Cd'], ['Tot_Srvcs', 'Tot_Srvcs_Cnt'], ['Tot_Bene_Day_Srvcs'], ['Tot_Benes', 'Tot_Bene_Cnt']]);
 
   console.log('\n6. Inpatient Geography — DRG code + discharge/payment fields');
   if (resolved.inpGeo) await fieldCheck('inpGeo', `${DATA_API_ROOT}/${resolved.inpGeo.id}/data?size=1&filter[Rndrng_Prvdr_Geo_Lvl]=National`,
@@ -275,6 +275,24 @@ async function main() {
     else if (st.stale) bad(`index is ${idx.version} (built ${idx.builtAt}), which ended ${st.endsOn} — rebuild for FY${st.fy + 1}: the icd10pcs-rebuild workflow does this weekly (check its issues), or run it from the Actions tab`);
     else ok(`${idx.version} — current through ${st.endsOn}`);
   } catch (e) { bad(`could not read the index: ${e.message}`); }
+
+  console.log('\n17. Surgeon-only volume: the PA/NP/ASC IN filter returns only those provider types');
+  // The app subtracts these rows from the geography total. An ignored IN
+  // filter would return every type and subtract the surgeons too.
+  if (resolved.provider) {
+    try {
+      const params = buildFilterParams([
+        { path: 'HCPCS_Cd', op: '=', value: '27447' },
+        { path: 'Rndrng_Prvdr_Type', op: 'IN', value: VOLUME_EXCLUDED_PROVIDER_TYPES },
+      ]).join('&');
+      const rows = await getJson(`${DATA_API_ROOT}/${resolved.provider.id}/data?size=200&${params}`);
+      const types = new Set(rows.map((r) => r.Rndrng_Prvdr_Type));
+      const stray = [...types].filter((t) => !VOLUME_EXCLUDED_PROVIDER_TYPES.includes(t));
+      if (!rows.length) bad('no PA/NP/ASC rows for 27447 — check the provider type spellings');
+      else if (stray.length) bad(`IN filter not honored — got ${stray.slice(0, 5).join(', ')}`);
+      else ok(`${rows.length} rows, types: ${[...types].join(', ')}`);
+    } catch (e) { bad(`PA/NP/ASC query failed: ${e.message}`); }
+  }
 
   finish();
 }

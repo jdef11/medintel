@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 const {
   f, getPayment, getAvgCharge, getServices, getBenes,
+  getProcedureCount, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, VOLUME_EXCLUDED_PROVIDER_TYPES,
   getProviderName, getLocation, fmtCurrency, fmtNumber,
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
@@ -1955,6 +1956,15 @@ describe('hcpcsLevelIIFamily()', () => {
 // chart instead of a bar-in-a-table-row, and a "grew X% since CY——" callout —
 // this is the pure math behind both, shared by one renderTrendChart() call site.
 describe('pctChangeAcrossYears()', () => {
+  it('ignores partial years of a combined trend (some codes missing)', () => {
+    const trend = [
+      { year: 2013, services: 100, ok: true, complete: false },
+      { year: 2014, services: 1000, ok: true, complete: true },
+      { year: 2015, services: 1100, ok: true, complete: true },
+    ];
+    expect(pctChangeAcrossYears(trend)).toEqual({ firstYear: 2014, lastYear: 2015, pct: 10 });
+    expect(pctChangeAcrossYears([trend[0], trend[2]])).toBeNull();
+  });
   it('computes percent change between the first and last OK years', () => {
     const trend = [
       { year: 2021, services: 100, ok: true },
@@ -2178,5 +2188,97 @@ describe('needsCmsProxy()', () => {
     expect(needsCmsProxy('https://npiregistry.cms.hhs.gov/api/?version=2.1')).toBe(true);
     expect(needsCmsProxy('https://data.cms.gov/data-api/v1/dataset/x/data')).toBe(false);
     expect(needsCmsProxy('https://data.cms.gov/data.json')).toBe(false);
+  });
+});
+
+// ─── Procedure counting: patient-days, surgeons only ────────────────────────
+// Shapes mirror live CY2024 rows: 63650 billed 2 units per session, and
+// 27447 billed by PA/NP assistant lines and ASC facility claims besides the surgeon.
+
+describe('getProcedureCount()', () => {
+  it('counts distinct patient-days, not billed units', () => {
+    expect(getProcedureCount({ Tot_Srvcs: '20', Tot_Bene_Day_Srvcs: '10', Tot_Benes: '9' })).toBe(10);
+  });
+  it('falls back to Tot_Srvcs when the column is absent', () => {
+    expect(getProcedureCount({ Tot_Srvcs: '7' })).toBe(7);
+  });
+  it('keeps a real zero', () => {
+    expect(getProcedureCount({ Tot_Srvcs: '5', Tot_Bene_Day_Srvcs: '0' })).toBe(0);
+  });
+});
+
+describe('provider-type exclusions', () => {
+  it('treats PA and NP as non-surgeons, case-insensitively', () => {
+    expect(isNonSurgeonType('Physician Assistant')).toBe(true);
+    expect(isNonSurgeonType('NURSE PRACTITIONER')).toBe(true);
+    expect(isNonSurgeonType('Orthopedic Surgery')).toBe(false);
+    expect(isNonSurgeonType('Ambulatory Surgical Center')).toBe(false);
+  });
+  it('excludes PA, NP and ASC from procedure volume', () => {
+    expect(VOLUME_EXCLUDED_PROVIDER_TYPES).toEqual(['Physician Assistant', 'Nurse Practitioner', 'Ambulatory Surgical Center']);
+    expect(isVolumeExcludedType('Ambulatory Surgical Center')).toBe(true);
+    expect(isVolumeExcludedType('Ophthalmology')).toBe(false);
+  });
+  it('excludeNonSurgeonRows drops PA/NP rows and keeps ASC rows', () => {
+    const rows = [
+      { Rndrng_Prvdr_Type: 'Orthopedic Surgery' },
+      { Rndrng_Prvdr_Type: 'Physician Assistant' },
+      { Rndrng_Prvdr_Type: 'Nurse Practitioner' },
+      { Rndrng_Prvdr_Type: 'Ambulatory Surgical Center' },
+    ];
+    expect(excludeNonSurgeonRows(rows).map(r => r.Rndrng_Prvdr_Type)).toEqual(['Orthopedic Surgery', 'Ambulatory Surgical Center']);
+  });
+});
+
+describe('surgeonOnlyTotals()', () => {
+  it('subtracts assistant/facility patient-days and payment from the geography total', () => {
+    const geo = [
+      { Place_Of_Srvc: 'F', Tot_Srvcs: '1000', Tot_Bene_Day_Srvcs: '1000', Avg_Mdcr_Pymt_Amt: '100' },
+      { Place_Of_Srvc: 'O', Tot_Srvcs: '10', Tot_Bene_Day_Srvcs: '10', Avg_Mdcr_Pymt_Amt: '100' },
+    ];
+    const excluded = [
+      { Rndrng_Prvdr_Type: 'Physician Assistant', Tot_Srvcs: '300', Tot_Bene_Day_Srvcs: '300', Avg_Mdcr_Pymt_Amt: '14' },
+      { Rndrng_Prvdr_Type: 'Ambulatory Surgical Center', Tot_Srvcs: '100', Tot_Bene_Day_Srvcs: '100', Avg_Mdcr_Pymt_Amt: '50' },
+    ];
+    const t = surgeonOnlyTotals(geo, excluded);
+    expect(t.allProcedures).toBe(1010);
+    expect(t.excludedProcedures).toBe(400);
+    expect(t.procedures).toBe(610);
+    expect(t.payment).toBe(101000 - 4200 - 5000);
+  });
+  it('never goes negative', () => {
+    expect(surgeonOnlyTotals([{ Tot_Bene_Day_Srvcs: '5' }], [{ Tot_Bene_Day_Srvcs: '9' }]).procedures).toBe(0);
+  });
+});
+
+describe('volume counting in groupers', () => {
+  const rows = [
+    { Rndrng_NPI: '1', Rndrng_Prvdr_Type: 'Pain Management', HCPCS_Cd: '63650', Tot_Srvcs: '20', Tot_Bene_Day_Srvcs: '10', Tot_Benes: '10', Avg_Mdcr_Pymt_Amt: '10' },
+    { Rndrng_NPI: '2', Rndrng_Prvdr_Type: 'Ambulatory Surgical Center', Rndrng_Prvdr_Ent_Cd: 'O', HCPCS_Cd: '63650', Tot_Srvcs: '40', Tot_Bene_Day_Srvcs: '20', Tot_Benes: '20', Avg_Mdcr_Pymt_Amt: '10' },
+  ];
+  it('groupByProvider counts patient-days but keeps payment on billed services', () => {
+    const p = groupByProvider(rows).find(x => x.npi === '1');
+    expect(p.totalServices).toBe(10);
+    expect(p.procedures[0].services).toBe(10);
+    expect(p.totalPayment).toBe(200);
+  });
+  it('groupByProcedure lists the ASC but keeps it out of the code totals', () => {
+    const [g] = groupByProcedure(rows);
+    expect(g.totalServices).toBe(10);
+    expect(g.totalPayment).toBe(200);
+    expect(g.providers.map(p => p.npi).sort()).toEqual(['1', '2']);
+  });
+});
+
+describe('IN criteria', () => {
+  it('buildFilterParams emits repeated value[] params', () => {
+    const [p] = buildFilterParams([{ path: 'Rndrng_Prvdr_Type', op: 'IN', value: ['Physician Assistant', 'Nurse Practitioner'] }]);
+    expect(p).toBe('filter[Rndrng_Prvdr_Type][condition][path]=Rndrng_Prvdr_Type&filter[Rndrng_Prvdr_Type][condition][operator]=IN' +
+      '&filter[Rndrng_Prvdr_Type][condition][value][]=Physician%20Assistant&filter[Rndrng_Prvdr_Type][condition][value][]=Nurse%20Practitioner');
+  });
+  it('rowMatchesCriteria matches any listed value, case-insensitively', () => {
+    const c = [{ path: 'Rndrng_Prvdr_Type', op: 'IN', value: ['Physician Assistant', 'Nurse Practitioner'] }];
+    expect(rowMatchesCriteria({ Rndrng_Prvdr_Type: 'physician assistant' }, c)).toBe(true);
+    expect(rowMatchesCriteria({ Rndrng_Prvdr_Type: 'Orthopedic Surgery' }, c)).toBe(false);
   });
 });

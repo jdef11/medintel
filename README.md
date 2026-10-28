@@ -117,11 +117,15 @@ Paste a whole list of HCPCS/CPT codes — separated by commas, spaces, semicolon
 
 Every results view has a **Share** button that copies a URL encoding the exact search — tab, all input fields, and the selected data year. Send it to a teammate and the page opens on the same tab with the same inputs and runs the search automatically. The address bar stays in sync as you share, so browser back/forward moves between searches too. Nothing is stored server-side; the whole search lives in the link's `#fragment`.
 
+### How procedures are counted
+
+CMS's `Tot_Srvcs` counts billed lines, which over-count procedures: one session can bill several units (spinal cord stimulator leads), and a surgeon's case is often billed again by a physician assistant or nurse practitioner (assistant at surgery) and by the ambulatory surgery center. MedIntel therefore counts **procedures as distinct patient-days** (`Tot_Bene_Day_Srvcs`), removes physician assistants and nurse practitioners from results, and computes each code's totals from surgeons only (ASC facility lines are subtracted; ASCs still appear as searchable customers). Payments are unchanged. Surgeon-only totals take one extra CMS query per code and year, so the first load of a code's trend can take a minute; repeats are fast.
+
 ### True Volume vs. Named Providers (suppression workaround)
 
-CMS omits any provider who billed a code for ≤10 Medicare beneficiaries, so provider-level rows badly undercount low-volume procedures. MedIntel works around this: each Procedure card's headline is the **true total volume** from CMS's pre-aggregated *Geography & Service* data, which is **not** subject to the per-provider floor — then it states plainly how much of that total the named providers cover (e.g. *"National total: 763 services in CY 2024. Named providers below account for 133 (17%); the remaining 630 were performed by providers CMS suppresses"*).
+CMS omits any provider who billed a code for ≤10 Medicare beneficiaries, so provider-level rows badly undercount low-volume procedures. MedIntel works around this: each Procedure card's headline is the **true total volume** from CMS's pre-aggregated *Geography & Service* data, which is **not** subject to the per-provider floor — then it states plainly how much of that total the named providers cover (e.g. *"National total: 763 surgeon procedures in CY 2024. Named providers below account for 133 (17%); the remaining 630 were performed by providers CMS suppresses"*).
 
-If a code has **no** named providers at all, the app doesn't dead-end — it queries the aggregate totals and reports the real volume: *"The procedure does have volume: 763 national services in CY 2024. No individual surgeon is listed because each performed it for ≤10 beneficiaries."* Use a national (no-state) search to surface the highest-volume surgeons, since state filters shrink per-provider counts below the floor faster.
+If a code has **no** named providers at all, the app doesn't dead-end — it queries the aggregate totals and reports the real volume: *"The procedure does have volume: 763 national surgeon procedures in CY 2024. No individual surgeon is listed because each performed it for ≤10 beneficiaries."* Use a national (no-state) search to surface the highest-volume surgeons, since state filters shrink per-provider counts below the floor faster.
 
 ### Data Year Selector & Yearly Volume Trends
 
@@ -130,8 +134,8 @@ Medicare claims data is published one calendar year at a time. MedIntel grounds 
 - A **Data Year** selector (sidebar) lets you run any CMS search against a specific calendar year — the list of available years is discovered live from the official [data.cms.gov catalog](https://data.cms.gov/data.json) and cached in your browser.
 - Every CMS results page shows a **year badge** (e.g. `CY 2023 · Medicare FFS`) so you always know which year you're looking at; NPI Lookup results are labeled as a live registry snapshot instead, since NPPES has no historical years.
 - On Find by Code results, **Volume trend by year** expands a chart of national (or state-level, if a state filter is set) total service volume and Medicare payment for that code across every published data year — ideal for understanding whether a procedure's volume is growing or shrinking.
-- Find Customers results have the same **Volume trend by year** panel per provider card — the provider's total billed services and Medicare payment per calendar year, across all procedure codes.
-- Provider cards stamp their headline metrics with the data year (e.g. `Total Services · CY 2024`).
+- Find Customers results have the same **Volume trend by year** panel per provider card — the provider's total procedures and Medicare payment per calendar year, across all procedure codes.
+- Provider cards stamp their headline metrics with the data year (e.g. `Total Procedures · CY 2024`).
 - CSV and SharePoint exports include a **Data Year** column.
 
 ### SharePoint Export
@@ -184,7 +188,7 @@ Two CMS services the app uses can't be called directly from a browser on another
 > Find by Code → HCPCS: `27134, 27137, 27138` → State: CA → Search
 
 **Find revision knee specialists above 50 procedures/year in Texas:**
-> Find by Code → HCPCS: `27486, 27487` → State: TX → Search → set Min services filter to 50
+> Find by Code → HCPCS: `27486, 27487` → State: TX → Search → set Min procedures filter to 50
 
 **Not sure of the codes?**
 > Look up a code → search `knee revision` → click **+ Procedure** on the codes you want → Find by Code → Search
