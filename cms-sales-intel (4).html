@@ -340,6 +340,8 @@
     animation: spin 0.6s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .wait-line .spinner { display: inline-block; vertical-align: middle; margin-right: 6px; width: 12px; height: 12px; }
+  .wait-hint { display: block; margin-top: 4px; color: var(--text-3); }
 
   /* ─── MAIN CONTENT ─── */
   .main {
@@ -2336,17 +2338,50 @@ function resetEmptyState() {
   `;
 }
 
+// Live "still waiting" line for slow CMS queries. CMS reports no progress
+// within a request, so this shows what is known: elapsed time, and how many
+// of the caller's requests have come back (progress(done, total)). Past
+// SLOW_WAIT_HINT_MS it adds a note that CMS is still working. Re-renders
+// every second until stop() or until el leaves the DOM.
+const SLOW_WAIT_HINT_MS = 8000;
+function startWaitIndicator(el, label, unit = 'requests') {
+  const t0 = Date.now();
+  let done = null, total = null;
+  let timer = null;
+  const render = () => {
+    if (!el.isConnected) { clearInterval(timer); return; }
+    const ms = Date.now() - t0;
+    const count = total ? ` — ${done} of ${total} ${unit} back from CMS` : '';
+    el.innerHTML = `<span class="wait-line"><span class="spinner"></span>${escapeHtml(label)}${count} · ${Math.floor(ms / 1000)}s` +
+      (ms >= SLOW_WAIT_HINT_MS ? '<span class="wait-hint">Still waiting for CMS to respond. A code nobody has searched recently can take a minute or more; repeat searches are fast.</span>' : '') +
+      '</span>';
+  };
+  render();
+  timer = setInterval(render, 1000);
+  return {
+    progress(d, t) { done = d; total = t; render(); },
+    setLabel(l) { label = l; render(); },
+    stop() { clearInterval(timer); },
+  };
+}
+
 // Show an in-main progress card with a Cancel button during a long search.
+let searchWait = null;
 function showSearchProgress(msg) {
   const empty = document.getElementById('emptyState');
   empty.innerHTML = `
     <div class="empty-icon"><div class="spinner" style="width:28px;height:28px;"></div></div>
     <h2>Searching…</h2>
-    <p>${escapeHtml(msg || 'Fetching from the CMS API — large multi-code searches can take a moment.')}</p>
+    <p id="searchWaitLine"></p>
     <button class="btn btn-secondary" style="max-width:180px;margin:12px auto 0;" onclick="cancelSearch()">Cancel search</button>
   `;
   empty.style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
+  stopSearchWait();
+  searchWait = startWaitIndicator(document.getElementById('searchWaitLine'), msg || 'Waiting for the CMS API');
+}
+function stopSearchWait() {
+  if (searchWait) { searchWait.stop(); searchWait = null; }
 }
 
 // Soft-cancel: invalidate the in-flight search (its renders are gen-guarded so
@@ -2354,6 +2389,7 @@ function showSearchProgress(msg) {
 // the concurrency gate but their results are discarded.
 function cancelSearch() {
   searchGen++;
+  stopSearchWait();
   isLoading = false;
   resetSearchButton();
   setStatus('Search cancelled.');
@@ -3083,6 +3119,7 @@ async function executeSearch() {
     setStatus('Search failed: ' + err.message);
   } finally {
     if (gen === searchGen) {
+      stopSearchWait();
       isLoading = false;
       btn.disabled = false;
       btn.innerHTML = `
@@ -4135,7 +4172,7 @@ function renderProcedureResults() {
             <div class="metric-label">Named Providers ‡</div>
           </div>
         </div>
-        <div class="year-note" id="coverage-${key}" data-visible="${g.totalServices}" style="margin:8px 0 0;">Loading true national volume…</div>
+        <div class="year-note" id="coverage-${key}" data-visible="${g.totalServices}" style="margin:8px 0 0;">Loading surgeon-only national volume…</div>
         <button class="procedures-toggle" id="trend-btn-${key}" onclick="toggleTrend('${escapeHtml(g.code)}')">
           <span class="arrow">▼</span> Volume trend by year
         </button>
@@ -4186,10 +4223,11 @@ async function probeSuppressedVolume() {
   const { codes } = parseCodes(document.getElementById('hcpcsCode').value);
   const stateVal = document.getElementById('stateSelectProc').value;
   if (!codes.length) return;
-  box.textContent = 'Checking CMS aggregate totals…';
+  const wait = startWaitIndicator(box, 'Checking CMS aggregate totals');
   const results = await Promise.all(
     codes.slice(0, 10).map(c => fetchGeoTotal(c, stateVal).then(t => ({ code: c, t })).catch(() => ({ code: c, t: null })))
   );
+  wait.stop();
   const withVolume = results.filter(r => r.t && r.t.services);
   const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
   if (!withVolume.length) {
@@ -4210,9 +4248,13 @@ async function probeSuppressedVolume() {
 let geoTotalGen = 0;
 async function patchProcedureTotals(pageGroups, stateVal) {
   const gen = ++geoTotalGen;
-  const results = await Promise.all(
-    pageGroups.map(g => fetchGeoTotal(g.code, stateVal).then(t => ({ g, t })).catch(() => ({ g, t: null })))
-  );
+  const results = await Promise.all(pageGroups.map(g => {
+    const covEl = document.getElementById(`coverage-${codeKey(g.code)}`);
+    const wait = covEl ? startWaitIndicator(covEl, 'Loading surgeon-only national volume') : null;
+    return fetchGeoTotal(g.code, stateVal)
+      .then(t => ({ g, t })).catch(() => ({ g, t: null }))
+      .finally(() => { if (wait) wait.stop(); });
+  }));
   if (gen !== geoTotalGen) return;
 
   const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
@@ -4234,7 +4276,11 @@ async function patchProcedureTotals(pageGroups, stateVal) {
         const visible = parseFloat(covEl.dataset.visible) || 0;
         const pct = Math.round((visible / t.services) * 100);
         const hidden = Math.max(0, t.services - visible);
-        covEl.innerHTML = `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} surgeon procedures</strong> in CY ${t.year}. Named providers below account for ${fmtNumber(visible)} (${pct}%); the remaining ${fmtNumber(hidden)} were performed by providers CMS suppresses (≤10 beneficiaries each) and cannot be listed individually.`;
+        // When the provider fetch hit its row cap, most of the gap is providers
+        // that were never fetched, not ones CMS suppresses — don't blame suppression.
+        covEl.innerHTML = resultsCapped
+          ? `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} surgeon procedures</strong> in CY ${t.year}. Providers listed below account for ${fmtNumber(visible)} (${pct}%). The list stops at the first ${fmtNumber(MAX_FETCHES * FETCH_SIZE)} rows CMS returned, so the remaining ${fmtNumber(hidden)} include providers not loaded as well as providers CMS suppresses (≤10 beneficiaries each). Add a State filter to load a complete list.`
+          : `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} surgeon procedures</strong> in CY ${t.year}. Named providers below account for ${fmtNumber(visible)} (${pct}%); the remaining ${fmtNumber(hidden)} were performed by providers CMS suppresses (≤10 beneficiaries each) and cannot be listed individually.`;
       }
     } else {
       // Geography data unavailable — fall back to the provider-sum, labeled honestly.
@@ -4261,12 +4307,17 @@ async function toggleTrend(code) {
   btn.classList.toggle('open');
   if (!opening || box.dataset.loaded) return;
 
-  box.innerHTML = '<div class="trend-caption"><div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px;"></div>Loading yearly volume from CMS…</div>';
+  box.innerHTML = '<div class="trend-caption"></div>';
+  const wait = startWaitIndicator(box.firstElementChild, 'Loading yearly surgeon volume', 'years');
+  const years = (datasetVersions.geography || []).length;
+  let done = 0;
   try {
-    const trend = await fetchTrend(code);
+    const trend = await fetchTrend(code, null, () => { if (years) wait.progress(++done, years); });
+    wait.stop();
     renderTrend(box, code, trend);
     box.dataset.loaded = '1';
   } catch (err) {
+    wait.stop();
     console.error(err);
     box.innerHTML = `<div class="trend-caption" style="color:var(--red);">${escapeHtml(err.message)}</div>`;
   }
@@ -4277,7 +4328,8 @@ async function toggleTrend(code) {
 // year's surgeon share was tried and rejected: ASC facility claims for 27447
 // only appear from CY2020, so a fixed share understates earlier years and
 // inflates growth.
-async function fetchTrend(code, stateOverride = null) {
+// onYearDone: optional per-year progress callback (see fetchYearlyTrend).
+async function fetchTrend(code, stateOverride = null, onYearDone) {
   const stateVal = stateOverride !== null
     ? stateOverride
     : document.getElementById('stateSelectProc').value;
@@ -4290,7 +4342,7 @@ async function fetchTrend(code, stateOverride = null) {
     // nothing to describe it from).
     const t = await surgeonTotalsFor(v.year, code, stateVal);
     return t ? { services: t.procedures, payment: t.payment, desc: t.desc } : { services: 0, payment: 0, desc: '' };
-  });
+  }, onYearDone);
 }
 
 // Ensure the year → dataset-version list for a dataset kind is loaded.
@@ -4340,7 +4392,8 @@ function finishTrend(results, cacheKey) {
 // per-year fan-out with error capture, and finishTrend. `buildYear(version)`
 // returns the year's aggregate ({ services, payment, ...extra }); the helper
 // stamps year/ok. Used by both the procedure and per-provider trend panels.
-async function fetchYearlyTrend(kind, cacheKey, buildYear) {
+// onYearDone(), if given, is called as each year settles (for progress UI).
+async function fetchYearlyTrend(kind, cacheKey, buildYear, onYearDone) {
   const versions = await requireVersions(kind);
   if (trendCache[cacheKey]) return trendCache[cacheKey];
   const results = await Promise.all(versions.map(async v => {
@@ -4350,6 +4403,8 @@ async function fetchYearlyTrend(kind, cacheKey, buildYear) {
     } catch (e) {
       console.log(`Trend fetch failed for CY ${v.year}:`, e.message);
       return { year: v.year, services: 0, payment: 0, ok: false };
+    } finally {
+      if (onYearDone) onYearDone();
     }
   }));
   return finishTrend(results, cacheKey);
@@ -4519,9 +4574,16 @@ async function executeTamSearch(codes) {
   }
 
   btn.innerHTML = `<div class="spinner"></div> Fetching national volume (${codes.length + drgs.length} code${codes.length + drgs.length > 1 ? 's' : ''})...`;
+  // Each CPT code needs one surgeon-only total per data year; count them as
+  // they come back so a long wait shows movement.
+  const yearsPerCode = (datasetVersions.geography || []).length;
+  const totalCodeYears = codes.length * yearsPerCode;
+  let codeYearsDone = 0;
+  if (searchWait) searchWait.setLabel('Fetching surgeon procedure volume');
+  const onYearDone = () => { if (searchWait && totalCodeYears) searchWait.progress(++codeYearsDone, totalCodeYears); };
   const [trends, drgTrends] = await Promise.all([
     Promise.all(codes.map(code =>
-      fetchTrend(code, '')
+      fetchTrend(code, '', onYearDone)
         .then(trend => ({ code, trend }))
         .catch(e => ({ code, trend: null, error: e.message }))
     )),
@@ -4533,6 +4595,7 @@ async function executeTamSearch(codes) {
   ]);
 
   btn.innerHTML = '<div class="spinner"></div> Finding top surgeons & hospitals...';
+  if (searchWait) { searchWait.progress(null, null); searchWait.setLabel('Finding top surgeons and hospitals'); }
   // Force the latest year for surgeon fetches — the TAM tab hides the Data Year
   // selector, so it must not inherit a stale year picked on another tab.
   const { base: surgeonBase, year: surgeonYear } = latestProviderBase();
