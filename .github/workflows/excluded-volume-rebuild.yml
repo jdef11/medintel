@@ -1,0 +1,165 @@
+name: Excluded-volume index rebuild
+
+# Rebuilds data/excluded-volume/ (PA/NP/ASC patient-days and payment per HCPCS
+# code, year and state) when CMS publishes a new data year of "Medicare
+# Physician & Other Practitioners - by Provider and Service" (usually spring),
+# or re-releases an old one. The build script compares data.json's CSV links
+# with the manifest and only builds what changed; each year is ~3 GB, streamed.
+#
+#   schedule / manual run on main → opens a PR (branch auto/excluded-volume)
+#   push to a non-main branch that touches the script or this workflow
+#                                   → commits the rebuilt index to that branch
+#
+# Until a new year is built, the app falls back to the slow live query for that
+# year only. Problems are reported as one GitHub issue (label:
+# excluded-volume-rebuild), closed automatically by the next successful run.
+
+on:
+  schedule:
+    - cron: '23 15 * * 1' # Mondays 15:23 UTC
+  workflow_dispatch:
+    inputs:
+      years:
+        description: 'Comma-separated data years to rebuild (blank = whatever is missing or re-released)'
+        required: false
+      force:
+        description: 'Rebuild every year'
+        type: boolean
+        default: false
+  push:
+    branches-ignore: [main]
+    paths:
+      - scripts/build-excluded-volume-index.mjs
+      - .github/workflows/excluded-volume-rebuild.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: excluded-volume-rebuild-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the index
+        id: build
+        env:
+          INPUT_YEARS: ${{ inputs.years }}
+        run: |
+          set +e
+          args=""
+          if [ -n "$INPUT_YEARS" ]; then args="--years $INPUT_YEARS"; fi
+          if [ "${{ inputs.force }}" = "true" ]; then args="$args --force"; fi
+          node scripts/build-excluded-volume-index.mjs $args 2>&1 | tee build-output.txt
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [ -z "$(git status --porcelain -- data/excluded-volume)" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          years=$(node -e 'console.log(Object.keys(require("./data/excluded-volume/manifest.json").years).sort().join(", "))' 2>/dev/null)
+          echo "years=$years" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run the test suite against the new index
+        if: steps.build.outputs.exit_code == '0' && steps.build.outputs.changed == 'true'
+        run: |
+          npm ci
+          npm test
+
+      - name: Commit to this branch
+        if: steps.build.outputs.exit_code == '0' && steps.build.outputs.changed == 'true' && github.event_name == 'push'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A data/excluded-volume
+          git commit -m "Rebuild excluded-volume index (CY ${{ steps.build.outputs.years }})" -m "Built by the excluded-volume-rebuild workflow from CMS's published CSV files."
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Open a pull request
+        id: pr
+        if: steps.build.outputs.exit_code == '0' && steps.build.outputs.changed == 'true' && github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          branch="auto/excluded-volume"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$branch"
+          git add -A data/excluded-volume
+          git commit -m "Rebuild excluded-volume index (CY ${{ steps.build.outputs.years }})" -m "Built by the excluded-volume-rebuild workflow from CMS's published CSV files."
+          git push -f origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if gh pr list --head "$branch" --state open --json number --jq '.[0].number' | grep -q .; then
+            echo "PR already open for $branch (updated by the push above)."
+            exit 0
+          fi
+          body=$(printf '%s\n\n%s\n\n%s\n' \
+            "Rebuilt \`data/excluded-volume/\` — the physician assistant, nurse practitioner and ASC totals MedIntel subtracts to get surgeon-only procedure volume. Years now covered: ${{ steps.build.outputs.years }}." \
+            "Built by the \`excluded-volume-rebuild\` workflow from CMS's yearly by-Provider-and-Service CSVs. Each new year passed the build's checks (matched-row count, sentinel code 27447, national total within 0.5–2× of the adjacent year) and \`npm test\`." \
+            "Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+          if ! gh pr create --base main --head "$branch" --title "Rebuild excluded-volume index" --body "$body"; then
+            echo "pr_failed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report in an issue (open, update, or close)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          EXIT_CODE: ${{ steps.build.outputs.exit_code }}
+          PR_FAILED: ${{ steps.pr.outputs.pr_failed }}
+          PR_BRANCH: ${{ steps.pr.outputs.branch }}
+          JOB_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const fs = require('fs');
+            const label = 'excluded-volume-rebuild';
+            const env = process.env;
+            const code = env.EXIT_CODE === '' || env.EXIT_CODE === undefined ? -1 : Number(env.EXIT_CODE);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const footer = '\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_';
+            let log = '';
+            try { log = fs.readFileSync('build-output.txt', 'utf8'); } catch (e) {}
+            const tail = log.length > 50000 ? log.slice(-50000) : log;
+
+            let problem = null;
+            if (env.JOB_STATUS === 'failure' && code === 0) {
+              problem = 'The rebuild succeeded but a later step failed (the test suite, or committing/pushing). See the run log.';
+            } else if (code === 4) {
+              problem = 'A year failed the build\'s sanity checks (column names, provider-type spellings, sentinel code 27447, or a national total far from the adjacent year), so nothing was committed. The app keeps using the live CMS query for that year. The log lists which check failed.';
+            } else if (code !== 0) {
+              problem = 'The rebuild failed unexpectedly (network, a CMS catalog change, or a script error). See the log.';
+            } else if (env.PR_FAILED === 'true') {
+              problem = `The new index is built and pushed to branch \`${env.PR_BRANCH}\`, but the workflow couldn't open a pull request — usually because "Allow GitHub Actions to create and approve pull requests" is off (Settings → Actions → General). Open it yourself: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/compare/main...${env.PR_BRANCH}`;
+            }
+
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: label, per_page: 1 });
+            const existing = open[0];
+
+            if (!problem) {
+              if (existing) {
+                await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number,
+                  body: `✅ Resolved by [this run](${runUrl}).${footer}` });
+                await github.rest.issues.update({ ...context.repo, issue_number: existing.number, state: 'closed', state_reason: 'completed' });
+              }
+              return;
+            }
+
+            const body = `${problem}\n\n**Run:** ${runUrl}\n\n<details><summary>Build output</summary>\n\n\`\`\`\n${tail || '(no output)'}\n\`\`\`\n</details>${footer}`;
+            if (existing) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
+            } else {
+              try { await github.rest.issues.getLabel({ ...context.repo, name: label }); }
+              catch (e) { await github.rest.issues.createLabel({ ...context.repo, name: label, color: 'fbca04', description: 'Opened by the excluded-volume index rebuild workflow' }); }
+              await github.rest.issues.create({ ...context.repo, labels: [label], title: 'Excluded-volume index needs attention', body });
+            }
+            core.setFailed('Excluded-volume rebuild needs attention');

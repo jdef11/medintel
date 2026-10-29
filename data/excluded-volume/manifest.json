@@ -1,0 +1,107 @@
+{
+  "description": "Patient-days (Tot_Bene_Day_Srvcs) and Medicare payment billed by these provider types, per HCPCS code, data year and state (\"US\" = national). Built by scripts/build-excluded-volume-index.mjs from CMS's \"Medicare Physician & Other Practitioners - by Provider and Service\" CSV files.",
+  "types": [
+    "Physician Assistant",
+    "Nurse Practitioner",
+    "Ambulatory Surgical Center"
+  ],
+  "shardKeyLength": 3,
+  "years": {
+    "2013": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/bf4231f9-ec7f-4189-afc3-ba5d53b8bd12/MUP_PHY_R25_P04_V20_D13_Prov_Svc.csv",
+      "rows": 9286633,
+      "matchedRows": 618820,
+      "codes": 2724,
+      "nationalPatientDays": 53388433,
+      "builtAt": "2026-10-29"
+    },
+    "2014": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/6700f86d-d2e5-4f2d-9dcb-8c30412768ff/MUP_PHY_R25_P04_V20_D14_Prov_Svc.csv",
+      "rows": 9316209,
+      "matchedRows": 679207,
+      "codes": 2733,
+      "nationalPatientDays": 59064307,
+      "builtAt": "2026-10-28"
+    },
+    "2015": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/14954ce3-4c43-43df-97e9-2c0437d7b43c/MUP_PHY_R25_P04_V20_D15_Prov_Svc.csv",
+      "rows": 9496848,
+      "matchedRows": 778416,
+      "codes": 2742,
+      "nationalPatientDays": 67276517,
+      "builtAt": "2026-10-28"
+    },
+    "2016": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/426bf97a-4cb8-47ca-9727-a535d9e8c298/MUP_PHY_R25_P04_V20_D16_Prov_Svc.csv",
+      "rows": 9714896,
+      "matchedRows": 880748,
+      "codes": 2801,
+      "nationalPatientDays": 75363545,
+      "builtAt": "2026-10-28"
+    },
+    "2017": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/4623fb40-781e-4eef-860e-b851cd5d10ea/MUP_PHY_R25_P04_V20_D17_Prov_Svc.csv",
+      "rows": 9847443,
+      "matchedRows": 992631,
+      "codes": 2835,
+      "nationalPatientDays": 84529998,
+      "builtAt": "2026-10-28"
+    },
+    "2018": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/5669eafb-f0b3-4dc5-be6d-abc09b480c2e/MUP_PHY_R25_P04_V20_D18_Prov_Svc.csv",
+      "rows": 9961865,
+      "matchedRows": 1096720,
+      "codes": 2863,
+      "nationalPatientDays": 92815918,
+      "builtAt": "2026-10-28"
+    },
+    "2019": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/7befba27-752e-47a8-a76c-6c6d4f74f2e3/MUP_PHY_R25_P04_V20_D19_Prov_Svc.csv",
+      "rows": 10140228,
+      "matchedRows": 1213149,
+      "codes": 2950,
+      "nationalPatientDays": 102983191,
+      "builtAt": "2026-10-28"
+    },
+    "2020": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/d22b18cd-7726-4bf5-8e9c-3e4587c589a1/MUP_PHY_R25_P05_V20_D20_Prov_Svc.csv",
+      "rows": 9449361,
+      "matchedRows": 1209990,
+      "codes": 2895,
+      "nationalPatientDays": 95588325,
+      "builtAt": "2026-10-28"
+    },
+    "2021": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/bffaf97a-c2ab-4fd7-8718-be90742e3485/MUP_PHY_R25_P05_V20_D21_Prov_Svc.csv",
+      "rows": 9886177,
+      "matchedRows": 1334801,
+      "codes": 2995,
+      "nationalPatientDays": 109135482,
+      "builtAt": "2026-10-28"
+    },
+    "2022": {
+      "source": "https://data.cms.gov/sites/default/files/2025-11/53fb2bae-4913-48dc-a6d4-d8c025906567/MUP_PHY_R25_P05_V20_D22_Prov_Svc.csv",
+      "rows": 9755427,
+      "matchedRows": 1427534,
+      "codes": 2990,
+      "nationalPatientDays": 115369591,
+      "builtAt": "2026-10-28"
+    },
+    "2023": {
+      "source": "https://data.cms.gov/sites/default/files/2025-04/e3f823f8-db5b-4cc7-ba04-e7ae92b99757/MUP_PHY_R25_P05_V20_D23_Prov_Svc.csv",
+      "rows": 9660647,
+      "matchedRows": 1498743,
+      "codes": 3050,
+      "nationalPatientDays": 123397240,
+      "builtAt": "2026-10-28"
+    },
+    "2024": {
+      "source": "https://data.cms.gov/sites/default/files/2026-05/b5ebab5a-f490-418a-9bce-4b9f31419356/PHY_R26_P05_V10_D24_Prov_Svc.csv",
+      "rows": 9781673,
+      "matchedRows": 1625052,
+      "codes": 3140,
+      "nationalPatientDays": 137483508,
+      "builtAt": "2026-10-28"
+    }
+  }
+}

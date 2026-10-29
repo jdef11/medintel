@@ -340,6 +340,8 @@
     animation: spin 0.6s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .wait-line .spinner { display: inline-block; vertical-align: middle; margin-right: 6px; width: 12px; height: 12px; }
+  .wait-hint { display: block; margin-top: 4px; color: var(--text-3); }
 
   /* ─── MAIN CONTENT ─── */
   .main {
@@ -1428,11 +1430,12 @@ let lookupResults = null;     // Code Lookup tab results ({cptMatches, drgMatche
 let tamDrgTrendArgs = null;
 let cptDict = null;           // Code Lookup: [{code, desc, services}] sorted by volume
 let drgDict = null;           // Code Lookup: [{code, desc, discharges, avgPaid}] sorted by volume
-const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v1';
+const CPT_DICT_CACHE_KEY = 'medintel_cpt_dict_v2'; // v2: volume is patient-days, not billed units
 const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
 let icd10PcsIndex = null;     // { version, builtAt, categories, codes } — built by scripts/build-icd10pcs-drg-index.mjs
 let icd10PcsArray = null;     // memoized [{code, desc}] view of icd10PcsIndex.codes, for searchDict()
 const ICD10PCS_INDEX_URL = './data/icd10pcs-drg-index.json';
+const EXCLUDED_INDEX_BASE = './data/excluded-volume/';
 // The dictionaries are a local index built by paginating the national rows, and
 // that pagination is capped. When the cap is hit the index is INCOMPLETE, so a
 // "no matches" result can't be trusted — these flags trigger a targeted
@@ -1747,35 +1750,160 @@ function geoBaseForYear() {
   return { base: `${DATA_API_ROOT}/${v.id}/data`, year: v.year };
 }
 
-// True (unsuppressed) totals for a HCPCS code from the Geography & Service
-// dataset — national, or state-level when a state filter is set. Cached per
-// code+state+year. Returns { services, benes, payment, year } or null.
-const geoTotalCache = {};
-async function fetchGeoTotal(code, stateVal) {
-  const g = geoBaseForYear();
-  if (!g) return null;
-  const key = `${code}|${stateVal}|${g.year}`;
-  if (geoTotalCache[key] !== undefined) return geoTotalCache[key];
+// Provider & Service base for a specific data year (to pair with a
+// Geography & Service year). Null when that year isn't discovered.
+function providerBaseForYear(year) {
+  const v = (datasetVersions.provider || []).find(x => String(x.year) === String(year));
+  return v ? `${DATA_API_ROOT}/${v.id}/data` : null;
+}
 
-  let url = `${g.base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
+// The PA/NP/ASC query below is slow when CMS hasn't cached it (8-55 s
+// measured), hence the longer timeout.
+const EXCLUDED_PAGE_SIZE = 5000;
+const SURGEON_TOTALS_TIMEOUT_MS = 90000;
+// At most this many in flight: Size a Market fans out codes × years of these,
+// and with 24 at once CMS dropped most of them (verified Oct 2026).
+const EXCLUDED_MAX_CONCURRENT = 4;
+let excludedActive = 0;
+const excludedWaiters = [];
+function acquireExcludedSlot() {
+  if (excludedActive < EXCLUDED_MAX_CONCURRENT) { excludedActive++; return Promise.resolve(); }
+  return new Promise(resolve => excludedWaiters.push(resolve));
+}
+function releaseExcludedSlot() {
+  const next = excludedWaiters.shift();
+  if (next) next(); // hand the slot straight over
+  else excludedActive--;
+}
+// Provider-level rows for one code billed by VOLUME_EXCLUDED_PROVIDER_TYPES
+// (PA, NP, ASC) in one data year, to subtract from that year's Geography &
+// Service total. Each row is re-checked against code, type and state so an
+// ignored filter can never subtract unrelated volume; a truncated pull throws
+// rather than under-subtracting.
+async function fetchExcludedRows(year, code, stateVal) {
+  const base = providerBaseForYear(year);
+  if (!base) throw new Error(`No Provider & Service dataset for CY ${year}`);
+  const criteria = [
+    { path: 'HCPCS_Cd', op: '=', value: code },
+    { path: 'Rndrng_Prvdr_Type', op: 'IN', value: VOLUME_EXCLUDED_PROVIDER_TYPES },
+  ];
+  if (stateVal) criteria.push({ path: 'Rndrng_Prvdr_State_Abrvtn', op: '=', value: stateVal });
+  await acquireExcludedSlot();
+  try {
+    return await fetchExcludedPages(base, criteria, `${code} in CY ${year}`);
+  } finally {
+    releaseExcludedSlot();
+  }
+}
+
+async function fetchExcludedPages(base, criteria, label) {
+  const params = buildFilterParams(criteria).join('&');
+  const columns = 'HCPCS_Cd,Rndrng_Prvdr_Type,Rndrng_Prvdr_State_Abrvtn,Tot_Bene_Day_Srvcs,Tot_Srvcs,Avg_Mdcr_Pymt_Amt';
+  const out = [];
+  for (let offset = 0, i = 0; i < 10; i++, offset += EXCLUDED_PAGE_SIZE) {
+    const url = `${base}?size=${EXCLUDED_PAGE_SIZE}&offset=${offset}&column=${columns}&${params}`;
+    const opts = { directTimeoutMs: SURGEON_TOTALS_TIMEOUT_MS, proxyTimeoutMs: SURGEON_TOTALS_TIMEOUT_MS };
+    // One retry: a cold query can fail at CMS's edge ("Failed to fetch") and
+    // then succeed seconds later once CMS has cached the result.
+    const rows = await corsFetch(url, opts).catch(async () => {
+      await new Promise(r => setTimeout(r, 3000));
+      return corsFetch(url, opts);
+    });
+    out.push(...(rows || []).filter(r => rowMatchesCriteria(r, criteria)));
+    if (!rows || rows.length < EXCLUDED_PAGE_SIZE) return out;
+  }
+  throw new Error(`Too many assistant/facility rows for ${label} to subtract`);
+}
+
+// Precomputed PA/NP/ASC totals (data/excluded-volume/, built yearly by
+// scripts/build-excluded-volume-index.mjs). Both loaders are memoized; a
+// failed load resolves to null so the caller falls back to the live query.
+let excludedManifestPromise = null;
+function loadExcludedManifest() {
+  if (!excludedManifestPromise) {
+    excludedManifestPromise = fetch(`${EXCLUDED_INDEX_BASE}manifest.json`)
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return excludedManifestPromise;
+}
+const excludedShardPromises = {};
+function loadExcludedShard(key) {
+  if (!excludedShardPromises[key]) {
+    excludedShardPromises[key] = fetch(`${EXCLUDED_INDEX_BASE}${encodeURIComponent(key)}.json`)
+      // The build writes no file for a prefix with no PA/NP/ASC billing at all.
+      .then(r => (r.ok ? r.json() : r.status === 404 ? {} : null))
+      .catch(() => null)
+      .then(shard => { if (!shard) delete excludedShardPromises[key]; return shard; });
+  }
+  return excludedShardPromises[key];
+}
+
+// { procedures, payment } billed by PA/NP/ASC for one code/year/state: from
+// the index when it covers that year, otherwise (a year CMS published after
+// the last index build, or the index failed to load) the slow live query.
+async function excludedTotalsFor(year, code, stateVal) {
+  const manifest = await loadExcludedManifest();
+  if (excludedIndexCovers(manifest, year)) {
+    const shard = await loadExcludedShard(excludedShardKey(code));
+    if (shard) return excludedFromShard(shard, code, year, stateVal);
+  }
+  return sumExcludedRows(await fetchExcludedRows(year, code, stateVal));
+}
+
+// Geography & Service URL for one code, national or (with stateVal) one state.
+function geoCodeUrl(base, code, stateVal) {
+  let url = `${base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
   if (stateVal) {
     const geoDesc = STATE_NAMES[stateVal] || stateVal;
     url += `&filter[Rndrng_Prvdr_Geo_Lvl]=State&filter[Rndrng_Prvdr_Geo_Desc]=${encodeURIComponent(geoDesc)}`;
   } else {
     url += `&filter[Rndrng_Prvdr_Geo_Lvl]=National`;
   }
+  return url;
+}
+
+// Surgeon-only procedure totals for a HCPCS code in one data year: the
+// Geography & Service rows (unsuppressed, all billers) in patient-days, minus
+// the PA/NP/ASC totals (excludedTotalsFor → surgeonOnlyTotals). Resolves to
+// { procedures, payment, allProcedures, allPayment, benes, desc, year }, or null
+// when CMS has no rows for the code. Rejects if the subtraction can't be done,
+// so no caller ever shows an all-billers figure under a surgeon label.
+// The promise is cached, so the headline total and the trend's matching year
+// share one fetch.
+const surgeonTotalsCache = {};
+function surgeonTotalsFor(year, code, stateVal) {
+  const key = `${code}|${stateVal}|${year}`;
+  if (surgeonTotalsCache[key]) return surgeonTotalsCache[key];
+  const v = (datasetVersions.geography || []).find(x => String(x.year) === String(year));
+  if (!v) return Promise.reject(new Error(`No Geography & Service dataset for CY ${year}`));
+  const p = Promise.all([
+    corsFetch(geoCodeUrl(`${DATA_API_ROOT}/${v.id}/data`, code, stateVal)),
+    excludedTotalsFor(year, code, stateVal),
+  ]).then(([raw, excluded]) => {
+    const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
+    if (!rows.length) return null;
+    // Multiple rows = places of service (facility/office); summed for the code.
+    let benes = 0, allPayment = 0, desc = '';
+    rows.forEach(r => { benes += getBenes(r); allPayment += getPayment(r); if (!desc) desc = f(r, 'HCPCS_Desc') || ''; });
+    return { ...surgeonOnlyTotals(rows, excluded), allPayment, benes, desc, year };
+  });
+  surgeonTotalsCache[key] = p;
+  p.catch(() => { delete surgeonTotalsCache[key]; }); // don't cache transient failures
+  return p;
+}
+
+// Headline total for the year in view. Returns { services, benes, payment,
+// year } or null (callers then fall back to the named-provider sum, labeled).
+async function fetchGeoTotal(code, stateVal) {
+  const g = geoBaseForYear();
+  if (!g) return null;
   try {
-    const rows = await corsFetch(url);
-    if (!rows || !rows.length) { geoTotalCache[key] = null; return null; }
-    let services = 0, benes = 0, payment = 0;
-    // Multiple rows = places of service (facility/office); sum for the code total.
-    rows.forEach(r => { services += getServices(r); benes += getBenes(r); payment += getPayment(r); });
-    const out = { services, benes, payment, year: g.year };
-    geoTotalCache[key] = out;
-    return out;
+    const t = await surgeonTotalsFor(g.year, code, stateVal);
+    return t ? { services: t.procedures, benes: t.benes, payment: t.payment, year: g.year } : null;
   } catch (e) {
     console.log(`Geo total fetch failed for ${code}:`, e.message);
-    return null; // don't cache transient failures
+    return null;
   }
 }
 
@@ -1800,6 +1928,7 @@ let beneGen = 0; // generation token so late bene fetches don't patch a newer re
 let searchGen = 0; // generation token so a superseded search never renders into a new context
 let searchFailedCodes = []; // codes that failed in the last multi-code fetch (fail-soft)
 let searchAndMismatch = 0;  // rows the API returned that failed client-side AND enforcement
+let nonSurgeonDropped = 0;  // PA/NP rows removed from the last search (see NON_SURGEON_PROVIDER_TYPES)
 async function fetchProviderBenes(npis) {
   const base = provSummaryBase();
   if (!base) return {}; // dataset unavailable — callers keep the sum fallback
@@ -2246,17 +2375,50 @@ function resetEmptyState() {
   `;
 }
 
+// Live "still waiting" line for slow CMS queries. CMS reports no progress
+// within a request, so this shows what is known: elapsed time, and how many
+// of the caller's requests have come back (progress(done, total)). Past
+// SLOW_WAIT_HINT_MS it adds a note that CMS is still working. Re-renders
+// every second until stop() or until el leaves the DOM.
+const SLOW_WAIT_HINT_MS = 8000;
+function startWaitIndicator(el, label, unit = 'requests') {
+  const t0 = Date.now();
+  let done = null, total = null;
+  let timer = null;
+  const render = () => {
+    if (!el.isConnected) { clearInterval(timer); return; }
+    const ms = Date.now() - t0;
+    const count = total ? ` — ${done} of ${total} ${unit} back from CMS` : '';
+    el.innerHTML = `<span class="wait-line"><span class="spinner"></span>${escapeHtml(label)}${count} · ${Math.floor(ms / 1000)}s` +
+      (ms >= SLOW_WAIT_HINT_MS ? '<span class="wait-hint">Still waiting for CMS to respond. A code nobody has searched recently can take a minute or more; repeat searches are fast.</span>' : '') +
+      '</span>';
+  };
+  render();
+  timer = setInterval(render, 1000);
+  return {
+    progress(d, t) { done = d; total = t; render(); },
+    setLabel(l) { label = l; render(); },
+    stop() { clearInterval(timer); },
+  };
+}
+
 // Show an in-main progress card with a Cancel button during a long search.
+let searchWait = null;
 function showSearchProgress(msg) {
   const empty = document.getElementById('emptyState');
   empty.innerHTML = `
     <div class="empty-icon"><div class="spinner" style="width:28px;height:28px;"></div></div>
     <h2>Searching…</h2>
-    <p>${escapeHtml(msg || 'Fetching from the CMS API — large multi-code searches can take a moment.')}</p>
+    <p id="searchWaitLine"></p>
     <button class="btn btn-secondary" style="max-width:180px;margin:12px auto 0;" onclick="cancelSearch()">Cancel search</button>
   `;
   empty.style.display = 'flex';
   document.getElementById('resultsArea').style.display = 'none';
+  stopSearchWait();
+  searchWait = startWaitIndicator(document.getElementById('searchWaitLine'), msg || 'Waiting for the CMS API');
+}
+function stopSearchWait() {
+  if (searchWait) { searchWait.stop(); searchWait = null; }
 }
 
 // Soft-cancel: invalidate the in-flight search (its renders are gen-guarded so
@@ -2264,6 +2426,7 @@ function showSearchProgress(msg) {
 // the concurrency gate but their results are discarded.
 function cancelSearch() {
   searchGen++;
+  stopSearchWait();
   isLoading = false;
   resetSearchButton();
   setStatus('Search cancelled.');
@@ -2832,6 +2995,7 @@ async function executeSearch() {
   resultsCapped = false;
   searchFailedCodes = [];
   searchAndMismatch = 0;
+  nonSurgeonDropped = 0;
   // Read from the sidebar checkboxes (settable before the search even runs)
   // rather than forcing false — a checked box here means executeSearch
   // itself resolves affiliations below, before the first render, instead of
@@ -2881,6 +3045,16 @@ async function executeSearch() {
       if (searchCodes.length > 0) {
         const codeSet = new Set(searchCodes);
         allRows = allRows.filter(row => codeSet.has((f(row, 'HCPCS_Cd') || '').toUpperCase()));
+      }
+
+      // Physician assistants and nurse practitioners bill the surgeon's code
+      // as assistant-at-surgery lines; they aren't the customer, and their
+      // lines double-count the case. Removed from every result.
+      const beforeNonSurgeon = allRows.length;
+      allRows = excludeNonSurgeonRows(allRows);
+      nonSurgeonDropped = beforeNonSurgeon - allRows.length;
+      if (nonSurgeonDropped && !allRows.length) {
+        showError(`All ${fmtNumber(nonSurgeonDropped)} matching rows were billed by physician assistants or nurse practitioners, which MedIntel excludes — their lines duplicate the surgeon's for the same procedure. Search for the surgeons instead.`);
       }
 
       // Enforce AND client-side. The API's filter conjunction can't be fully
@@ -2982,6 +3156,7 @@ async function executeSearch() {
     setStatus('Search failed: ' + err.message);
   } finally {
     if (gen === searchGen) {
+      stopSearchWait();
       isLoading = false;
       btn.disabled = false;
       btn.innerHTML = `
@@ -3479,6 +3654,11 @@ function andEnforcementNoteHtml() {
   return `<div class="year-note" style="margin:0 0 12px;color:var(--amber);">⚠ The API returned ${fmtNumber(searchAndMismatch)} row${searchAndMismatch !== 1 ? 's' : ''} that didn't match all of your criteria; those were discarded. Because the row limit was also reached, some genuine matches may be missing — narrow the search (add a State, or drop one filter) for a complete list.</div>`;
 }
 
+function nonSurgeonNoteHtml() {
+  if (!nonSurgeonDropped) return '';
+  return `<div class="year-note" style="margin:0 0 12px;">${fmtNumber(nonSurgeonDropped)} physician assistant / nurse practitioner row${nonSurgeonDropped !== 1 ? 's' : ''} excluded — they bill the surgeon's code as assistant-at-surgery lines, not separate procedures.</div>`;
+}
+
 // ─── TIER LABEL HELPERS ───
 function tierBadgeHtml(tier) {
   const labels = { 1: 'Tier 1', 2: 'Tier 2', 3: 'Tier 3' };
@@ -3552,7 +3732,7 @@ function renderResults() {
              onchange="applyVolumeFilter(this.value)" style="width:72px;">
       <label for="sortProvider" style="margin-left:8px;">Sort by:</label>
       <select id="sortProvider" onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
-        <option value="services" ${currentSortOrder === 'services' ? 'selected' : ''}>Total Services</option>
+        <option value="services" ${currentSortOrder === 'services' ? 'selected' : ''}>Total Procedures</option>
         <option value="score" ${currentSortOrder === 'score' ? 'selected' : ''}>Complexity Score</option>
         <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
       </select>
@@ -3572,7 +3752,7 @@ function renderResults() {
     </div>
     ${groupByPractice ? `<div class="year-note" style="margin:0 0 12px;">Grouped by CMS Medicare enrollment records (PECOS group-practice ID) — a real practice affiliation, not a guess. A provider who doesn't reassign billing to any group appears as their own single-provider practice. Some providers are enrolled under more than one group; where CMS's own address for a group didn't uniquely identify this provider's billing location, the largest group is shown and flagged (see any card marked "≈"). A group's nationally reported member count may be larger than how many of its members appear in this specific search.</div>` : ''}
     ${groupByHospital ? `<div class="year-note" style="margin:0 0 12px;">Grouped by real hospital facility affiliation (CMS Facility Affiliation Data, matched by CCN) — a clinical fact, not a billing group. A provider with no hospital affiliation on file appears as their own single-provider card. A provider affiliated with more than one hospital appears under EACH of them — so summing totals across every hospital card overstates the true provider-level total; each card's own numbers are accurate on their own.</div>` : ''}
-    ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}
+    ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}${nonSurgeonNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -3649,7 +3829,7 @@ function providerCardHtml(g) {
         <div class="card-metrics">
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalServices)}</div>
-            <div class="metric-label">Total Services · ${escapeHtml(dataYearShort())}</div>
+            <div class="metric-label">Total Procedures · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="metric">
             <div class="metric-value" id="bene-${escapeHtml(g.npi)}" data-sum="${g.totalBeneficiaries}">…</div>
@@ -3661,7 +3841,7 @@ function providerCardHtml(g) {
           </div>
           <div class="metric">
             <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
-            <div class="metric-label">Avg Payment / Service</div>
+            <div class="metric-label">Avg Payment / Procedure</div>
           </div>
         </div>
         <button class="procedures-toggle" id="ptrend-btn-${g.npi}" onclick="toggleProviderTrend('${escapeHtml(g.npi)}')">
@@ -3673,7 +3853,7 @@ function providerCardHtml(g) {
         </button>
         <div class="procedures-list" id="proc-list-${g.npi}">
           <div class="proc-row proc-row-header">
-            <div>Code</div><div>Description</div><div>Services</div><div>Payment</div><div>Avg Charge</div>
+            <div>Code</div><div>Description</div><div>Procedures</div><div>Payment</div><div>Avg Charge</div>
           </div>
           ${g.procedures.map(p => `
             <div class="proc-row">
@@ -3723,7 +3903,7 @@ function practiceCardHtml(g) {
         <div class="card-metrics">
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalServices)}</div>
-            <div class="metric-label">Total Services · ${escapeHtml(dataYearShort())}</div>
+            <div class="metric-label">Total Procedures · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
@@ -3735,7 +3915,7 @@ function practiceCardHtml(g) {
           </div>
           <div class="metric">
             <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
-            <div class="metric-label">Avg Payment / Service</div>
+            <div class="metric-label">Avg Payment / Procedure</div>
           </div>
         </div>
         <button class="procedures-toggle" id="detail-btn-${g.practiceKey}" onclick="toggleDetail('${g.practiceKey}')">
@@ -3743,7 +3923,7 @@ function practiceCardHtml(g) {
         </button>
         <div class="procedures-list" id="detail-${g.practiceKey}">
           <div class="proc-row proc-row-header">
-            <div>NPI</div><div>Name</div><div>Services</div><div>Payment</div><div>Tier</div>
+            <div>NPI</div><div>Name</div><div>Procedures</div><div>Payment</div><div>Tier</div>
           </div>
           ${g.members.map(m => `
             <div class="proc-row">
@@ -3760,7 +3940,7 @@ function practiceCardHtml(g) {
         </button>
         <div class="procedures-list" id="proc-list-${g.practiceKey}">
           <div class="proc-row proc-row-header">
-            <div>Code</div><div>Description</div><div>Services</div><div>Payment</div><div>Avg Charge</div>
+            <div>Code</div><div>Description</div><div>Procedures</div><div>Payment</div><div>Avg Charge</div>
           </div>
           ${g.procedures.map(p => `
             <div class="proc-row">
@@ -3814,7 +3994,7 @@ function hospitalCardHtml(g) {
         <div class="card-metrics">
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalServices)}</div>
-            <div class="metric-label">Total Services · ${escapeHtml(dataYearShort())}</div>
+            <div class="metric-label">Total Procedures · ${escapeHtml(dataYearShort())}</div>
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalBeneficiaries)}</div>
@@ -3826,7 +4006,7 @@ function hospitalCardHtml(g) {
           </div>
           <div class="metric">
             <div class="metric-value">${g.totalServices ? fmtCurrency(g.totalPayment / g.totalServices) : '—'}</div>
-            <div class="metric-label">Avg Payment / Service</div>
+            <div class="metric-label">Avg Payment / Procedure</div>
           </div>
         </div>
         <button class="procedures-toggle" id="detail-btn-${g.hospitalKey}" onclick="toggleDetail('${g.hospitalKey}')">
@@ -3834,7 +4014,7 @@ function hospitalCardHtml(g) {
         </button>
         <div class="procedures-list" id="detail-${g.hospitalKey}">
           <div class="proc-row proc-row-header">
-            <div>NPI</div><div>Name</div><div>Services</div><div>Payment</div><div>Tier</div>
+            <div>NPI</div><div>Name</div><div>Procedures</div><div>Payment</div><div>Tier</div>
           </div>
           ${g.members.map(m => `
             <div class="proc-row">
@@ -3851,7 +4031,7 @@ function hospitalCardHtml(g) {
         </button>
         <div class="procedures-list" id="proc-list-${g.hospitalKey}">
           <div class="proc-row proc-row-header">
-            <div>Code</div><div>Description</div><div>Services</div><div>Payment</div><div>Avg Charge</div>
+            <div>Code</div><div>Description</div><div>Procedures</div><div>Payment</div><div>Avg Charge</div>
           </div>
           ${g.procedures.map(p => `
             <div class="proc-row">
@@ -3978,17 +4158,17 @@ function renderProcedureResults() {
     </div>
 
     <div class="filter-bar">
-      <label for="minVolProc">Min services/year:</label>
+      <label for="minVolProc">Min procedures/year:</label>
       <input type="number" id="minVolProc" min="0" step="5" value="${minVolumeFilter}"
              onchange="applyVolumeFilter(this.value)" style="width:72px;">
       <label for="sortProc" style="margin-left:8px;">Sort by:</label>
       <select id="sortProc" onchange="applySort(this.value)" style="width:auto;padding:5px 10px;font-size:12px;">
-        <option value="services" ${currentSortOrder === 'services' ? 'selected' : ''}>Total Services</option>
+        <option value="services" ${currentSortOrder === 'services' ? 'selected' : ''}>Total Procedures</option>
         <option value="payment" ${currentSortOrder === 'payment' ? 'selected' : ''}>Total Payment</option>
         <option value="providers" ${currentSortOrder === 'providers' ? 'selected' : ''}>Provider Count</option>
       </select>
     </div>
-    ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}
+    ${failedCodesNoteHtml()}${andEnforcementNoteHtml()}${cappedNoteHtml()}${nonSurgeonNoteHtml()}
     <div class="results-grid">
   `;
 
@@ -4008,7 +4188,7 @@ function renderProcedureResults() {
           </div>
           <div class="payment-badge">
             <div class="payment-amount" id="geototal-${key}">…</div>
-            <div class="payment-label" id="geolbl-${key}">True Total Services · ${escapeHtml(dataYearShort())}</div>
+            <div class="payment-label" id="geolbl-${key}">Surgeon Procedures · ${escapeHtml(dataYearShort())}</div>
           </div>
         </div>
         <div class="card-metrics">
@@ -4022,14 +4202,14 @@ function renderProcedureResults() {
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.totalServices)}</div>
-            <div class="metric-label">Services in Named Providers ‡</div>
+            <div class="metric-label">Procedures in Named Providers ‡</div>
           </div>
           <div class="metric">
             <div class="metric-value">${fmtNumber(g.providerCount)}</div>
             <div class="metric-label">Named Providers ‡</div>
           </div>
         </div>
-        <div class="year-note" id="coverage-${key}" data-visible="${g.totalServices}" style="margin:8px 0 0;">Loading true national volume…</div>
+        <div class="year-note" id="coverage-${key}" data-visible="${g.totalServices}" style="margin:8px 0 0;">Loading surgeon-only national volume…</div>
         <button class="procedures-toggle" id="trend-btn-${key}" onclick="toggleTrend('${escapeHtml(g.code)}')">
           <span class="arrow">▼</span> Volume trend by year
         </button>
@@ -4039,7 +4219,7 @@ function renderProcedureResults() {
         </button>
         <div class="procedures-list" id="proc-list-${key}">
           <div class="proc-row proc-row-header">
-            <div>NPI</div><div>Provider</div><div>Specialty</div><div>Services</div><div>Payment</div>
+            <div>NPI</div><div>Provider</div><div>Specialty</div><div>Procedures</div><div>Payment</div>
           </div>
           ${topProviders.map(p => `
             <div class="proc-row">
@@ -4056,7 +4236,7 @@ function renderProcedureResults() {
   });
 
   html += `</div>`;
-  html += `<div class="year-note" style="margin:10px 0 0;">‡ <strong>Named Providers</strong> counts only surgeons CMS reports individually. CMS omits any provider with ≤10 Medicare beneficiaries for a code, so for low-volume procedures most surgeons are absent — that is why the named-provider services are usually far below the true total. The headline volume above comes from CMS's pre-aggregated Geography &amp; Service data, which is <em>not</em> subject to that per-provider floor, so it counts every case including suppressed providers'.</div>`;
+  html += `<div class="year-note" style="margin:10px 0 0;">‡ <strong>Named Providers</strong> counts only surgeons CMS reports individually. CMS omits any provider with ≤10 Medicare beneficiaries for a code, so for low-volume procedures most surgeons are absent — that is why the named-provider services are usually far below the true total. The headline volume above comes from CMS's pre-aggregated Geography &amp; Service data, which is <em>not</em> subject to that per-provider floor, so it counts every case including suppressed providers'. <strong>Procedures</strong> are distinct patient-days (CMS <code>Tot_Bene_Day_Srvcs</code>), not billed units, and exclude physician assistant / nurse practitioner assistant-at-surgery lines and ASC facility claims, which bill the same code for the same case.</div>`;
   html += `
     <div class="pagination">
       <button class="page-btn" onclick="prevPage()" ${!hasPrev ? 'disabled' : ''}>← Previous</button>
@@ -4080,10 +4260,11 @@ async function probeSuppressedVolume() {
   const { codes } = parseCodes(document.getElementById('hcpcsCode').value);
   const stateVal = document.getElementById('stateSelectProc').value;
   if (!codes.length) return;
-  box.textContent = 'Checking CMS aggregate totals…';
+  const wait = startWaitIndicator(box, 'Checking CMS aggregate totals');
   const results = await Promise.all(
     codes.slice(0, 10).map(c => fetchGeoTotal(c, stateVal).then(t => ({ code: c, t })).catch(() => ({ code: c, t: null })))
   );
+  wait.stop();
   const withVolume = results.filter(r => r.t && r.t.services);
   const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
   if (!withVolume.length) {
@@ -4092,7 +4273,7 @@ async function probeSuppressedVolume() {
   }
   box.innerHTML = `
     <strong style="color:var(--green);">The procedure does have volume.</strong>
-    ${withVolume.map(r => `${escapeHtml(r.code)}: <strong>${fmtNumber(r.t.services)}</strong> ${escapeHtml(scope.toLowerCase())} services in CY ${r.t.year}`).join(' · ')}.
+    ${withVolume.map(r => `${escapeHtml(r.code)}: <strong>${fmtNumber(r.t.services)}</strong> ${escapeHtml(scope.toLowerCase())} surgeon procedures in CY ${r.t.year}`).join(' · ')}.
     No individual surgeon is listed because each performed it for ≤10 Medicare beneficiaries, CMS's reporting floor — the volume is real, the providers are just not nameable from public data.
     Use <strong>Volume trend by year</strong> on Size a Market for the full history, or widen to a national (no-state) search to surface the highest-volume surgeons.
   `;
@@ -4104,9 +4285,13 @@ async function probeSuppressedVolume() {
 let geoTotalGen = 0;
 async function patchProcedureTotals(pageGroups, stateVal) {
   const gen = ++geoTotalGen;
-  const results = await Promise.all(
-    pageGroups.map(g => fetchGeoTotal(g.code, stateVal).then(t => ({ g, t })).catch(() => ({ g, t: null })))
-  );
+  const results = await Promise.all(pageGroups.map(g => {
+    const covEl = document.getElementById(`coverage-${codeKey(g.code)}`);
+    const wait = covEl ? startWaitIndicator(covEl, 'Loading surgeon-only national volume') : null;
+    return fetchGeoTotal(g.code, stateVal)
+      .then(t => ({ g, t })).catch(() => ({ g, t: null }))
+      .finally(() => { if (wait) wait.stop(); });
+  }));
   if (gen !== geoTotalGen) return;
 
   const scope = stateVal ? (STATE_NAMES[stateVal] || stateVal) : 'National';
@@ -4121,19 +4306,23 @@ async function patchProcedureTotals(pageGroups, stateVal) {
 
     if (t && t.services) {
       totalEl.textContent = fmtNumber(t.services);
-      if (lblEl) lblEl.textContent = `True Total Services · CY ${t.year}`;
+      if (lblEl) lblEl.textContent = `Surgeon Procedures · CY ${t.year}`;
       if (benesEl) benesEl.textContent = fmtNumber(t.benes);
       if (payEl) payEl.textContent = fmtCurrency(t.payment);
       if (covEl) {
         const visible = parseFloat(covEl.dataset.visible) || 0;
         const pct = Math.round((visible / t.services) * 100);
         const hidden = Math.max(0, t.services - visible);
-        covEl.innerHTML = `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} services</strong> in CY ${t.year}. Named providers below account for ${fmtNumber(visible)} (${pct}%); the remaining ${fmtNumber(hidden)} were performed by providers CMS suppresses (≤10 beneficiaries each) and cannot be listed individually.`;
+        // When the provider fetch hit its row cap, most of the gap is providers
+        // that were never fetched, not ones CMS suppresses — don't blame suppression.
+        covEl.innerHTML = resultsCapped
+          ? `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} surgeon procedures</strong> in CY ${t.year}. Providers listed below account for ${fmtNumber(visible)} (${pct}%). The list stops at the first ${fmtNumber(MAX_FETCHES * FETCH_SIZE)} rows CMS returned, so the remaining ${fmtNumber(hidden)} include providers not loaded as well as providers CMS suppresses (≤10 beneficiaries each). Add a State filter to load a complete list.`
+          : `<strong>${escapeHtml(scope)} total: ${fmtNumber(t.services)} surgeon procedures</strong> in CY ${t.year}. Named providers below account for ${fmtNumber(visible)} (${pct}%); the remaining ${fmtNumber(hidden)} were performed by providers CMS suppresses (≤10 beneficiaries each) and cannot be listed individually.`;
       }
     } else {
       // Geography data unavailable — fall back to the provider-sum, labeled honestly.
       totalEl.textContent = fmtNumber(g.totalServices);
-      if (lblEl) lblEl.textContent = `Services in Named Providers · ${dataYearShort()}`;
+      if (lblEl) lblEl.textContent = `Procedures in Named Providers · ${dataYearShort()}`;
       if (benesEl) benesEl.textContent = fmtNumber(g.totalBeneficiaries);
       if (payEl) payEl.textContent = fmtCurrency(g.totalPayment);
       if (covEl) covEl.innerHTML = 'True total volume unavailable for this code — the figures shown are summed from named providers only and undercount suppressed (≤10-beneficiary) providers.';
@@ -4155,44 +4344,42 @@ async function toggleTrend(code) {
   btn.classList.toggle('open');
   if (!opening || box.dataset.loaded) return;
 
-  box.innerHTML = '<div class="trend-caption"><div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px;"></div>Loading yearly volume from CMS…</div>';
+  box.innerHTML = '<div class="trend-caption"></div>';
+  const wait = startWaitIndicator(box.firstElementChild, 'Loading yearly surgeon volume', 'years');
+  const years = (datasetVersions.geography || []).length;
+  let done = 0;
   try {
-    const trend = await fetchTrend(code);
+    const trend = await fetchTrend(code, null, () => { if (years) wait.progress(++done, years); });
+    wait.stop();
     renderTrend(box, code, trend);
     box.dataset.loaded = '1';
   } catch (err) {
+    wait.stop();
     console.error(err);
     box.innerHTML = `<div class="trend-caption" style="color:var(--red);">${escapeHtml(err.message)}</div>`;
   }
 }
 
-async function fetchTrend(code, stateOverride = null) {
+// Surgeon-only procedures per year: each year subtracts that year's own
+// PA/NP/ASC lines (surgeonTotalsFor). Scaling older years by the latest
+// year's surgeon share was tried and rejected: ASC facility claims for 27447
+// only appear from CY2020, so a fixed share understates earlier years and
+// inflates growth.
+// onYearDone: optional per-year progress callback (see fetchYearlyTrend).
+async function fetchTrend(code, stateOverride = null, onYearDone) {
   const stateVal = stateOverride !== null
     ? stateOverride
     : document.getElementById('stateSelectProc').value;
   const cacheKey = `${code.toUpperCase()}|${stateVal}`;
   return fetchYearlyTrend('geography', cacheKey, async v => {
-    let url = `${DATA_API_ROOT}/${v.id}/data?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
-    if (stateVal) {
-      const geoDesc = STATE_NAMES[stateVal] || stateVal;
-      url += `&filter[Rndrng_Prvdr_Geo_Lvl]=State&filter[Rndrng_Prvdr_Geo_Desc]=${encodeURIComponent(geoDesc)}`;
-    } else {
-      url += `&filter[Rndrng_Prvdr_Geo_Lvl]=National`;
-    }
-    const rows = await corsFetch(url);
-    let services = 0, payment = 0, desc = '';
-    rows.forEach(r => {
-      services += getServices(r);
-      payment += getPayment(r);
-      if (!desc) desc = f(r, 'HCPCS_Desc') || '';
-    });
     // Geography rows aren't subject to the ≤10-beneficiary suppression that
     // provider-level rows are, so this description is available even for a
     // code where every individual surgeon is suppressed (see descMap in
     // executeTamSearch, which falls back to this when the surgeon fetch found
     // nothing to describe it from).
-    return { services, payment, desc };
-  });
+    const t = await surgeonTotalsFor(v.year, code, stateVal);
+    return t ? { services: t.procedures, payment: t.payment, desc: t.desc } : { services: 0, payment: 0, desc: '' };
+  }, onYearDone);
 }
 
 // Ensure the year → dataset-version list for a dataset kind is loaded.
@@ -4242,7 +4429,8 @@ function finishTrend(results, cacheKey) {
 // per-year fan-out with error capture, and finishTrend. `buildYear(version)`
 // returns the year's aggregate ({ services, payment, ...extra }); the helper
 // stamps year/ok. Used by both the procedure and per-provider trend panels.
-async function fetchYearlyTrend(kind, cacheKey, buildYear) {
+// onYearDone(), if given, is called as each year settles (for progress UI).
+async function fetchYearlyTrend(kind, cacheKey, buildYear, onYearDone) {
   const versions = await requireVersions(kind);
   if (trendCache[cacheKey]) return trendCache[cacheKey];
   const results = await Promise.all(versions.map(async v => {
@@ -4252,6 +4440,8 @@ async function fetchYearlyTrend(kind, cacheKey, buildYear) {
     } catch (e) {
       console.log(`Trend fetch failed for CY ${v.year}:`, e.message);
       return { year: v.year, services: 0, payment: 0, ok: false };
+    } finally {
+      if (onYearDone) onYearDone();
     }
   }));
   return finishTrend(results, cacheKey);
@@ -4290,7 +4480,7 @@ function renderTrendChart(box, captionHtml, trend) {
       <path d="${linePath}" style="fill:none;stroke:var(--chart-ink);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;"></path>
       ${coords.map(c => `
         <circle cx="${c.x}" cy="${c.y}" r="3" style="fill:var(--chart-ink);">
-          <title>CY ${c.year}: ${fmtNumber(c.services)} services · ${fmtCurrency(c.payment)}</title>
+          <title>CY ${c.year}: ${fmtNumber(c.services)} procedures · ${fmtCurrency(c.payment)}</title>
         </circle>
         <text x="${c.x}" y="${plotHeight + 16}" text-anchor="middle">${c.year}</text>
       `).join('')}
@@ -4309,8 +4499,8 @@ function renderTrend(box, code, trend) {
   const stateVal = document.getElementById('stateSelectProc').value;
   const scope = stateVal ? `${STATE_NAMES[stateVal] || stateVal}` : 'National';
   renderTrendChart(box, `
-      ${escapeHtml(scope)} Medicare FFS service volume for <strong style="color:var(--amber);">${escapeHtml(code)}</strong> by calendar year
-      (CMS “by Geography &amp; Service” dataset — records with ≤10 beneficiaries are suppressed).
+      ${escapeHtml(scope)} Medicare FFS surgeon procedures for <strong style="color:var(--amber);">${escapeHtml(code)}</strong> by calendar year
+      (patient-days from CMS “by Geography &amp; Service”, minus physician assistant, nurse practitioner and ASC facility lines).
   `, trend);
 }
 
@@ -4350,7 +4540,7 @@ async function fetchProviderTrend(npi) {
       const url = `${DATA_API_ROOT}/${v.id}/data?size=${FETCH_SIZE}&offset=${offset}` +
                   `&filter[Rndrng_NPI]=${encodeURIComponent(npi)}`;
       const rows = await corsFetch(url);
-      rows.forEach(r => { services += getServices(r); payment += getPayment(r); });
+      rows.forEach(r => { services += getProcedureCount(r); payment += getPayment(r); });
       if (rows.length < FETCH_SIZE) break;
       offset += FETCH_SIZE;
     }
@@ -4421,9 +4611,16 @@ async function executeTamSearch(codes) {
   }
 
   btn.innerHTML = `<div class="spinner"></div> Fetching national volume (${codes.length + drgs.length} code${codes.length + drgs.length > 1 ? 's' : ''})...`;
+  // Each CPT code needs one surgeon-only total per data year; count them as
+  // they come back so a long wait shows movement.
+  const yearsPerCode = (datasetVersions.geography || []).length;
+  const totalCodeYears = codes.length * yearsPerCode;
+  let codeYearsDone = 0;
+  if (searchWait) searchWait.setLabel('Fetching surgeon procedure volume');
+  const onYearDone = () => { if (searchWait && totalCodeYears) searchWait.progress(++codeYearsDone, totalCodeYears); };
   const [trends, drgTrends] = await Promise.all([
     Promise.all(codes.map(code =>
-      fetchTrend(code, '')
+      fetchTrend(code, '', onYearDone)
         .then(trend => ({ code, trend }))
         .catch(e => ({ code, trend: null, error: e.message }))
     )),
@@ -4435,6 +4632,7 @@ async function executeTamSearch(codes) {
   ]);
 
   btn.innerHTML = '<div class="spinner"></div> Finding top surgeons & hospitals...';
+  if (searchWait) { searchWait.progress(null, null); searchWait.setLabel('Finding top surgeons and hospitals'); }
   // Force the latest year for surgeon fetches — the TAM tab hides the Data Year
   // selector, so it must not inherit a stale year picked on another tab.
   const { base: surgeonBase, year: surgeonYear } = latestProviderBase();
@@ -4444,11 +4642,13 @@ async function executeTamSearch(codes) {
                 : Promise.resolve({ hospitals: [], capped: false })
   ]);
   const codeSet = new Set(codes);
-  const rows = rowResults.flatMap(r => r.rows).filter(r => codeSet.has((f(r, 'HCPCS_Cd') || '').toUpperCase()));
+  const codeRows = rowResults.flatMap(r => r.rows).filter(r => codeSet.has((f(r, 'HCPCS_Cd') || '').toUpperCase()));
+  // Surgeons only: no PA/NP assistant lines, no ASC facility claims.
+  const rows = codeRows.filter(r => !isVolumeExcludedType(f(r, 'Rndrng_Prvdr_Type')));
   const surgeonsCapped = rowResults.some(r => r.capped);
 
   const descMap = {};
-  rows.forEach(r => {
+  codeRows.forEach(r => {
     const c = (f(r, 'HCPCS_Cd') || '').toUpperCase();
     if (!descMap[c]) descMap[c] = f(r, 'HCPCS_Desc') || '';
   });
@@ -4827,7 +5027,7 @@ function renderTamResults() {
       </button>
       <div class="procedures-list" id="detail-percode">
         <div class="proc-row proc-row-header" style="margin-top:12px;">
-          <div>Code</div><div>Description</div><div>FFS Services</div><div>Est. Total</div><div>FFS Paid (prof.)</div>
+          <div>Code</div><div>Description</div><div>FFS Procedures</div><div>Est. Total</div><div>FFS Paid (surgeon)</div>
         </div>
         ${perCode.map(c => c.year ? `
           <div class="proc-row">
@@ -4854,7 +5054,7 @@ function renderTamResults() {
         </div>
         ${surgeons.length ? `
         <div class="proc-row proc-row-header">
-          <div>#</div><div>Surgeon</div><div>Location</div><div>Services</div><div>FFS Paid</div>
+          <div>#</div><div>Surgeon</div><div>Location</div><div>Procedures</div><div>FFS Paid</div>
         </div>
         ${surgeons.slice(0, 15).map((s, i) => `
           <div class="proc-row">
@@ -4874,7 +5074,7 @@ function renderTamResults() {
     const partialYears = combined.filter(y => !y.complete).map(y => y.year);
     renderTrendChart(
       document.getElementById('tam-hero-trend'),
-      `National Medicare FFS services across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year.${failedCodes.length ? ` Codes with no data at all: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}${partialYears.length ? ` <strong style="color:var(--amber);">Years ${partialYears.join(', ')} are partial</strong> — one or more codes had no data that year, so those bars sum fewer codes and should not be read as dips.` : ''}`,
+      `National Medicare FFS surgeon procedures across ${codes.length} code${codes.length !== 1 ? 's' : ''} (${escapeHtml(codes.join(', '))}) by calendar year (patient-days; physician assistant, nurse practitioner and ASC facility lines excluded).${failedCodes.length ? ` Codes with no data at all: ${escapeHtml(failedCodes.map(c => c.code).join(', '))}.` : ''}${partialYears.length ? ` <strong style="color:var(--amber);">Years ${partialYears.join(', ')} are partial</strong> — one or more codes had no data that year, so those bars sum fewer codes and should not be read as dips.` : ''}`,
       combined
     );
   }
@@ -4893,7 +5093,7 @@ function exportTamCSV() {
   const { share, portion, asp } = tamAssumptions();
   const today = new Date().toISOString().slice(0, 10);
   const headers = [
-    'Row Type','Code','Description','Latest Data Year','Medicare FFS Services / Discharges',
+    'Row Type','Code','Description','Latest Data Year','Medicare FFS Surgeon Procedures / Discharges',
     'Est Total US Procedures','FFS Share Assumption (%)',
     'Est Addressable Cases','Addressable Portion Assumption (%)',
     'Device ASP Assumption','Est Total US TAM',
@@ -4983,7 +5183,7 @@ async function loadCptDict(progress) {
       const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
       if (!code) return;
       if (!map[code]) map[code] = { code, desc: (f(r, 'HCPCS_Desc') || '').slice(0, 160), services: 0 };
-      map[code].services += getServices(r);
+      map[code].services += getProcedureCount(r);
     });
     if (rows.length < FETCH_SIZE) break;
     offset += FETCH_SIZE;
@@ -5115,7 +5315,7 @@ async function lookupCptCodeDirect(code) {
     const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
     if (!rows.length) return null;
     let services = 0, desc = '';
-    rows.forEach(r => { services += getServices(r); if (!desc) desc = f(r, 'HCPCS_Desc') || ''; });
+    rows.forEach(r => { services += getProcedureCount(r); if (!desc) desc = f(r, 'HCPCS_Desc') || ''; });
     return { code, desc, services, viaDirect: true };
   } catch (e) {
     console.log(`Direct CPT lookup failed for ${code}:`, e.message);
@@ -5172,7 +5372,7 @@ async function lookupCptKeywordDirect(keyword) {
       const code = (f(r, 'HCPCS_Cd') || '').toUpperCase();
       if (!code) return;
       if (!map[code]) map[code] = { code, desc: (f(r, 'HCPCS_Desc') || '').slice(0, 160), services: 0, viaDirect: true };
-      map[code].services += getServices(r);
+      map[code].services += getProcedureCount(r);
     });
     return Object.values(map).sort((a, b) => b.services - a.services);
   } catch (e) {
@@ -5496,7 +5696,7 @@ function exportLookupCSV() {
   if (!lookupResults) return;
   const { cptMatches, drgMatches, icd10PcsMatches, dme } = lookupResults;
   const today = new Date().toISOString().slice(0, 10);
-  const headers = ['Vocabulary', 'Code', 'Description', 'Services/Yr (National)', 'Discharges (National)', 'Avg Paid/Stay', 'Supplier Payment', 'Related MS-DRG(s)', 'Date Exported'];
+  const headers = ['Vocabulary', 'Code', 'Description', 'Procedures/Yr (National, all billers)', 'Discharges (National)', 'Avg Paid/Stay', 'Supplier Payment', 'Related MS-DRG(s)', 'Date Exported'];
 
   const rows = [];
   (cptMatches || []).forEach(m => rows.push(['CPT/HCPCS Level I', m.code, m.desc || '', m.services ?? '', '', '', '', '', today]));
@@ -5573,7 +5773,7 @@ function lookupRowHtml(item, kind) {
   const isDrg = kind === 'drg';
   const metric = isDrg
     ? `${fmtNumber(Math.round(item.discharges))} dschrgs · ${fmtCurrency(item.avgPaid)}/stay`
-    : `${fmtNumber(item.services)} svcs/yr`;
+    : `${fmtNumber(item.services)} procedures/yr`;
   const score = item.matchScore ? `<span class="match-score" title="Description-match strength — verify against a coding guide">≈${item.matchScore}</span>` : '';
   const level = isDrg ? '' : hcpcsLevelBadge(item.code);
   const actions = isDrg
@@ -5806,8 +6006,8 @@ function exportProcedureCSV() {
   const data = getFilteredSortedProcedures();
   const headers = [
     'Data Year','HCPCS Code','Description',
-    'Total Services','Providers','Beneficiary-Count Sum (overstates unique patients)',
-    'Total Medicare Payment','Avg Payment Per Service',
+    'Total Procedures (patient-days)','Providers','Beneficiary-Count Sum (overstates unique patients)',
+    'Total Medicare Payment','Avg Payment Per Procedure',
     'Top Provider NPIs','Date Exported'
   ];
   const today = new Date().toISOString().slice(0, 10);
@@ -5836,8 +6036,8 @@ function exportCSV() {
     const headers = [
       'Facility Name', 'Org PAC ID', 'Nationally Reported Members', 'Members In This Search', 'Member NPIs',
       'Tier', 'Complexity Score',
-      'Total Procedure Codes', 'Total Services', 'Beneficiary-Count Sum (overstates unique patients)', 'Total Medicare Payment',
-      'Avg Payment Per Service', 'Date Exported'
+      'Total Procedure Codes', 'Total Procedures (patient-days)', 'Beneficiary-Count Sum (overstates unique patients)', 'Total Medicare Payment',
+      'Avg Payment Per Procedure', 'Date Exported'
     ];
     const rows = data.map(g => {
       const npis = g.members.map(m => m.npi);
@@ -5869,8 +6069,8 @@ function exportCSV() {
       'Hospital Name', 'CCN', 'Providers In This Search', 'Member NPIs',
       'City', 'State', 'CMS Hospital Rating',
       'Tier', 'Complexity Score',
-      'Total Procedure Codes', 'Total Services', 'Beneficiary-Count Sum (overstates unique patients)', 'Total Medicare Payment',
-      'Avg Payment Per Service', 'Date Exported'
+      'Total Procedure Codes', 'Total Procedures (patient-days)', 'Beneficiary-Count Sum (overstates unique patients)', 'Total Medicare Payment',
+      'Avg Payment Per Procedure', 'Date Exported'
     ];
     const rows = data.map(g => {
       const npis = g.members.map(m => m.npi);
@@ -5903,8 +6103,8 @@ function exportCSV() {
     'Data Year','NPI','Provider Name','Credentials','Specialty','Entity Type',
     'Street','City','State','Zip',
     'Tier','Complexity Score',
-    'Total Procedure Codes','Total Services','Beneficiary-Count Sum (overstates unique patients)','Total Medicare Payment',
-    'Avg Payment Per Service','Revision Procedure Types','Date Exported'
+    'Total Procedure Codes','Total Procedures (patient-days)','Beneficiary-Count Sum (overstates unique patients)','Total Medicare Payment',
+    'Avg Payment Per Procedure','Revision Procedure Types','Date Exported'
   ];
   const rows = data.map(g => [
     dataYearValue(),
