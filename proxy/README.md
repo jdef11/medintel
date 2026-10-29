@@ -108,7 +108,7 @@ GitHub's secrets. To revoke it: Cloudflare → My Profile → API Tokens.
    free plan is enough; no card needed. The first time you open
    **Workers & Pages** it asks you to pick a `*.workers.dev` subdomain (e.g.
    `jdef11`); that becomes part of the URL.
-2. **Install and log in** (Node 18+):
+2. **Install and log in** (Node 22+, which the pinned wrangler requires):
    ```bash
    cd proxy
    npm install            # installs the pinned wrangler CLI locally
