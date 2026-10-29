@@ -35,6 +35,18 @@ export const ROUTES = [
     timeoutMs: 45000, // this backend takes ~13-15s per query regardless of size
   },
   {
+    // Dataset metadata, to look up a dataset's current distribution id. CMS's
+    // edge now refuses /datastore/query/mj5m-pzi6/0 ("Access Denied", seen
+    // Oct 2026) but serves /datastore/query/<distribution id>; the id changes
+    // when CMS refreshes the data, hence the short TTL. CMS also refuses this
+    // endpoint when a browser Origin header is present, so it must be proxied.
+    name: 'provider-data-meta',
+    prefix: '/provider-data/api/1/metastore/schemas/dataset/items/',
+    upstreamOrigin: 'https://data.cms.gov',
+    ttlSeconds: 6 * 60 * 60,
+    timeoutMs: 20000,
+  },
+  {
     name: 'catalog',
     exact: '/data.json',
     upstreamOrigin: 'https://data.cms.gov',

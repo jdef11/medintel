@@ -19,11 +19,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 /
 ├── cms-sales-intel (4).html      # The entire UI (HTML/CSS + inline app script) — the deployed app
 ├── medintel-core.js              # Pure, framework-free logic — unit-tested; loaded by the HTML via <script src>
-├── medintel-core.test.js         # Vitest suite for medintel-core.js (320 tests)
+├── medintel-core.test.js         # Vitest suite for medintel-core.js (324 tests)
 ├── proxy/                        # MedIntel CMS proxy — Cloudflare Worker, deployed separately by the owner (proxy/README.md)
 │   ├── worker.js                 #   request handler (method/origin/allowlist checks, edge cache, upstream timeouts)
 │   ├── policy.js                 #   pure allowlist + CORS rules (resolveUpstream, isAllowedOrigin, corsHeaders)
-│   ├── worker.test.mjs           #   Vitest suite (52 tests): "not an open proxy" + CORS + handler behavior
+│   ├── worker.test.mjs           #   Vitest suite (55 tests): "not an open proxy" + CORS + handler behavior
 │   ├── wrangler.toml / package.json  # Worker config (ALLOW_NULL_ORIGIN, "false") and the pinned wrangler CLI
 │   └── README.md                 #   why it exists, deploy steps, free-tier limits
 ├── data/icd10pcs-drg-index.json  # Static ICD-10-PCS → MS-DRG crosswalk + descriptions (~56k codes, ~9MB) — fetched at runtime, not embedded; rebuilt by the script below
@@ -212,12 +212,13 @@ The app used to cover the ❌ cells (and any direct-call failure) by cycling thr
 - **Unset `CMS_PROXY_BASE`:** data-api, data.json and every feature built on them keep working directly. Group by practice/hospital and NPI Look Up show `PROXY_NOT_CONFIGURED`: `resolvePracticeAffiliations`/`resolveHospitalAffiliations` check up front instead of making doomed calls. Both resolvers also now **throw when every batch fails**, instead of silently rendering every provider as a solo group as if that were data. A partial failure still degrades only that batch.
 - **Worker rules** (`proxy/policy.js`, tested in `proxy/worker.test.mjs`):
   - GET (+ OPTIONS) only.
-  - Fixed routes `/data-api/v1/dataset/…`, `/provider-data/api/1/datastore/query/…`, `/data.json`, `/nppes/api/`, each with a hard-coded upstream host, so it's never a `?url=` relay.
+  - Fixed routes `/data-api/v1/dataset/…`, `/provider-data/api/1/datastore/query/…`, `/provider-data/api/1/metastore/schemas/dataset/items/…` (distribution-id lookup, 6 h cache), `/data.json`, `/nppes/api/`, each with a hard-coded upstream host, so it's never a `?url=` relay. `cmsProxyUrl()` in medintel-core.js mirrors this list; a route added to one must be added to the other.
   - Paths are restricted to `[A-Za-z0-9._~-/]` with no empty or dot segments.
   - CORS echoes only `https://jdef11.github.io`, `http://localhost:*`, and `null` (only if `ALLOW_NULL_ORIGIN = "true"`; it's `"false"`, so file:// copies can't use Group by or NPI Look Up). Any other browser Origin is refused with 403 before any upstream fetch.
   - Upstream statuses pass through; the Worker's own errors are `504 upstream_timeout` and `502 upstream_unreachable` (JSON).
   - 200s are cached 24 h (NPPES 1 h) via the Cache API plus fetch-level `cf.cacheTtlByStatus`. CMS sends `no-store`, so the Worker substitutes its own max-age. A response header `X-Proxy-Cache: HIT|MISS` reports the cache outcome.
   - A 403 from the proxy always means "refused by policy" (CMS data is public). `corsFetch` reports it as such, and treats other 4xx as CMS's real answer.
+- **Deployed** at `https://medintel-cms-proxy.jdefelice.workers.dev` (by `proxy-deploy.yml`, Oct 2026); `CMS_PROXY_BASE` points there. The deploy's live check showed `X-Proxy-Cache: HIT` on `*.workers.dev`, so edge caching works without a custom domain.
 - **Free tier:** 100k requests/day (Error 1027 until 00:00 UTC once exceeded), 10 ms CPU/request (streaming, so tiny), 128 MB memory (bodies are never buffered; data.json is ~18 MB). The Cache API is only *guaranteed* on a custom domain. Whether it hits on `*.workers.dev` is unverified, hence the fetch-level cache too. Details and deploy steps: `proxy/README.md`.
 
 ### ICD-10-PCS → MS-DRG crosswalk (NOT a live API)
@@ -242,7 +243,7 @@ GET https://data.cms.gov/provider-data/api/1/datastore/query/{datasetId}/0
     ?conditions[0][property]=npi&conditions[0][value][]={npi1}&conditions[0][value][]={npi2}&conditions[0][operator]=in
 ```
 
-`providerDataApiBase(datasetId)` builds this URL for **three separate datasets** on the same host/path shape (`data.cms.gov/provider-data/api/1/datastore/query/...`, not `data.cms.gov/data-api/v1/dataset/...` — a **third distinct host/path shape** from everything else in this app):
+**`/datastore/query/{datasetId}/0` is now refused for `mj5m-pzi6`** (CMS edge "Access Denied" for every client, seen Oct 2026; `27ea-46a8` and `xubh-q36u` still answer it). The working form is `/datastore/query/{distributionId}`, where the id comes from `/metastore/schemas/dataset/items/{datasetId}?show-reference-ids` → `distribution[0].identifier` and changes when CMS refreshes the data. `providerDataQueryBase(datasetId)` looks it up once per page load (through the proxy: CMS also refuses the metastore when a browser `Origin` header is present), via the pure `distributionIdFromMetastore()`, and falls back to the `/0` form (`providerDataApiBase`) if the lookup fails. `providerDataApiBase(datasetId)` builds the `/0` URL for **three separate datasets** on the same host/path shape (`data.cms.gov/provider-data/api/1/datastore/query/...`, not `data.cms.gov/data-api/v1/dataset/...` — a **third distinct host/path shape** from everything else in this app):
 
 - **`mj5m-pzi6`** — "Doctors and Clinicians National Downloadable File," sourced from PECOS Medicare enrollment records. Gives `org_pac_id` (billing-group crosswalk) — powers **Group by practice**. Fields used: `npi`, `org_pac_id`, `facility_name`, `num_org_mem`, `citytown`, `state`, `zip_code`.
 - **`27ea-46a8`** — "Facility Affiliation Data." Gives real facility ties by CCN, typed by `facility_type` (`Hospital`, `Home health agency`, `Inpatient rehabilitation facility`, `Hospice`, `Skilled nursing facility`, `Dialysis facility`) via the field `facility_affiliations_certification_number` — powers **Group by hospital** (filtered to `facility_type === 'Hospital'`). A genuinely different, independent one-to-many fact from `org_pac_id` (verified live) — see Search Modes above.
@@ -371,7 +372,7 @@ CMS tabs paginate **client-side**: `executeSearch()` fetches and groups all rows
 
 ## Testing
 
-Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 320 tests, plus `scripts/build-icd10pcs-drg-index.test.mjs`, 18 offline tests of the crosswalk build, `scripts/build-excluded-volume-index.test.mjs`, 14 offline tests of the excluded-volume build, and `proxy/worker.test.mjs`, 52 tests of the CMS proxy's allowlist/CORS/handler). The GitHub Pages deploy runs the suite before publishing. Additionally:
+Pure logic lives in `medintel-core.js` and is unit-tested with Vitest (`npm test` → `medintel-core.test.js`, 324 tests, plus `scripts/build-icd10pcs-drg-index.test.mjs`, 18 offline tests of the crosswalk build, `scripts/build-excluded-volume-index.test.mjs`, 14 offline tests of the excluded-volume build, and `proxy/worker.test.mjs`, 55 tests of the CMS proxy's allowlist/CORS/handler). The GitHub Pages deploy runs the suite before publishing. Additionally:
 
 - **`npm run smoke`** (`node scripts/live-smoke.mjs`; network + Node 18+ required; also run every Monday by `.github/workflows/live-smoke.yml`, which opens one `live-cms-check` issue on failure, comments on it while it stays red, and closes it on the next green run. Exit code 2 means the runner couldn't reach data.cms.gov at all and gets its own issue title. GitHub-hosted runners **can** reach both CMS hosts (verified 2026-10-09): `www.cms.gov` via the icd10pcs-rebuild workflow scraping the FY2027 manual and order file (run 37941393294), and `data.cms.gov` via this workflow's first run, which passed every check (run 37947054488)) verifies the live-CMS assumptions the mocked tests can't — dataset titles, field spellings (`Tot_Benes`, `Avg_Submtd_Cvrd_Chrg`, `Tot_Dschrgs`, DME Referring's `HCPCS_CD`), DRG code padding, and catalog shape. It resolves dataset versions with the app's real `extractDatasetVersions()` (imported from medintel-core.js), not a copy, so a catalog-format change fails step 2. Step 15 checks every `LATEST_DATASET_IDS` alias still serves the catalog's newest year; step 16 fails when the ICD-10-PCS crosswalk is past its fiscal year; step 17 checks the PA/NP/ASC `IN` filter; step 18 fails when `data/excluded-volume/` doesn't cover the newest data year.
 - **`npm run build:icd10pcs`** (`node scripts/build-icd10pcs-drg-index.mjs`; network to `www.cms.gov` required, ~5-10 min) rebuilds `data/icd10pcs-drg-index.json`. Normally done by the `icd10pcs-rebuild` workflow; see "ICD-10-PCS → MS-DRG crosswalk" above.

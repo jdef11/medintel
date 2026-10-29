@@ -16,6 +16,8 @@ describe('resolveUpstream(): the allowlist', () => {
       'https://data.cms.gov/data-api/v1/dataset/6fea9d79-0129-4e4c-b1b8-23cd86a4f435/data-viewer?size=0'],
     ['/provider-data/api/1/datastore/query/mj5m-pzi6/0?limit=1',
       'https://data.cms.gov/provider-data/api/1/datastore/query/mj5m-pzi6/0?limit=1'],
+    ['/provider-data/api/1/metastore/schemas/dataset/items/mj5m-pzi6?show-reference-ids',
+      'https://data.cms.gov/provider-data/api/1/metastore/schemas/dataset/items/mj5m-pzi6?show-reference-ids'],
     ['/data.json', 'https://data.cms.gov/data.json'],
     ['/nppes/api/?version=2.1&number=1548269731', 'https://npiregistry.cms.hhs.gov/api/?version=2.1&number=1548269731'],
   ])('allows %s', (path, upstream) => {
@@ -39,7 +41,9 @@ describe('resolveUpstream(): the allowlist', () => {
     ['/data-api/v1/dataset/..\\..\\..\\x', 'backslash traversal out of the prefix'],
     ['/data-api/v1/dataset//x/data', 'empty segment'],
     ['/provider-data/api/1/datastore/query', 'provider-data without the trailing slash'],
-    ['/provider-data/api/1/metastore/schemas/dataset/items', 'other provider-data APIs'],
+    ['/provider-data/api/1/metastore/schemas/dataset/items', 'metastore items without an id'],
+    ['/provider-data/api/1/metastore/schemas', 'other metastore APIs'],
+    ['/provider-data/api/1/search', 'other provider-data APIs'],
     ['/nppes/api/x', 'beyond the one NPPES endpoint'],
     ['/nppes/', 'NPPES root'],
     ['/api/?version=2.1', "NPPES's path without the /nppes route"],
@@ -49,8 +53,9 @@ describe('resolveUpstream(): the allowlist', () => {
 
   it('whatever URL normalization does to a tricky path, an accepted one stays inside an allowlisted path', () => {
     const tricky = ['/data-api/v1/dataset/abc\\..\\x/data', '/data-api/v1/dataset/a/./b', '/data-api/v1/dataset/a/%2e/b',
-      '/provider-data/api/1/datastore/query/x/../../../../data.json', '/nppes/api/../api/', '/data.json/.', '/./data.json'];
-    const allowed = /^https:\/\/data\.cms\.gov\/(data-api\/v1\/dataset\/[^?]+|provider-data\/api\/1\/datastore\/query\/[^?]+|data\.json)(\?|$)|^https:\/\/npiregistry\.cms\.hhs\.gov\/api\/(\?|$)/;
+      '/provider-data/api/1/datastore/query/x/../../../../data.json', '/nppes/api/../api/', '/data.json/.', '/./data.json',
+      '/provider-data/api/1/metastore/schemas/dataset/items/x/../../../../datastore/y'];
+    const allowed = /^https:\/\/data\.cms\.gov\/(data-api\/v1\/dataset\/[^?]+|provider-data\/api\/1\/datastore\/query\/[^?]+|provider-data\/api\/1\/metastore\/schemas\/dataset\/items\/[^?]+|data\.json)(\?|$)|^https:\/\/npiregistry\.cms\.hhs\.gov\/api\/(\?|$)/;
     for (const path of tricky) {
       const r = resolveUpstream(W + path);
       if (r.ok) expect(r.upstreamUrl, path).toMatch(allowed);

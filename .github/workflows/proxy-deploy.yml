@@ -95,6 +95,20 @@ jobs:
           [ "$refused" = "403" ] || { echo "::error::A non-allowlisted path returned $refused, expected 403"; exit 1; }
           nullorigin=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: null' "$probe")
           echo "Origin: null → $nullorigin (403 expected while ALLOW_NULL_ORIGIN = \"false\")"
+          # The two routes that only work through the proxy: NPI Look Up (NPPES) and
+          # Group by (Provider Data Catalog: distribution id lookup, then a query by it).
+          GH='Origin: https://jdef11.github.io'
+          nppes=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -H "$GH" "$W/nppes/api/?version=2.1&number=1548269731")
+          echo "NPPES → $nppes"
+          [ "$nppes" = "200" ] || { echo "::error::NPPES through the Worker returned $nppes, expected 200"; exit 1; }
+          dist=$(curl -s --max-time 30 -H "$GH" "$W/provider-data/api/1/metastore/schemas/dataset/items/mj5m-pzi6?show-reference-ids" \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).distribution[0].identifier||"")}catch(e){console.log("")}})')
+          echo "mj5m-pzi6 distribution → ${dist:-none}"
+          [ -n "$dist" ] || { echo "::error::Couldn't read the practice dataset's distribution id through the Worker"; exit 1; }
+          pd=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -H "$GH" \
+            "$W/provider-data/api/1/datastore/query/$dist?limit=1&conditions%5B0%5D%5Bproperty%5D=npi&conditions%5B0%5D%5Bvalue%5D%5B%5D=1548269731&conditions%5B0%5D%5Boperator%5D=in")
+          echo "practice affiliations by distribution → $pd"
+          [ "$pd" = "200" ] || { echo "::error::Practice-affiliation query through the Worker returned $pd, expected 200"; exit 1; }
 
       - name: Summary
         env:

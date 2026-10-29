@@ -28,6 +28,7 @@ proxy deployed. Everything else works without it.
   |---|---|
   | `/data-api/v1/dataset/…` | `https://data.cms.gov/data-api/v1/dataset/…` |
   | `/provider-data/api/1/datastore/query/…` | `https://data.cms.gov/provider-data/api/1/datastore/query/…` |
+  | `/provider-data/api/1/metastore/schemas/dataset/items/…` | same path on `data.cms.gov` (a dataset's current distribution id; CMS refuses it from browsers) |
   | `/data.json` | `https://data.cms.gov/data.json` |
   | `/nppes/api/` | `https://npiregistry.cms.hhs.gov/api/` |
 
@@ -158,7 +159,7 @@ Read from Cloudflare's Workers limits documentation (source, Oct 2026):
 | Response body size | no enforced limit; 512 MB cache-object limit | data.json (~18 MB) fits. |
 | Duration | none for HTTP requests | The 15 s provider-data queries are fine. |
 
-**Caching on `*.workers.dev`: not verified.** Cloudflare's Cache API docs only
+**Caching on `*.workers.dev`: works.** The first deploy's live check (Oct 2026) got `X-Proxy-Cache: HIT` on the second request. Earlier note, kept for context: Cloudflare's Cache API docs only
 promise working cache operations for Workers on a *custom domain*. Community
 reports say `cache.put` doesn't produce hits on `*.workers.dev`. The Worker
 therefore also asks for fetch-level edge caching (`cf.cacheTtlByStatus`),

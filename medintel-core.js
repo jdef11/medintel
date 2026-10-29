@@ -1350,11 +1350,19 @@ function cmsProxyUrl(base, url) {
   const b = normalizeProxyBase(base);
   if (!b) return null;
   const s = String(url || '');
-  const cms = s.match(/^https:\/\/data\.cms\.gov(\/(?:data-api\/v1\/dataset\/|provider-data\/api\/1\/datastore\/query\/)[^?#]+|\/data\.json)(\?[^#]*)?$/);
+  const cms = s.match(/^https:\/\/data\.cms\.gov(\/(?:data-api\/v1\/dataset\/|provider-data\/api\/1\/datastore\/query\/|provider-data\/api\/1\/metastore\/schemas\/dataset\/items\/)[^?#]+|\/data\.json)(\?[^#]*)?$/);
   if (cms) return b + cms[1] + (cms[2] || '');
   const nppes = s.match(/^https:\/\/npiregistry\.cms\.hhs\.gov\/api\/(\?[^#]*)?$/);
   if (nppes) return b + '/nppes/api/' + (nppes[1] || '');
   return null;
+}
+
+// The current distribution id from a Provider Data Catalog metastore response
+// (/metastore/schemas/dataset/items/<datasetId>?show-reference-ids), or null.
+function distributionIdFromMetastore(meta) {
+  const d = meta && Array.isArray(meta.distribution) ? meta.distribution[0] : null;
+  const id = d && (d.identifier || (d.data && d.data.identifier));
+  return typeof id === 'string' && /^[A-Za-z0-9-]+$/.test(id) ? id : null;
 }
 
 // True for the hosts that never answer a browser on github.io directly, so
@@ -1472,5 +1480,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getProcedureCount, getBenes, NON_SURGEON_PROVIDER_TYPES, FACILITY_PROVIDER_TYPES, VOLUME_EXCLUDED_PROVIDER_TYPES, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, sumExcludedRows, excludedShardKey, excludedIndexCovers, excludedFromShard, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getProcedureCount, getBenes, NON_SURGEON_PROVIDER_TYPES, FACILITY_PROVIDER_TYPES, VOLUME_EXCLUDED_PROVIDER_TYPES, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, sumExcludedRows, excludedShardKey, excludedIndexCovers, excludedFromShard, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, distributionIdFromMetastore, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
 }

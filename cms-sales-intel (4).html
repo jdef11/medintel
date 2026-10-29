@@ -1402,7 +1402,7 @@ const PARTIAL_VERSIONS_CACHE_TTL_MS = 60 * 60 * 1000;
 // Provider Data Catalog (Group by practice / hospital) and NPPES (NPI Look Up)
 // send no CORS headers, so those features need it. Left empty, they show
 // PROXY_NOT_CONFIGURED instead of failing obscurely; everything else still works.
-const CMS_PROXY_BASE = '';
+const CMS_PROXY_BASE = 'https://medintel-cms-proxy.jdefelice.workers.dev';
 const PROXY_NOT_CONFIGURED =
   "This feature reads a CMS service that doesn't allow direct browser access, so it needs MedIntel's " +
   "CMS proxy, which isn't set up in this copy of the app (CMS_PROXY_BASE is empty). " +
@@ -1976,6 +1976,33 @@ async function fetchProviderBenes(npis) {
 function providerDataApiBase(datasetId) {
   return `https://data.cms.gov/provider-data/api/1/datastore/query/${datasetId}/0`;
 }
+
+// Query base by the dataset's current distribution id. CMS's edge started
+// refusing /datastore/query/mj5m-pzi6/0 ("Access Denied", Oct 2026) while
+// /datastore/query/<distribution id> still works. The id changes when CMS
+// refreshes a dataset, so it's looked up (through the proxy: CMS refuses the
+// metastore when a browser Origin is present) once per page load. If the
+// lookup fails, falls back to the /0 form, which still works for some datasets.
+const providerDataBases = {};
+function providerDataQueryBase(datasetId) {
+  if (!providerDataBases[datasetId]) {
+    const metaUrl = `https://data.cms.gov/provider-data/api/1/metastore/schemas/dataset/items/${datasetId}?show-reference-ids`;
+    providerDataBases[datasetId] = corsFetch(metaUrl, {
+      extract: meta => {
+        const id = distributionIdFromMetastore(meta);
+        if (!id) throw new Error('no distribution id in metastore response');
+        return [id];
+      },
+    })
+      .then(([id]) => `https://data.cms.gov/provider-data/api/1/datastore/query/${id}`)
+      .catch(e => {
+        console.log(`Distribution lookup for ${datasetId} failed, using /0:`, e.message);
+        delete providerDataBases[datasetId]; // retry on the next search
+        return providerDataApiBase(datasetId);
+      });
+  }
+  return providerDataBases[datasetId];
+}
 const PRACTICE_AFFILIATION_DATASET_ID = 'mj5m-pzi6';
 // npi -> array of raw candidate affiliation rows (empty = confirmed no group
 // affiliation), or null if the lookup itself failed for that NPI.
@@ -1996,7 +2023,7 @@ async function fetchPracticeAffiliationsBatch(npis) {
   params.set('conditions[0][property]', 'npi');
   npis.forEach(n => params.append('conditions[0][value][]', n));
   params.set('conditions[0][operator]', 'in');
-  const url = `${providerDataApiBase(PRACTICE_AFFILIATION_DATASET_ID)}?${params.toString()}`;
+  const url = `${await providerDataQueryBase(PRACTICE_AFFILIATION_DATASET_ID)}?${params.toString()}`;
   const rows = await corsFetch(url, {
     extract: data => (data && Array.isArray(data.results)) ? data.results : (() => { throw new Error('no results array'); })(),
     directTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,
@@ -2128,7 +2155,7 @@ async function fetchFacilityAffiliationsBatch(npis) {
   params.set('conditions[0][property]', 'npi');
   npis.forEach(n => params.append('conditions[0][value][]', n));
   params.set('conditions[0][operator]', 'in');
-  const url = `${providerDataApiBase(FACILITY_AFFILIATION_DATASET_ID)}?${params.toString()}`;
+  const url = `${await providerDataQueryBase(FACILITY_AFFILIATION_DATASET_ID)}?${params.toString()}`;
   const rows = await corsFetch(url, {
     extract: data => (data && Array.isArray(data.results)) ? data.results : (() => { throw new Error('no results array'); })(),
     directTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,
@@ -2153,7 +2180,7 @@ async function fetchHospitalInfoBatch(ccns) {
   params.set('conditions[0][property]', 'facility_id');
   ccns.forEach(c => params.append('conditions[0][value][]', c));
   params.set('conditions[0][operator]', 'in');
-  const url = `${providerDataApiBase(HOSPITAL_INFO_DATASET_ID)}?${params.toString()}`;
+  const url = `${await providerDataQueryBase(HOSPITAL_INFO_DATASET_ID)}?${params.toString()}`;
   const rows = await corsFetch(url, {
     extract: data => (data && Array.isArray(data.results)) ? data.results : (() => { throw new Error('no results array'); })(),
     directTimeoutMs: PRACTICE_FETCH_TIMEOUT_MS,

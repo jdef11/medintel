@@ -8,7 +8,7 @@ const {
   tokenizeMedical, searchDict, crossSuggest,
   latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer,
   getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES,
-  extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
+  extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, distributionIdFromMetastore, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers,
   pctChangeAcrossYears, trendSvgPath,
   parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms,
   resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital
@@ -2309,5 +2309,28 @@ describe('precomputed excluded-volume index helpers', () => {
     expect(excludedIndexCovers(m, 2025)).toBe(false);
     expect(excludedIndexCovers({ ...m, types: ['Physician Assistant'] }, 2024)).toBe(false);
     expect(excludedIndexCovers(null, 2024)).toBe(false);
+  });
+});
+
+describe('distributionIdFromMetastore()', () => {
+  it('reads distribution[0].identifier (shape verified live for mj5m-pzi6)', () => {
+    expect(distributionIdFromMetastore({ distribution: [{ identifier: 'aafb1020-53f3-5672-9577-01a38c20d3ba' }] }))
+      .toBe('aafb1020-53f3-5672-9577-01a38c20d3ba');
+  });
+  it('returns null for a missing or unsafe id', () => {
+    expect(distributionIdFromMetastore({})).toBeNull();
+    expect(distributionIdFromMetastore({ distribution: [] })).toBeNull();
+    expect(distributionIdFromMetastore({ distribution: [{ identifier: '../x' }] })).toBeNull();
+    expect(distributionIdFromMetastore(null)).toBeNull();
+  });
+});
+
+describe('cmsProxyUrl() — provider-data metastore (distribution id lookup)', () => {
+  it('maps the metastore items path, matching the Worker route', () => {
+    expect(cmsProxyUrl('https://w.example', 'https://data.cms.gov/provider-data/api/1/metastore/schemas/dataset/items/mj5m-pzi6?show-reference-ids'))
+      .toBe('https://w.example/provider-data/api/1/metastore/schemas/dataset/items/mj5m-pzi6?show-reference-ids');
+  });
+  it('still refuses other metastore paths', () => {
+    expect(cmsProxyUrl('https://w.example', 'https://data.cms.gov/provider-data/api/1/metastore/schemas')).toBeNull();
   });
 });

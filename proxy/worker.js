@@ -6,6 +6,7 @@
 // Request shape: https://<worker>/<cms path>?<cms query>
 //   /data-api/v1/dataset/…                 → https://data.cms.gov/data-api/v1/dataset/…
 //   /provider-data/api/1/datastore/query/… → https://data.cms.gov/provider-data/api/1/datastore/query/…
+//   /provider-data/api/1/metastore/schemas/dataset/items/… → same path on data.cms.gov (distribution ids)
 //   /data.json                             → https://data.cms.gov/data.json
 //   /nppes/api/                            → https://npiregistry.cms.hhs.gov/api/
 // Anything else, any method but GET/OPTIONS, and any browser Origin not on the
