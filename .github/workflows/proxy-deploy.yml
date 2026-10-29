@@ -1,0 +1,113 @@
+name: Deploy CMS proxy (Cloudflare Worker)
+
+# Deploys proxy/ to Cloudflare Workers whenever it changes on main, or on a
+# manual run (Actions tab → this workflow → Run workflow). Needs two repository
+# secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN   a token from the "Edit Cloudflare Workers" template
+#   CLOUDFLARE_ACCOUNT_ID  shown on the Cloudflare dashboard's Workers & Pages page
+# Step-by-step setup: proxy/README.md ("Deploy with GitHub Actions").
+#
+# After deploying it checks the live Worker (allowed origin gets CORS, a
+# non-allowlisted path is refused) and writes the Worker URL to the run summary;
+# that URL goes into CMS_PROXY_BASE in the HTML.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proxy/**'
+      - .github/workflows/proxy-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proxy-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check the Cloudflare secrets are set
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -z "$CLOUDFLARE_ACCOUNT_ID" ] && missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing. Add them under Settings → Secrets and variables → Actions (see proxy/README.md), then re-run this workflow."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test the proxy's allowlist and CORS rules
+        run: |
+          npm ci
+          npx vitest run proxy/worker.test.mjs
+
+      - name: Deploy
+        id: deploy
+        working-directory: proxy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npm ci
+          npx wrangler deploy 2>&1 | tee deploy-output.txt
+          code=${PIPESTATUS[0]}
+          if [ "$code" != "0" ]; then
+            if grep -qi "workers.dev subdomain" deploy-output.txt; then
+              echo "::error::Your Cloudflare account has no workers.dev subdomain yet. Open Workers & Pages in the Cloudflare dashboard once and pick one, then re-run this workflow."
+            fi
+            exit "$code"
+          fi
+          url=$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' deploy-output.txt | head -1)
+          if [ -z "$url" ]; then echo "::error::Deployed, but couldn't find the workers.dev URL in wrangler's output."; exit 1; fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check the live Worker
+        env:
+          W: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+          # A freshly created workers.dev route can take a few seconds to answer.
+          probe="$W/data-api/v1/dataset/92396110-2aed-4d63-a6a2-5d6207d46a29/data?size=1"
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://jdef11.github.io' "$probe") || true
+            if [ "$code" = "200" ]; then break; fi
+            sleep 10
+          done
+          headers=$(curl -sS -D - -o /dev/null -H 'Origin: https://jdef11.github.io' "$probe")
+          echo "$headers" | grep -iE '^HTTP|access-control-allow-origin|x-proxy-cache'
+          echo "$headers" | grep -qi '^access-control-allow-origin: https://jdef11.github.io' \
+            || { echo "::error::The Worker didn't return CORS headers for https://jdef11.github.io"; exit 1; }
+          refused=$(curl -s -o /dev/null -w '%{http_code}' "$W/https://example.com/")
+          [ "$refused" = "403" ] || { echo "::error::A non-allowlisted path returned $refused, expected 403"; exit 1; }
+          nullorigin=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: null' "$probe")
+          echo "Origin: null → $nullorigin (403 expected while ALLOW_NULL_ORIGIN = \"false\")"
+
+      - name: Summary
+        env:
+          W: ${{ steps.deploy.outputs.url }}
+        run: |
+          {
+            echo "### CMS proxy deployed"
+            echo ""
+            echo "Worker URL: \`$W\`"
+            echo ""
+            echo "The app uses it once \`cms-sales-intel (4).html\` has:"
+            echo ""
+            echo "\`\`\`js"
+            echo "const CMS_PROXY_BASE = '$W';"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
