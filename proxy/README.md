@@ -55,8 +55,9 @@ proxy deployed. Everything else works without it.
 
 ### Opening the app from `file://` (`Origin: null`)
 
-`ALLOW_NULL_ORIGIN = "true"` in `wrangler.toml` (the default) lets a copy of
-the app opened by double-clicking the HTML file use the proxy.
+`ALLOW_NULL_ORIGIN = "true"` in `wrangler.toml` would let a copy of the app
+opened by double-clicking the HTML file use the proxy. It is set to `"false"`:
+only the hosted site and `http://localhost` can use it.
 
 - **Cost:** `null` isn't unique to file://. Sandboxed iframes and `data:` URLs
   on any website also send it. A third-party page could therefore use your
@@ -67,12 +68,41 @@ the app opened by double-clicking the HTML file use the proxy.
   actually limits misuse is that the Worker only serves these public CMS
   endpoints.
 
-Set it to `"false"` if you only ever use the hosted app or `npx serve`.
-data-api and data.json keep working from file:// either way (CMS sends
+Leave it `"false"` if you only use the hosted app or `npx serve`; set it to
+`"true"` if people open emailed copies of the HTML. data-api and data.json keep
+working from file:// either way (CMS sends
 `Access-Control-Allow-Origin: null` itself); only Group by and NPI Look Up
 would stop.
 
-## Deploy (about 10 minutes, free)
+## Deploy with GitHub Actions (recommended; no terminal needed)
+
+`.github/workflows/proxy-deploy.yml` tests the proxy, deploys it, checks the
+live Worker, and puts its URL in the run summary. It runs whenever `proxy/`
+changes on `main`, or by hand from the Actions tab.
+
+1. **Create a Cloudflare account** at https://dash.cloudflare.com/sign-up (free
+   plan, no card). Open **Workers & Pages** once; it asks you to pick a
+   `*.workers.dev` subdomain (e.g. `jdef11`). Deploys fail until you do.
+2. **Copy your Account ID:** on the **Workers & Pages** overview page it's in
+   the right-hand column ("Account ID").
+3. **Create an API token:** profile icon (top right) → **My Profile** →
+   **API Tokens** → **Create Token** → **Edit Cloudflare Workers** template →
+   **Use template**. Under *Account Resources* pick your account; under *Zone
+   Resources* pick **All zones** (or leave it at that default). **Continue to
+   summary** → **Create Token**, and copy the token (it's shown once).
+4. **Add both as GitHub secrets:** the repository → **Settings** → **Secrets
+   and variables** → **Actions** → **New repository secret**:
+   - `CLOUDFLARE_API_TOKEN` = the token
+   - `CLOUDFLARE_ACCOUNT_ID` = the Account ID
+5. **Run it:** **Actions** → **Deploy CMS proxy (Cloudflare Worker)** → **Run
+   workflow** (branch `main`). When it's green, the run's summary shows the
+   Worker URL, `https://medintel-cms-proxy.<your-subdomain>.workers.dev`.
+6. **Point the app at it** (step 6 below).
+
+The token can deploy and delete Workers on your account, so keep it only in
+GitHub's secrets. To revoke it: Cloudflare → My Profile → API Tokens.
+
+## Deploy from your own computer (about 10 minutes, free)
 
 1. **Create a Cloudflare account** at https://dash.cloudflare.com/sign-up. The
    free plan is enough; no card needed. The first time you open

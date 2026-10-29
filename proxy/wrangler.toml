@@ -5,7 +5,8 @@ compatibility_date = "2025-09-01"
 workers_dev = true
 
 [vars]
-# "true": a copy of the app opened from file:// (it sends Origin: null) can use
-# the proxy. "false": only https://jdef11.github.io and http://localhost:* can.
-# Tradeoff in README.md.
-ALLOW_NULL_ORIGIN = "true"
+# "false": only https://jdef11.github.io and http://localhost:* can use the
+# proxy. "true" would also let a copy of the app opened from file:// (it sends
+# Origin: null) use it, at the cost of letting sandboxed pages on any site do
+# the same. Tradeoff in README.md.
+ALLOW_NULL_ORIGIN = "false"

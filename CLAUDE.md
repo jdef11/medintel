@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   ├── worker.js                 #   request handler (method/origin/allowlist checks, edge cache, upstream timeouts)
 │   ├── policy.js                 #   pure allowlist + CORS rules (resolveUpstream, isAllowedOrigin, corsHeaders)
 │   ├── worker.test.mjs           #   Vitest suite (52 tests): "not an open proxy" + CORS + handler behavior
-│   ├── wrangler.toml / package.json  # Worker config (ALLOW_NULL_ORIGIN) and the pinned wrangler CLI
+│   ├── wrangler.toml / package.json  # Worker config (ALLOW_NULL_ORIGIN, "false") and the pinned wrangler CLI
 │   └── README.md                 #   why it exists, deploy steps, free-tier limits
 ├── data/icd10pcs-drg-index.json  # Static ICD-10-PCS → MS-DRG crosswalk + descriptions (~56k codes, ~9MB) — fetched at runtime, not embedded; rebuilt by the script below
 ├── data/excluded-volume/         # Precomputed PA/NP/ASC patient-days + payment per HCPCS code/year/state, sharded by code prefix (manifest.json + <PFX>.json, ~11MB total) — see "Excluded-volume index" under External APIs
@@ -37,6 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ├── .github/workflows/deploy.yml  # Runs `npm test`, then publishes the HTML (+ medintel-core.js + data/) to GitHub Pages
 ├── .github/workflows/icd10pcs-rebuild.yml  # Weekly: rebuilds the ICD-10-PCS crosswalk when CMS publishes a new FY → PR (or commit on a feature branch); problems → `icd10pcs-rebuild` issue
 ├── .github/workflows/excluded-volume-rebuild.yml  # Weekly: builds any newly published/re-released data year into data/excluded-volume/ → PR (or commit on a feature branch); problems → `excluded-volume-rebuild` issue
+├── .github/workflows/proxy-deploy.yml  # Deploys proxy/ to Cloudflare on changes to main (or manually); needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID secrets; checks the live Worker and prints its URL
 ├── .github/workflows/live-smoke.yml  # Weekly (Mon) `npm run smoke` against real CMS; opens/updates/closes a `live-cms-check` issue
 ├── README.md                      # User-facing documentation and example searches
 ├── LICENSE                        # MIT License
@@ -213,7 +214,7 @@ The app used to cover the ❌ cells (and any direct-call failure) by cycling thr
   - GET (+ OPTIONS) only.
   - Fixed routes `/data-api/v1/dataset/…`, `/provider-data/api/1/datastore/query/…`, `/data.json`, `/nppes/api/`, each with a hard-coded upstream host, so it's never a `?url=` relay.
   - Paths are restricted to `[A-Za-z0-9._~-/]` with no empty or dot segments.
-  - CORS echoes only `https://jdef11.github.io`, `http://localhost:*`, and `null` (if `ALLOW_NULL_ORIGIN`). Any other browser Origin is refused with 403 before any upstream fetch.
+  - CORS echoes only `https://jdef11.github.io`, `http://localhost:*`, and `null` (only if `ALLOW_NULL_ORIGIN = "true"`; it's `"false"`, so file:// copies can't use Group by or NPI Look Up). Any other browser Origin is refused with 403 before any upstream fetch.
   - Upstream statuses pass through; the Worker's own errors are `504 upstream_timeout` and `502 upstream_unreachable` (JSON).
   - 200s are cached 24 h (NPPES 1 h) via the Cache API plus fetch-level `cf.cacheTtlByStatus`. CMS sends `no-store`, so the Worker substitutes its own max-age. A response header `X-Proxy-Cache: HIT|MISS` reports the cache outcome.
   - A 403 from the proxy always means "refused by policy" (CMS data is public). `corsFetch` reports it as such, and treats other 4xx as CMS's real answer.
@@ -391,7 +392,7 @@ aws s3 cp "cms-sales-intel (4).html" s3://your-bucket/
 npx serve .
 ```
 
-The app itself needs no environment variables, server configuration or database. The one server-side piece is the CMS proxy Worker. It's deployed separately with `cd proxy && npm install && npx wrangler login && npx wrangler deploy` (steps in `proxy/README.md`), and its URL goes into `CMS_PROXY_BASE` in the HTML. Deploy the Worker **before** shipping an app version whose `CMS_PROXY_BASE` points at it. With `CMS_PROXY_BASE` empty, Group by practice/hospital and NPI Look Up show a "proxy not configured" error.
+The app itself needs no environment variables, server configuration or database. The one server-side piece is the CMS proxy Worker. It's deployed by `.github/workflows/proxy-deploy.yml` (Cloudflare secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`) or by hand with `cd proxy && npm install && npx wrangler login && npx wrangler deploy` (steps for both in `proxy/README.md`), and its URL goes into `CMS_PROXY_BASE` in the HTML. Deploy the Worker **before** shipping an app version whose `CMS_PROXY_BASE` points at it. With `CMS_PROXY_BASE` empty, Group by practice/hospital and NPI Look Up show a "proxy not configured" error.
 
 ---
 

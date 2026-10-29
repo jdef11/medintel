@@ -161,7 +161,7 @@ One-click CSV download for any search mode, for use in Excel, Salesforce, or oth
 2. Open `cms-sales-intel (4).html` in any modern browser (Chrome, Edge, Firefox, Safari)
 3. Search
 
-Most searches call CMS directly and work from a local file. Group by practice/hospital and NPI Look Up go through the MedIntel CMS proxy (below); that works from a local file only while the proxy's `ALLOW_NULL_ORIGIN` setting is on (the default).
+Most searches call CMS directly and work from a local file. Group by practice/hospital and NPI Look Up go through the MedIntel CMS proxy (below); those don't work from a local file, because the proxy's `ALLOW_NULL_ORIGIN` setting is off (turn it on in `proxy/wrangler.toml` if people use emailed copies of the HTML).
 
 ### Option 2: Serve Locally
 
