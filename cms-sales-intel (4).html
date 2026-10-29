@@ -1435,6 +1435,7 @@ const DRG_DICT_CACHE_KEY = 'medintel_drg_dict_v1';
 let icd10PcsIndex = null;     // { version, builtAt, categories, codes } — built by scripts/build-icd10pcs-drg-index.mjs
 let icd10PcsArray = null;     // memoized [{code, desc}] view of icd10PcsIndex.codes, for searchDict()
 const ICD10PCS_INDEX_URL = './data/icd10pcs-drg-index.json';
+const EXCLUDED_INDEX_BASE = './data/excluded-volume/';
 // The dictionaries are a local index built by paginating the national rows, and
 // that pagination is capped. When the cap is hit the index is INCOMPLETE, so a
 // "no matches" result can't be trusted — these flags trigger a targeted
@@ -1814,6 +1815,42 @@ async function fetchExcludedPages(base, criteria, label) {
   throw new Error(`Too many assistant/facility rows for ${label} to subtract`);
 }
 
+// Precomputed PA/NP/ASC totals (data/excluded-volume/, built yearly by
+// scripts/build-excluded-volume-index.mjs). Both loaders are memoized; a
+// failed load resolves to null so the caller falls back to the live query.
+let excludedManifestPromise = null;
+function loadExcludedManifest() {
+  if (!excludedManifestPromise) {
+    excludedManifestPromise = fetch(`${EXCLUDED_INDEX_BASE}manifest.json`)
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return excludedManifestPromise;
+}
+const excludedShardPromises = {};
+function loadExcludedShard(key) {
+  if (!excludedShardPromises[key]) {
+    excludedShardPromises[key] = fetch(`${EXCLUDED_INDEX_BASE}${encodeURIComponent(key)}.json`)
+      // The build writes no file for a prefix with no PA/NP/ASC billing at all.
+      .then(r => (r.ok ? r.json() : r.status === 404 ? {} : null))
+      .catch(() => null)
+      .then(shard => { if (!shard) delete excludedShardPromises[key]; return shard; });
+  }
+  return excludedShardPromises[key];
+}
+
+// { procedures, payment } billed by PA/NP/ASC for one code/year/state: from
+// the index when it covers that year, otherwise (a year CMS published after
+// the last index build, or the index failed to load) the slow live query.
+async function excludedTotalsFor(year, code, stateVal) {
+  const manifest = await loadExcludedManifest();
+  if (excludedIndexCovers(manifest, year)) {
+    const shard = await loadExcludedShard(excludedShardKey(code));
+    if (shard) return excludedFromShard(shard, code, year, stateVal);
+  }
+  return sumExcludedRows(await fetchExcludedRows(year, code, stateVal));
+}
+
 // Geography & Service URL for one code, national or (with stateVal) one state.
 function geoCodeUrl(base, code, stateVal) {
   let url = `${base}?size=50&filter[HCPCS_Cd]=${encodeURIComponent(code)}`;
@@ -1828,7 +1865,7 @@ function geoCodeUrl(base, code, stateVal) {
 
 // Surgeon-only procedure totals for a HCPCS code in one data year: the
 // Geography & Service rows (unsuppressed, all billers) in patient-days, minus
-// the PA/NP/ASC provider-level lines (surgeonOnlyTotals). Resolves to
+// the PA/NP/ASC totals (excludedTotalsFor → surgeonOnlyTotals). Resolves to
 // { procedures, payment, allProcedures, allPayment, benes, desc, year }, or null
 // when CMS has no rows for the code. Rejects if the subtraction can't be done,
 // so no caller ever shows an all-billers figure under a surgeon label.
@@ -1842,7 +1879,7 @@ function surgeonTotalsFor(year, code, stateVal) {
   if (!v) return Promise.reject(new Error(`No Geography & Service dataset for CY ${year}`));
   const p = Promise.all([
     corsFetch(geoCodeUrl(`${DATA_API_ROOT}/${v.id}/data`, code, stateVal)),
-    fetchExcludedRows(year, code, stateVal),
+    excludedTotalsFor(year, code, stateVal),
   ]).then(([raw, excluded]) => {
     const rows = (raw || []).filter(r => (f(r, 'HCPCS_Cd') || '').toUpperCase() === code.toUpperCase());
     if (!rows.length) return null;

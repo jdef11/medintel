@@ -83,21 +83,53 @@ function excludeNonSurgeonRows(rows) {
   return (rows || []).filter(r => !isNonSurgeonType(f(r, 'Rndrng_Prvdr_Type')));
 }
 
+// Excluded-type (PA/NP/ASC) totals for one code from provider-level rows.
+function sumExcludedRows(rows) {
+  let procedures = 0, payment = 0;
+  (rows || []).forEach(r => { procedures += getProcedureCount(r); payment += getPayment(r); });
+  return { procedures, payment };
+}
+
 // Surgeon-only procedure totals for one code: the Geography & Service rows
-// (unsuppressed, all provider types) minus the provider-level rows billed by
-// VOLUME_EXCLUDED_PROVIDER_TYPES. Excluded rows below CMS's ≤10-beneficiary
-// floor can't be subtracted, so this slightly overstates; it never mixes in
-// the suppressed surgeons it would lose by summing surgeon rows instead.
-function surgeonOnlyTotals(geoRows, excludedRows) {
-  let allProcedures = 0, allPayment = 0, exProcedures = 0, exPayment = 0;
+// (unsuppressed, all provider types) minus `excluded` = { procedures, payment }
+// billed by VOLUME_EXCLUDED_PROVIDER_TYPES (from the precomputed index, or
+// sumExcludedRows over a live query). Excluded rows below CMS's
+// ≤10-beneficiary floor can't be subtracted, so this slightly overstates; it
+// never loses the suppressed surgeons it would by summing surgeon rows instead.
+function surgeonOnlyTotals(geoRows, excluded) {
+  let allProcedures = 0, allPayment = 0;
   (geoRows || []).forEach(r => { allProcedures += getProcedureCount(r); allPayment += getPayment(r); });
-  (excludedRows || []).forEach(r => { exProcedures += getProcedureCount(r); exPayment += getPayment(r); });
+  const ex = excluded || { procedures: 0, payment: 0 };
   return {
-    procedures: Math.max(0, allProcedures - exProcedures),
-    payment: Math.max(0, allPayment - exPayment),
+    procedures: Math.max(0, allProcedures - ex.procedures),
+    payment: Math.max(0, allPayment - ex.payment),
     allProcedures,
-    excludedProcedures: exProcedures,
+    excludedProcedures: ex.procedures,
   };
+}
+
+// ─── PRECOMPUTED EXCLUDED-VOLUME INDEX (data/excluded-volume/) ───
+// Built by scripts/build-excluded-volume-index.mjs from CMS's yearly CSVs:
+// manifest.json lists the years and provider types covered; <PFX>.json shards,
+// keyed by excludedShardKey(code), hold { code: { year: { "US"|state: [days, pay] } } }.
+function excludedShardKey(code) {
+  return String(code || '').toUpperCase().slice(0, 3);
+}
+
+// True when the index has `year` and was built for today's excluded types —
+// otherwise the caller must fall back to the live query.
+function excludedIndexCovers(manifest, year) {
+  if (!manifest || !manifest.years || !manifest.years[year]) return false;
+  return JSON.stringify(manifest.types || []) === JSON.stringify(VOLUME_EXCLUDED_PROVIDER_TYPES);
+}
+
+// { procedures, payment } for one code/year/state from a loaded shard. A code
+// absent from a covered year means no PA/NP/ASC billing (zero), not missing data.
+function excludedFromShard(shard, code, year, stateVal) {
+  const years = shard && shard[String(code || '').toUpperCase()];
+  const states = years && years[year];
+  const v = states && states[stateVal ? String(stateVal).toUpperCase() : 'US'];
+  return v ? { procedures: v[0], payment: v[1] } : { procedures: 0, payment: 0 };
 }
 
 function getBenes(row) {
@@ -1440,5 +1472,5 @@ function assignScoresAndTiers(providers) {
 
 // Export for test environments (Node/Vitest). In the browser these are global.
 if (typeof module !== 'undefined') {
-  module.exports = { f, getPayment, getAvgCharge, getServices, getProcedureCount, getBenes, NON_SURGEON_PROVIDER_TYPES, FACILITY_PROVIDER_TYPES, VOLUME_EXCLUDED_PROVIDER_TYPES, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
+  module.exports = { f, getPayment, getAvgCharge, getServices, getProcedureCount, getBenes, NON_SURGEON_PROVIDER_TYPES, FACILITY_PROVIDER_TYPES, VOLUME_EXCLUDED_PROVIDER_TYPES, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, sumExcludedRows, excludedShardKey, excludedIndexCovers, excludedFromShard, getProviderName, getLocation, fmtCurrency, fmtNumber, escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs, getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment, tokenizeMedical, searchDict, crossSuggest, latestOkEntry, combineTrendsByYear, computeTamModel, aggregateDrgRows, safeAvg, csvField, toCsvRow, backoffDelay, encodeSearchState, decodeSearchState, SHAREABLE_TABS, buildFilterParams, rowMatchesCriteria, getSupplierServices, getSupplierBenes, getSupplierPayment, getSupplierCount, getReferringName, groupByReferrer, getGeoLevel, pickNationalRows, hcpcsLevelIIFamily, HCPCS_LEVEL_II_FAMILIES, GEO_LEVEL_FIELDS, extractDatasetVersions, LATEST_DATASET_IDS, normalizeProxyBase, cmsProxyUrl, needsCmsProxy, yearFromDataFileName, icd10IndexStaleness, STATE_NAMES, CPT_BUNDLES, computeComplexityScore, assignScoresAndTiers, pctChangeAcrossYears, trendSvgPath, parseIcd10Pcs, expandDrgRange, resolveIcd10PcsToDrgs, splitLookupTerms, resolveOneAffiliation, groupProvidersByPractice, groupProvidersByHospital };
 }

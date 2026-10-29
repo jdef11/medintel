@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 const {
   f, getPayment, getAvgCharge, getServices, getBenes,
-  getProcedureCount, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, VOLUME_EXCLUDED_PROVIDER_TYPES,
+  getProcedureCount, isNonSurgeonType, isVolumeExcludedType, excludeNonSurgeonRows, surgeonOnlyTotals, sumExcludedRows, excludedShardKey, excludedIndexCovers, excludedFromShard, VOLUME_EXCLUDED_PROVIDER_TYPES,
   getProviderName, getLocation, fmtCurrency, fmtNumber,
   escapeHtml, groupByProvider, groupByProcedure, parseCodes, parseDrgs,
   getDischarges, getAvgCoveredCharge, getAvgTotalPayment, getAvgMedicarePayment,
@@ -2240,14 +2240,17 @@ describe('surgeonOnlyTotals()', () => {
       { Rndrng_Prvdr_Type: 'Physician Assistant', Tot_Srvcs: '300', Tot_Bene_Day_Srvcs: '300', Avg_Mdcr_Pymt_Amt: '14' },
       { Rndrng_Prvdr_Type: 'Ambulatory Surgical Center', Tot_Srvcs: '100', Tot_Bene_Day_Srvcs: '100', Avg_Mdcr_Pymt_Amt: '50' },
     ];
-    const t = surgeonOnlyTotals(geo, excluded);
+    const t = surgeonOnlyTotals(geo, sumExcludedRows(excluded));
     expect(t.allProcedures).toBe(1010);
     expect(t.excludedProcedures).toBe(400);
     expect(t.procedures).toBe(610);
     expect(t.payment).toBe(101000 - 4200 - 5000);
   });
   it('never goes negative', () => {
-    expect(surgeonOnlyTotals([{ Tot_Bene_Day_Srvcs: '5' }], [{ Tot_Bene_Day_Srvcs: '9' }]).procedures).toBe(0);
+    expect(surgeonOnlyTotals([{ Tot_Bene_Day_Srvcs: '5' }], { procedures: 9, payment: 0 }).procedures).toBe(0);
+  });
+  it('treats a missing excluded total as zero', () => {
+    expect(surgeonOnlyTotals([{ Tot_Bene_Day_Srvcs: '5' }]).procedures).toBe(5);
   });
 });
 
@@ -2280,5 +2283,31 @@ describe('IN criteria', () => {
     const c = [{ path: 'Rndrng_Prvdr_Type', op: 'IN', value: ['Physician Assistant', 'Nurse Practitioner'] }];
     expect(rowMatchesCriteria({ Rndrng_Prvdr_Type: 'physician assistant' }, c)).toBe(true);
     expect(rowMatchesCriteria({ Rndrng_Prvdr_Type: 'Orthopedic Surgery' }, c)).toBe(false);
+  });
+});
+
+describe('precomputed excluded-volume index helpers', () => {
+  const shard = { '27447': { '2024': { US: [233088, 351363529], TX: [12358, 13455736] } } };
+  it('excludedShardKey is the first 3 characters, uppercased', () => {
+    expect(excludedShardKey('27447')).toBe('274');
+    expect(excludedShardKey('j1885')).toBe('J18');
+    expect(excludedShardKey('0232T')).toBe('023');
+  });
+  it('excludedFromShard reads national by default and a state when given', () => {
+    expect(excludedFromShard(shard, '27447', 2024, '')).toEqual({ procedures: 233088, payment: 351363529 });
+    expect(excludedFromShard(shard, '27447', '2024', 'tx')).toEqual({ procedures: 12358, payment: 13455736 });
+  });
+  it('excludedFromShard returns zero for a code, year or state with no PA/NP/ASC billing', () => {
+    expect(excludedFromShard(shard, '27446', 2024, '')).toEqual({ procedures: 0, payment: 0 });
+    expect(excludedFromShard(shard, '27447', 2024, 'VT')).toEqual({ procedures: 0, payment: 0 });
+    expect(excludedFromShard({}, '27447', 2024, '')).toEqual({ procedures: 0, payment: 0 });
+  });
+  it('excludedIndexCovers needs the year and the current provider types', () => {
+    const m = { types: VOLUME_EXCLUDED_PROVIDER_TYPES.slice(), years: { 2024: {} } };
+    expect(excludedIndexCovers(m, 2024)).toBe(true);
+    expect(excludedIndexCovers(m, '2024')).toBe(true);
+    expect(excludedIndexCovers(m, 2025)).toBe(false);
+    expect(excludedIndexCovers({ ...m, types: ['Physician Assistant'] }, 2024)).toBe(false);
+    expect(excludedIndexCovers(null, 2024)).toBe(false);
   });
 });

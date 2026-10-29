@@ -294,6 +294,17 @@ async function main() {
     } catch (e) { bad(`PA/NP/ASC query failed: ${e.message}`); }
   }
 
+  console.log('\n18. Precomputed PA/NP/ASC index (data/excluded-volume/) covers the newest data year');
+  // Without it, that year's surgeon-only totals fall back to the slow live
+  // query. The excluded-volume-rebuild workflow builds new years weekly.
+  try {
+    const manifest = JSON.parse(readFileSync(new URL('../data/excluded-volume/manifest.json', import.meta.url), 'utf8'));
+    const newest = resolved.provider && resolved.provider.year;
+    if (!newest) bad('provider dataset year unknown (see step 2)');
+    else if (!manifest.years || !manifest.years[newest]) bad(`index has CY ${Object.keys(manifest.years || {}).join(', ')} but not CY${newest} — check the excluded-volume-rebuild workflow and its issues`);
+    else ok(`covers CY${newest} (${Object.keys(manifest.years).length} years)`);
+  } catch (e) { bad(`could not read the index manifest: ${e.message}`); }
+
   finish();
 }
 
